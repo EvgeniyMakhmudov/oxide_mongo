@@ -1,0 +1,13 @@
+[package]
+name = "oxide_mongo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iced = { version = "0.13.1", features = ["image"] }
+serde_json = "1.0"
+iced_aw = { version = "0.12", features = ["tabs", "menu", "tab_bar"] }
+iced_fonts = "0.2.1"
+rand = "0.9.2"
+mongodb = { version = "3", default-features = false, features = ["sync", "bson-2", "compat-3-3-0", "rustls-tls"] }
+tokio = { version = "1.37", features = ["rt-multi-thread"] }
