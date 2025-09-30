@@ -1,45 +1,59 @@
+use iced::Font;
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
+use iced::widget::image::Handle;
 use iced::widget::pane_grid::ResizeEvent;
+use iced::widget::scrollable;
 use iced::widget::text_editor::{self, Action as TextEditorAction, Content as TextEditorContent};
 use iced::widget::{
     Button, Column, Container, Image, Row, Scrollable, Space, Text, button, container, pane_grid,
     text, text_input,
 };
-use iced::widget::scrollable;
 use iced::window;
-use iced::{Color, Element, Length, Renderer, Subscription, Task, Theme, application};
+use iced::{Color, Element, Length, Renderer, Shadow, Subscription, Task, Theme, application};
 use iced_aw::menu::{Item as MenuItemWidget, Menu, MenuBar};
-use mongodb::bson::{self, Bson, Document};
+use mongodb::bson::{self, Bson, Document, doc};
+use mongodb::options::Hint;
 use mongodb::sync::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::fs;
+use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-const DEFAULT_URI: &str = "mongodb://localhost:27017";
 type TabId = u32;
 type ClientId = u32;
 
 const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const DEFAULT_RESULT_LIMIT: i64 = 50;
 const DEFAULT_RESULT_SKIP: u64 = 0;
-const ICON_NETWORK: &str = "icons/network_115x128.png";
-const ICON_DATABASE: &str = "icons/database_105x128.png";
-const ICON_COLLECTION: &str = "icons/collection_108x128.png";
-
+const WINDOW_ICON_BYTES: &[u8] = include_bytes!("../assests/icons/oxide_mongo_256x256.png");
+const ICON_NETWORK_BYTES: &[u8] = include_bytes!("../assests/icons/network_115x128.png");
+const ICON_DATABASE_BYTES: &[u8] = include_bytes!("../assests/icons/database_105x128.png");
+const ICON_COLLECTION_BYTES: &[u8] = include_bytes!("../assests/icons/collection_108x128.png");
+const CONNECTIONS_FILE: &str = "connections.toml";
+const MONO_FONT_BYTES: &[u8] = include_bytes!("../assests/fonts/DejaVuSansMono.ttf");
+const MONO_FONT: Font = Font::with_name("DejaVu Sans Mono");
+static ICON_NETWORK_HANDLE: OnceLock<Handle> = OnceLock::new();
+static ICON_DATABASE_HANDLE: OnceLock<Handle> = OnceLock::new();
+static ICON_COLLECTION_HANDLE: OnceLock<Handle> = OnceLock::new();
 
 fn main() -> iced::Result {
-    let icon = window::icon::from_file("icons/oxide_mongo_256x256.png")
+    let icon = window::icon::from_file_data(WINDOW_ICON_BYTES, None)
         .map_err(|error| iced::Error::WindowCreationFailed(Box::new(error)))?;
 
     let mut window_settings = window::Settings::default();
     window_settings.icon = Some(icon);
-    window_settings.size.width += 240.0;
+    window_settings.size.width += 280.0;
 
     application("Oxide Mongo GUI", App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
+        .font(MONO_FONT_BYTES)
         .window(window_settings)
         .run_with(App::init)
 }
@@ -49,10 +63,13 @@ struct App {
     tabs: Vec<TabData>,
     active_tab: Option<TabId>,
     next_tab_id: TabId,
-    last_tool: Option<Tool>,
     clients: Vec<OMDBClient>,
     next_client_id: ClientId,
     last_collection_click: Option<CollectionClick>,
+    connections: Vec<ConnectionEntry>,
+    mode: AppMode,
+    connections_window: Option<ConnectionsWindowState>,
+    connection_form: Option<ConnectionFormState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,50 +82,77 @@ enum PaneContent {
 struct TabData {
     id: TabId,
     title: String,
-    content: TabKind,
-}
-
-#[derive(Debug)]
-enum TabKind {
-    TextEditor { text: String },
-    Form { input: String, clicks: u32 },
-    Collection(CollectionTab),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tool {
-    Tool1,
-    Tool2,
-    Tool3,
+    collection: CollectionTab,
 }
 
 #[derive(Debug, Clone)]
 enum Message {
     MenuItemSelected(TopMenu, MenuEntry),
-    ToolSelected(Tool),
     TabSelected(TabId),
     TabClosed(TabId),
-    TextTabChanged(TabId, String),
-    FormTextChanged(TabId, String),
-    FormButtonPressed(TabId),
     PaneResized(ResizeEvent),
-    ConnectionCompleted { client_id: ClientId, result: Result<ConnectionBootstrap, String> },
+    ConnectionCompleted {
+        client_id: ClientId,
+        result: Result<ConnectionBootstrap, String>,
+    },
     ToggleClient(ClientId),
-    ToggleDatabase { client_id: ClientId, db_name: String },
-    CollectionsLoaded { client_id: ClientId, db_name: String, result: Result<Vec<String>, String> },
-    CollectionClicked { client_id: ClientId, db_name: String, collection: String },
-    CollectionEditorAction { tab_id: TabId, action: TextEditorAction },
+    ToggleDatabase {
+        client_id: ClientId,
+        db_name: String,
+    },
+    CollectionsLoaded {
+        client_id: ClientId,
+        db_name: String,
+        result: Result<Vec<String>, String>,
+    },
+    CollectionClicked {
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+    },
+    CollectionEditorAction {
+        tab_id: TabId,
+        action: TextEditorAction,
+    },
     CollectionSend(TabId),
-    CollectionTreeToggle { tab_id: TabId, node_id: usize },
-    CollectionSkipChanged { tab_id: TabId, value: String },
-    CollectionLimitChanged { tab_id: TabId, value: String },
+    CollectionTreeToggle {
+        tab_id: TabId,
+        node_id: usize,
+    },
+    CollectionSkipChanged {
+        tab_id: TabId,
+        value: String,
+    },
+    CollectionLimitChanged {
+        tab_id: TabId,
+        value: String,
+    },
     CollectionSkipPrev(TabId),
     CollectionSkipNext(TabId),
     CollectionQueryCompleted {
         tab_id: TabId,
-        result: Result<Vec<Bson>, String>,
+        result: Result<QueryResult, String>,
         duration: Duration,
     },
+    ConnectionsSelect(usize),
+    ConnectionsQuickConnect(usize),
+    ConnectionsCreate,
+    ConnectionsEdit,
+    ConnectionsDelete,
+    ConnectionsDeleteConfirmed,
+    ConnectionsDeleteCancelled,
+    ConnectionsConnect,
+    ConnectionsCancel,
+    ConnectionFormTabChanged(ConnectionFormTab),
+    ConnectionFormNameChanged(String),
+    ConnectionFormHostChanged(String),
+    ConnectionFormPortChanged(String),
+    ConnectionFormIncludeAction(TextEditorAction),
+    ConnectionFormExcludeAction(TextEditorAction),
+    ConnectionFormTest,
+    ConnectionFormTestResult(Result<(), String>),
+    ConnectionFormSave,
+    ConnectionFormCancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -173,6 +217,168 @@ struct CollectionNode {
 struct ConnectionBootstrap {
     handle: Arc<Client>,
     databases: Vec<String>,
+}
+
+impl ConnectionEntry {
+    fn uri(&self) -> String {
+        format!("mongodb://{}:{}", self.host.trim(), self.port)
+    }
+}
+
+impl ConnectionsWindowState {
+    fn new(selected: Option<usize>) -> Self {
+        Self { selected, confirm_delete: false, feedback: None, last_click: None }
+    }
+}
+
+impl ConnectionFormState {
+    fn new(mode: ConnectionFormMode, entry: Option<&ConnectionEntry>) -> Self {
+        let (name, host, port, include_filter, exclude_filter) = entry
+            .map(|conn| {
+                (
+                    conn.name.clone(),
+                    conn.host.clone(),
+                    conn.port.to_string(),
+                    conn.include_filter.clone(),
+                    conn.exclude_filter.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    String::new(),
+                    String::from("localhost"),
+                    String::from("27017"),
+                    String::new(),
+                    String::new(),
+                )
+            });
+
+        Self {
+            mode,
+            active_tab: ConnectionFormTab::General,
+            name,
+            host,
+            port,
+            include_editor: TextEditorContent::with_text(&include_filter),
+            exclude_editor: TextEditorContent::with_text(&exclude_filter),
+            validation_error: None,
+            test_feedback: None,
+            testing: false,
+        }
+    }
+
+    fn validate(&self) -> Result<ConnectionEntry, String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(String::from("Название не может быть пустым"));
+        }
+
+        let host = self.host.trim();
+        if host.is_empty() {
+            return Err(String::from("Адрес/Хост/IP не может быть пустым"));
+        }
+
+        let port: u16 = self
+            .port
+            .trim()
+            .parse()
+            .map_err(|_| String::from("Порт должен быть числом от 0 до 65535"))?;
+
+        Ok(ConnectionEntry {
+            name: name.to_string(),
+            host: host.to_string(),
+            port,
+            include_filter: self.include_editor.text(),
+            exclude_filter: self.exclude_editor.text(),
+        })
+    }
+
+    fn include_action(&mut self, action: TextEditorAction) {
+        self.include_editor.perform(action);
+    }
+
+    fn exclude_action(&mut self, action: TextEditorAction) {
+        self.exclude_editor.perform(action);
+    }
+}
+
+impl TestFeedback {
+    fn message(&self) -> &str {
+        match self {
+            TestFeedback::Success(msg) | TestFeedback::Failure(msg) => msg.as_str(),
+        }
+    }
+
+    fn is_success(&self) -> bool {
+        matches!(self, TestFeedback::Success(_))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ConnectionEntry {
+    name: String,
+    host: String,
+    port: u16,
+    include_filter: String,
+    exclude_filter: String,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct ConnectionStore {
+    connections: Vec<ConnectionEntry>,
+}
+
+#[derive(Debug)]
+struct ConnectionsWindowState {
+    selected: Option<usize>,
+    confirm_delete: bool,
+    feedback: Option<String>,
+    last_click: Option<ListClick>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ListClick {
+    index: usize,
+    at: Instant,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppMode {
+    Main,
+    Connections,
+    ConnectionForm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionFormTab {
+    General,
+    Filter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionFormMode {
+    Create,
+    Edit(usize),
+}
+
+#[derive(Debug)]
+struct ConnectionFormState {
+    mode: ConnectionFormMode,
+    active_tab: ConnectionFormTab,
+    name: String,
+    host: String,
+    port: String,
+    include_editor: TextEditorContent,
+    exclude_editor: TextEditorContent,
+    validation_error: Option<String>,
+    test_feedback: Option<TestFeedback>,
+    testing: bool,
+}
+
+#[derive(Debug)]
+enum TestFeedback {
+    Success(String),
+    Failure(String),
 }
 
 struct CollectionClick {
@@ -382,6 +588,44 @@ impl BsonTree {
         Self::from_values(std::slice::from_ref(&value))
     }
 
+    fn from_distinct(field: String, values: Vec<Bson>) -> Self {
+        let mut id_gen = IdGenerator::default();
+        let array_bson = Bson::Array(values);
+        let node = BsonNode::from_bson(Some(field), &array_bson, &mut id_gen);
+        let mut expanded = HashSet::new();
+        expanded.insert(node.id);
+
+        Self { roots: vec![node], expanded }
+    }
+
+    fn from_count(value: Bson) -> Self {
+        let mut id_gen = IdGenerator::default();
+        let node = BsonNode::from_bson(Some(String::from("count")), &value, &mut id_gen);
+        let mut expanded = HashSet::new();
+        expanded.insert(node.id);
+        Self { roots: vec![node], expanded }
+    }
+
+    fn from_document(document: Document) -> Self {
+        let mut id_gen = IdGenerator::default();
+        let value = Bson::Document(document);
+        let mut roots = Vec::new();
+        let mut expanded = HashSet::new();
+
+        let key = match &value {
+            Bson::Document(doc) => {
+                doc.get("_id").map(Self::summarize_id).unwrap_or_else(|| String::from("document"))
+            }
+            _ => String::from("document"),
+        };
+
+        let node = BsonNode::from_bson(Some(key), &value, &mut id_gen);
+        expanded.insert(node.id);
+        roots.push(node);
+
+        Self { roots, expanded }
+    }
+
     fn view(&self, tab_id: TabId) -> Element<Message> {
         let mut rows = Vec::new();
         self.collect_rows(&mut rows, &self.roots, 0);
@@ -397,9 +641,9 @@ impl BsonTree {
             .width(Length::Fill)
             .height(Length::Shrink)
             .push(
-                Container::new(Text::new("Key").size(14))
+                Container::new(Text::new("Key").size(14).font(MONO_FONT))
                     .width(Length::FillPortion(4))
-                    .padding([6, 8])
+                    .padding([6, 8]),
             )
             .push(
                 Container::new(Space::with_width(Length::Fixed(1.0)))
@@ -412,7 +656,7 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(Text::new("Value").size(14))
+                Container::new(Text::new("Value").size(14).font(MONO_FONT))
                     .width(Length::FillPortion(5))
                     .padding([6, 8]),
             )
@@ -427,17 +671,17 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(Text::new("Type").size(14))
+                Container::new(Text::new("Type").size(14).font(MONO_FONT))
                     .width(Length::FillPortion(3))
                     .padding([6, 8]),
             );
 
-        let header = Container::new(header_row).width(Length::Fill).height(Length::Shrink).style(move |_| {
-            iced::widget::container::Style {
+        let header = Container::new(header_row).width(Length::Fill).height(Length::Shrink).style(
+            move |_| iced::widget::container::Style {
                 background: Some(header_bg.into()),
                 ..Default::default()
-            }
-        });
+            },
+        );
 
         let mut body = Column::new().spacing(1).width(Length::Fill).height(Length::Shrink);
 
@@ -449,27 +693,41 @@ impl BsonTree {
 
             if node.is_container() {
                 let indicator = if expanded { "▼" } else { "▶" };
-                let toggle = Button::new(Text::new(indicator))
+                let has_children =
+                    node.children().map(|children| !children.is_empty()).unwrap_or(false);
+
+                if has_children {
+                    let toggle = Button::new(Text::new(indicator))
+                        .padding([0, 4])
+                        .on_press(Message::CollectionTreeToggle { tab_id, node_id: node.id });
+                    key_row = key_row.push(toggle);
+                } else {
+                    let disabled = Container::new(
+                        Text::new(indicator).size(14).color(Color::from_rgb8(0xb5, 0xbc, 0xc6)),
+                    )
                     .padding([0, 4])
-                    .on_press(Message::CollectionTreeToggle { tab_id, node_id: node.id });
-                key_row = key_row.push(toggle);
+                    .width(Length::Fixed(18.0))
+                    .align_x(Horizontal::Center)
+                    .align_y(Vertical::Center);
+                    key_row = key_row.push(disabled);
+                }
             } else {
                 key_row = key_row.push(Space::with_width(Length::Fixed(18.0)));
             }
 
             let key_label = node.display_key();
-            key_row = key_row.push(Text::new(key_label.clone()).size(14));
+            key_row = key_row.push(Text::new(key_label.clone()).size(14).font(MONO_FONT));
 
             let value_text = node.value_display().unwrap_or_default();
             let type_text = node.type_label();
 
             let key_cell = Container::new(key_row).width(Length::FillPortion(4)).padding([6, 8]);
 
-            let value_cell = Container::new(Text::new(value_text.clone()).size(14))
+            let value_cell = Container::new(Text::new(value_text.clone()).size(14).font(MONO_FONT))
                 .width(Length::FillPortion(5))
                 .padding([6, 8]);
 
-            let type_cell = Container::new(Text::new(type_text.clone()).size(14))
+            let type_cell = Container::new(Text::new(type_text.clone()).size(14).font(MONO_FONT))
                 .width(Length::FillPortion(3))
                 .padding([6, 8]);
 
@@ -503,24 +761,17 @@ impl BsonTree {
             body = body.push(row);
         }
 
-        let c_body = Container::new(body).width(Length::Fill).height(Length::Shrink).style(move |_| {
-            iced::widget::container::Style {
-                background: Some(header_bg.into()),
-                ..Default::default()
-            }
-        });
+        let c_body =
+            Container::new(body).width(Length::Fill).height(Length::Shrink).style(move |_| {
+                iced::widget::container::Style {
+                    background: Some(header_bg.into()),
+                    ..Default::default()
+                }
+            });
 
+        let scrollable_body = Scrollable::new(c_body).width(Length::Fill);
 
-        let scrollable_body = Scrollable::new(c_body)
-                .width(Length::Fill);
-
-        Column::new()
-            .spacing(2)
-            .height(Length::Shrink)
-            .push(header)
-            .push(scrollable_body)
-            .into()
-
+        Column::new().spacing(2).height(Length::Shrink).push(header).push(scrollable_body).into()
     }
     fn collect_rows<'a>(
         &'a self,
@@ -587,7 +838,7 @@ impl CollectionTab {
         let (_, split) = panes
             .split(pane_grid::Axis::Horizontal, top, CollectionPane::Response)
             .expect("failed to split collection tab panes");
-        panes.resize(split, 0.25);
+        panes.resize(split, 0.2);
 
         let bson_tree = BsonTree::from_values(&values);
         let editor_text = format!(
@@ -654,7 +905,7 @@ impl CollectionTab {
             .spacing(6)
             .align_y(Vertical::Center)
             .push(
-                Image::new(ICON_NETWORK)
+                Image::new(shared_icon_handle(&ICON_NETWORK_HANDLE, ICON_NETWORK_BYTES))
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
@@ -664,7 +915,7 @@ impl CollectionTab {
             .spacing(6)
             .align_y(Vertical::Center)
             .push(
-                Image::new(ICON_DATABASE)
+                Image::new(shared_icon_handle(&ICON_DATABASE_HANDLE, ICON_DATABASE_BYTES))
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
@@ -674,7 +925,7 @@ impl CollectionTab {
             .spacing(6)
             .align_y(Vertical::Center)
             .push(
-                Image::new(ICON_COLLECTION)
+                Image::new(shared_icon_handle(&ICON_COLLECTION_HANDLE, ICON_COLLECTION_BYTES))
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
@@ -692,23 +943,19 @@ impl CollectionTab {
             .spacing(16)
             .align_y(Vertical::Center)
             .width(Length::Fill)
-            .push(
-                Container::new(info_labels)
-                    .width(Length::Fill)
-                    .padding([0, 4]),
-            )
+            .push(Container::new(info_labels).width(Length::Fill).padding([0, 4]))
             .push(navigation);
 
         let panel_bg = Color::from_rgb8(0xef, 0xf1, 0xf5);
         let panel_border = Color::from_rgb8(0xd0, 0xd4, 0xda);
 
-        let info_panel = Container::new(info_row)
-            .width(Length::Fill)
-            .padding([8, 12])
-            .style(move |_| iced::widget::container::Style {
-                background: Some(panel_bg.into()),
-                border: border::rounded(6).width(1).color(panel_border),
-                ..Default::default()
+        let info_panel =
+            Container::new(info_row).width(Length::Fill).padding([8, 12]).style(move |_| {
+                iced::widget::container::Style {
+                    background: Some(panel_bg.into()),
+                    border: border::rounded(6).width(1).color(panel_border),
+                    ..Default::default()
+                }
             });
 
         let panes = pane_grid::PaneGrid::new(&self.panes, |_, pane, _| match pane {
@@ -810,64 +1057,454 @@ impl CollectionTab {
         self.parse_limit_u64()
     }
 
-    fn parse_filter(&self, text: &str) -> Result<Document, String> {
+    fn parse_query(&self, text: &str) -> Result<QueryOperation, String> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Ok(Document::new());
+            return Err(String::from(
+                "Запрос должен начинаться с db.<collection> или db.getCollection('<collection>').",
+            ));
         }
 
-        let candidate = if let Some(argument) = Self::extract_find_argument(trimmed) {
-            argument
-        } else {
-            trimmed.to_string()
-        };
+        let cleaned = trimmed.trim_end_matches(';').trim();
+        let after_collection = Self::strip_collection_prefix(cleaned)?;
 
-        let cleaned = candidate.trim().trim_end_matches(';').trim();
-
-        if cleaned.is_empty() {
-            return Ok(Document::new());
+        let (method_name, args, remainder) = Self::extract_primary_method(after_collection)?;
+        if !remainder.trim().is_empty() {
+            let extra = remainder.trim_start();
+            if method_name == "find" && extra.starts_with(".countDocuments(") {
+                return Err(String::from(
+                    "countDocuments() нужно вызывать непосредственно на коллекции. Цепочки вида db.collection.find(...).countDocuments(...) не поддерживаются.",
+                ));
+            }
+            return Err(String::from(
+                "Поддерживается только один вызов метода после указания коллекции.",
+            ));
         }
 
-        let value: Value = serde_json::from_str(cleaned)
-            .map_err(|error| format!("JSON parse error: {error}"))?;
+        let args_trimmed = args.trim();
+        match method_name.as_str() {
+            "countDocuments" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() > 2 {
+                    return Err(String::from(
+                        "countDocuments поддерживает не более двух аргументов: query и options.",
+                    ));
+                }
 
-        if !value.is_object() {
-            return Err(String::from("Запрос find должен быть JSON-объектом"));
+                let filter = if let Some(first) = parts.get(0) {
+                    if first.is_empty() { Document::new() } else { Self::parse_json_object(first)? }
+                } else {
+                    Document::new()
+                };
+
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_count_documents_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::CountDocuments { filter, options })
+            }
+            "estimatedDocumentCount" => {
+                let options = if args_trimmed.is_empty() {
+                    None
+                } else {
+                    let parts = Self::split_arguments(args_trimmed);
+                    if parts.len() > 1 {
+                        return Err(String::from(
+                            "estimatedDocumentCount принимает только один аргумент options.",
+                        ));
+                    }
+
+                    match parts.get(0) {
+                        Some(source) if source.trim().is_empty() => None,
+                        Some(source) => Self::parse_estimated_count_options(source)?,
+                        None => None,
+                    }
+                };
+
+                Ok(QueryOperation::EstimatedDocumentCount { options })
+            }
+            "findOne" => {
+                let filter = if args_trimmed.is_empty() {
+                    Document::new()
+                } else {
+                    Self::parse_json_object(args_trimmed)?
+                };
+                Ok(QueryOperation::FindOne { filter })
+            }
+            "count" => {
+                let filter = if args_trimmed.is_empty() {
+                    Document::new()
+                } else {
+                    Self::parse_json_object(args_trimmed)?
+                };
+                Ok(QueryOperation::Count { filter })
+            }
+            "distinct" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.is_empty() {
+                    return Err(String::from("distinct требует как минимум имя поля."));
+                }
+
+                let field_value: Value = serde_json::from_str(&parts[0])
+                    .map_err(|error| format!("JSON parse error: {error}"))?;
+                let field = match field_value {
+                    Value::String(s) => s,
+                    _ => return Err(String::from("Первый аргумент distinct должен быть строкой.")),
+                };
+
+                let filter = if parts.len() > 1 {
+                    let filter_value: Value = serde_json::from_str(&parts[1])
+                        .map_err(|error| format!("JSON parse error: {error}"))?;
+                    if !filter_value.is_object() {
+                        return Err(String::from("Фильтр distinct должен быть JSON-объектом."));
+                    }
+                    bson::to_document(&filter_value)
+                        .map_err(|error| format!("BSON conversion error: {error}"))?
+                } else {
+                    Document::new()
+                };
+
+                Ok(QueryOperation::Distinct { field, filter })
+            }
+            "aggregate" => {
+                if args_trimmed.is_empty() {
+                    return Err(String::from(
+                        "aggregate требует массив стадий в качестве аргумента.",
+                    ));
+                }
+
+                let value: Value = serde_json::from_str(args_trimmed)
+                    .map_err(|error| format!("JSON parse error: {error}"))?;
+                let array = value
+                    .as_array()
+                    .ok_or_else(|| String::from("Аргумент aggregate должен быть массивом."))?;
+                let mut pipeline = Vec::new();
+                for item in array {
+                    let doc = item
+                        .as_object()
+                        .ok_or_else(|| String::from("Элементы pipeline должны быть объектами."))?;
+                    pipeline.push(
+                        bson::to_document(doc)
+                            .map_err(|error| format!("BSON conversion error: {error}"))?,
+                    );
+                }
+                Ok(QueryOperation::Aggregate { pipeline })
+            }
+            "find" => {
+                if args_trimmed.is_empty() {
+                    return Ok(QueryOperation::Find { filter: Document::new() });
+                }
+                let filter = Self::parse_json_object(args_trimmed)?;
+                Ok(QueryOperation::Find { filter })
+            }
+            other => Err(format!(
+                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate.",
+            )),
         }
-
-        bson::to_document(&value).map_err(|error| format!("BSON conversion error: {error}"))
     }
 
-    fn extract_find_argument(text: &str) -> Option<String> {
-        const MARKER: &str = ".find(";
-        let start = text.find(MARKER)? + MARKER.len();
-        let mut depth = 0u32;
-        let mut end_index = None;
+    fn strip_collection_prefix(text: &str) -> Result<&str, String> {
+        if let Some(rest) = text.strip_prefix("db.getCollection(") {
+            let rest = rest.trim_start();
+            let (_, after_literal) = Self::parse_collection_literal(rest)?;
+            let after_literal = after_literal.trim_start();
+            let after_paren = after_literal.strip_prefix(')').ok_or_else(|| {
+                String::from("После имени коллекции в getCollection ожидается ')'.")
+            })?;
+            let after_paren = after_paren.trim_start();
+            if !after_paren.starts_with('.') {
+                return Err(String::from("После указания коллекции ожидается вызов метода."));
+            }
+            Ok(after_paren)
+        } else if let Some(rest) = text.strip_prefix("db.") {
+            if rest.is_empty() {
+                return Err(String::from("После db. ожидается имя коллекции."));
+            }
 
-        for (offset, ch) in text[start..].char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    if depth == 0 {
-                        end_index = Some(start + offset);
-                        break;
-                    }
-                    depth -= 1;
+            let bytes = rest.as_bytes();
+            let mut index = 0usize;
+            while index < bytes.len() {
+                let byte = bytes[index];
+                if (byte as char).is_ascii_alphanumeric() || byte == b'_' {
+                    index += 1;
+                    continue;
                 }
-                _ => {}
+
+                if byte == b'.' {
+                    if index == 0 {
+                        return Err(String::from("После db. ожидается имя коллекции."));
+                    }
+                    return Ok(&rest[index..]);
+                }
+
+                return Err(format!("Недопустимый символ '{}' в имени коллекции.", byte as char));
+            }
+
+            Err(String::from("После указания коллекции ожидается вызов метода."))
+        } else {
+            Err(String::from(
+                "Запрос должен начинаться с db.<collection> или db.getCollection('<collection>').",
+            ))
+        }
+    }
+
+    fn parse_collection_literal(text: &str) -> Result<(&str, &str), String> {
+        if text.trim().is_empty() {
+            return Err(String::from("Имя коллекции в getCollection не задано."));
+        }
+
+        let trimmed = text.trim_start();
+        if trimmed.is_empty() {
+            return Err(String::from("Имя коллекции в getCollection не задано."));
+        }
+
+        let bytes = trimmed.as_bytes();
+        let quote = bytes[0];
+        if quote != b'\'' && quote != b'"' {
+            return Err(String::from(
+                "Имя коллекции в getCollection должно быть строкой в кавычках.",
+            ));
+        }
+
+        let mut index = 1usize;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\\' => index += 2,
+                ch if ch == quote => {
+                    let name = &trimmed[1..index];
+                    let rest = &trimmed[index + 1..];
+                    return Ok((name, rest));
+                }
+                _ => index += 1,
             }
         }
 
-        let end = end_index?;
-        Some(text[start..end].to_string())
+        Err(String::from("Строка коллекции в getCollection не закрыта."))
+    }
+
+    fn extract_primary_method(text: &str) -> Result<(String, String, &str), String> {
+        if !text.starts_with('.') {
+            return Err(String::from("После указания коллекции ожидается вызов метода."));
+        }
+
+        let rest = &text[1..];
+        if rest.is_empty() {
+            return Err(String::from("После точки ожидается имя метода."));
+        }
+
+        let bytes = rest.as_bytes();
+        let mut index = 0usize;
+        while index < bytes.len() {
+            let byte = bytes[index];
+            if (byte as char).is_ascii_alphanumeric() || byte == b'_' {
+                index += 1;
+                continue;
+            }
+
+            if byte == b'(' {
+                if index == 0 {
+                    return Err(String::from("После точки ожидается имя метода."));
+                }
+
+                let method_name = &rest[..index];
+                let mut depth = 0i32;
+                let mut cursor = index + 1;
+                while cursor < bytes.len() {
+                    match bytes[cursor] {
+                        b'(' => depth += 1,
+                        b')' => {
+                            if depth == 0 {
+                                let args = &rest[index + 1..cursor];
+                                let remainder = &rest[cursor + 1..];
+                                return Ok((method_name.to_string(), args.to_string(), remainder));
+                            }
+                            depth -= 1;
+                        }
+                        _ => {}
+                    }
+                    cursor += 1;
+                }
+
+                return Err(String::from("Скобка метода не закрыта."));
+            }
+
+            if byte == b'.' {
+                return Err(String::from(
+                    "Поддерживается только один вызов метода после указания коллекции.",
+                ));
+            }
+
+            return Err(format!("Недопустимый символ '{}' в имени метода.", byte as char));
+        }
+
+        Err(String::from("Ожидается '(' после названия метода."))
+    }
+
+    fn parse_count_documents_options(
+        source: &str,
+    ) -> Result<Option<CountDocumentsParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции countDocuments должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = CountDocumentsParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "limit" => {
+                    let limit = Self::parse_non_negative_u64(value, "limit")?;
+                    options.limit = Some(limit);
+                }
+                "skip" => {
+                    let skip = Self::parse_non_negative_u64(value, "skip")?;
+                    options.skip = Some(skip);
+                }
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "hint" => {
+                    let hint = match value {
+                        Value::String(name) => Hint::Name(name.clone()),
+                        Value::Object(map) => {
+                            let doc = bson::to_document(map)
+                                .map_err(|error| format!("BSON conversion error: {error}"))?;
+                            Hint::Keys(doc)
+                        }
+                        _ => {
+                            return Err(String::from(
+                                "Параметр 'hint' должен быть строкой или JSON-объектом.",
+                            ));
+                        }
+                    };
+                    options.hint = Some(hint);
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options countDocuments. Доступны: limit, skip, hint, maxTimeMS.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_estimated_count_options(
+        source: &str,
+    ) -> Result<Option<EstimatedDocumentCountParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value.as_object().ok_or_else(|| {
+            String::from("Опции estimatedDocumentCount должны быть JSON-объектом.")
+        })?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = EstimatedDocumentCountParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options estimatedDocumentCount. Доступен только maxTimeMS.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_non_negative_u64(value: &Value, field: &str) -> Result<u64, String> {
+        match value {
+            Value::Number(number) => number.as_u64().ok_or_else(|| {
+                format!("Параметр '{field}' должен быть неотрицательным целым числом.",)
+            }),
+            _ => Err(format!("Параметр '{field}' должен быть неотрицательным целым числом.",)),
+        }
+    }
+
+    fn split_arguments(args: &str) -> Vec<String> {
+        let mut result = Vec::new();
+        let mut current = String::new();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape = false;
+
+        for ch in args.chars() {
+            if in_string {
+                current.push(ch);
+                if escape {
+                    escape = false;
+                } else if ch == '\\' {
+                    escape = true;
+                } else if ch == '"' {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            match ch {
+                '"' => {
+                    in_string = true;
+                    current.push(ch);
+                }
+                '{' | '[' => {
+                    depth += 1;
+                    current.push(ch);
+                }
+                '}' | ']' => {
+                    depth -= 1;
+                    current.push(ch);
+                }
+                ',' if depth == 0 => {
+                    result.push(current.trim().to_string());
+                    current.clear();
+                }
+                _ => current.push(ch),
+            }
+        }
+
+        if !current.trim().is_empty() {
+            result.push(current.trim().to_string());
+        }
+
+        result
+    }
+
+    fn parse_json_object(source: &str) -> Result<Document, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object =
+            value.as_object().ok_or_else(|| String::from("Аргумент должен быть JSON-объектом"))?;
+        bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
     }
 
     fn sanitize_numeric<S: AsRef<str>>(value: S) -> String {
-        let filtered: String = value
-            .as_ref()
-            .chars()
-            .filter(|ch| ch.is_ascii_digit())
-            .collect();
+        let filtered: String = value.as_ref().chars().filter(|ch| ch.is_ascii_digit()).collect();
         let trimmed = filtered.trim_start_matches('0');
         if trimmed.is_empty() { String::from("0") } else { trimmed.to_string() }
     }
@@ -896,8 +1533,13 @@ impl CollectionTab {
         }
     }
 
-    fn set_tree_from_bson(&mut self, values: Vec<Bson>) {
-        self.bson_tree = BsonTree::from_values(&values);
+    fn set_query_result(&mut self, result: QueryResult) {
+        self.bson_tree = match result {
+            QueryResult::Documents(values) => BsonTree::from_values(&values),
+            QueryResult::SingleDocument { document } => BsonTree::from_document(document),
+            QueryResult::Distinct { field, values } => BsonTree::from_distinct(field, values),
+            QueryResult::Count { value } => BsonTree::from_count(value),
+        };
     }
 
     fn set_tree_error(&mut self, error: String) {
@@ -913,15 +1555,23 @@ impl Default for App {
             .expect("failed to split pane grid");
         panes.resize(split, 0.25);
 
+        let connections = load_connections_from_disk().unwrap_or_else(|error| {
+            eprintln!("Failed to load connections: {error}");
+            Vec::new()
+        });
+
         Self {
             panes,
             tabs: Vec::new(),
             active_tab: None,
             next_tab_id: 1,
-            last_tool: None,
             clients: Vec::new(),
             next_client_id: 1,
             last_collection_click: None,
+            connections,
+            mode: AppMode::Main,
+            connections_window: None,
+            connection_form: None,
         }
     }
 }
@@ -934,10 +1584,17 @@ impl App {
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::MenuItemSelected(menu, entry) => {
-                println!("Menu '{menu:?}' entry '{entry:?}' clicked");
+                match entry {
+                    MenuEntry::Action(label) => {
+                        if menu == TopMenu::File && label == "Соединения" {
+                            self.open_connections_window();
+                        } else {
+                            println!("Menu '{menu:?}' entry '{label}' clicked");
+                        }
+                    }
+                }
                 Task::none()
             }
-            Message::ToolSelected(tool) => self.handle_tool(tool),
             Message::TabSelected(id) => {
                 if self.tabs.iter().any(|tab| tab.id == id) {
                     self.active_tab = Some(id);
@@ -953,30 +1610,6 @@ impl App {
                             .get(position.saturating_sub(1))
                             .or_else(|| self.tabs.get(position))
                             .map(|tab| tab.id);
-                    }
-                }
-                Task::none()
-            }
-            Message::TextTabChanged(id, value) => {
-                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                    if let TabKind::TextEditor { text } = &mut tab.content {
-                        *text = value;
-                    }
-                }
-                Task::none()
-            }
-            Message::FormTextChanged(id, value) => {
-                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                    if let TabKind::Form { input, .. } = &mut tab.content {
-                        *input = value;
-                    }
-                }
-                Task::none()
-            }
-            Message::FormButtonPressed(id) => {
-                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == id) {
-                    if let TabKind::Form { clicks, .. } = &mut tab.content {
-                        *clicks += 1;
                     }
                 }
                 Task::none()
@@ -1097,64 +1730,259 @@ impl App {
             }
             Message::CollectionEditorAction { tab_id, action } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    if let TabKind::Collection(collection) = &mut tab.content {
-                        collection.editor.perform(action);
-                    }
+                    tab.collection.editor.perform(action);
                 }
                 Task::none()
             }
-            Message::CollectionSend(tab_id) => {
-                self.collection_query_task(tab_id)
-            }
+            Message::CollectionSend(tab_id) => self.collection_query_task(tab_id),
             Message::CollectionSkipChanged { tab_id, value } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    if let TabKind::Collection(collection) = &mut tab.content {
-                        collection.update_skip(value);
-                    }
+                    tab.collection.update_skip(value);
                 }
                 Task::none()
             }
             Message::CollectionLimitChanged { tab_id, value } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    if let TabKind::Collection(collection) = &mut tab.content {
-                        collection.update_limit(value);
-                    }
+                    tab.collection.update_limit(value);
                 }
                 Task::none()
             }
             Message::CollectionSkipPrev(tab_id) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    if let TabKind::Collection(collection) = &mut tab.content {
-                        collection.decrement_skip_by_limit();
-                    }
+                    tab.collection.decrement_skip_by_limit();
                 }
                 self.collection_query_task(tab_id)
             }
             Message::CollectionSkipNext(tab_id) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    if let TabKind::Collection(collection) = &mut tab.content {
-                        collection.increment_skip_by_limit();
-                    }
+                    tab.collection.increment_skip_by_limit();
                 }
                 self.collection_query_task(tab_id)
             }
             Message::CollectionQueryCompleted { tab_id, result, duration } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    if let TabKind::Collection(collection) = &mut tab.content {
-                        collection.last_query_duration = Some(duration);
-                        match result {
-                            Ok(values) => collection.set_tree_from_bson(values),
-                            Err(error) => collection.set_tree_error(error),
+                    let collection = &mut tab.collection;
+                    collection.last_query_duration = Some(duration);
+                    match result {
+                        Ok(query_result) => collection.set_query_result(query_result),
+                        Err(error) => collection.set_tree_error(error),
+                    }
+                }
+                Task::none()
+            }
+            Message::ConnectionsCancel => {
+                self.close_connections_window();
+                Task::none()
+            }
+            Message::ConnectionsSelect(index) => {
+                if let Some(state) = self.connections_window.as_mut() {
+                    if index < self.connections.len() {
+                        state.selected = Some(index);
+                        state.confirm_delete = false;
+                        state.last_click = Some(ListClick { index, at: Instant::now() });
+                    }
+                }
+                Task::none()
+            }
+            Message::ConnectionsQuickConnect(index) => {
+                if let Some(state) = self.connections_window.as_mut() {
+                    state.selected = Some(index);
+                }
+                if let Some(entry) = self.connections.get(index).cloned() {
+                    self.close_connections_window();
+                    return self.add_connection_from_entry(entry);
+                }
+                Task::none()
+            }
+            Message::ConnectionsCreate => {
+                self.open_connection_form(ConnectionFormMode::Create);
+                Task::none()
+            }
+            Message::ConnectionsEdit => {
+                if let Some(state) = &self.connections_window {
+                    if let Some(index) = state.selected {
+                        if index < self.connections.len() {
+                            self.open_connection_form(ConnectionFormMode::Edit(index));
                         }
                     }
                 }
                 Task::none()
             }
+            Message::ConnectionsDelete => {
+                if let Some(state) = self.connections_window.as_mut() {
+                    if state.selected.is_some() {
+                        state.confirm_delete = true;
+                    }
+                }
+                Task::none()
+            }
+            Message::ConnectionsDeleteCancelled => {
+                if let Some(state) = self.connections_window.as_mut() {
+                    state.confirm_delete = false;
+                }
+                Task::none()
+            }
+            Message::ConnectionsDeleteConfirmed => {
+                if let Some(state) = self.connections_window.as_mut() {
+                    if let Some(index) = state.selected {
+                        if index < self.connections.len() {
+                            self.connections.remove(index);
+                            match save_connections_to_disk(&self.connections) {
+                                Ok(()) => state.feedback = Some(String::from("Удалено")),
+                                Err(error) => {
+                                    state.feedback = Some(format!("Ошибка сохранения: {error}"));
+                                }
+                            }
+                            if self.connections.is_empty() {
+                                state.selected = None;
+                            } else if index >= self.connections.len() {
+                                state.selected = Some(self.connections.len() - 1);
+                            }
+                        }
+                    }
+                    state.confirm_delete = false;
+                }
+                Task::none()
+            }
+            Message::ConnectionsConnect => {
+                if let Some(state) = &self.connections_window {
+                    if let Some(index) = state.selected {
+                        if let Some(entry) = self.connections.get(index) {
+                            let task = self.add_connection_from_entry(entry.clone());
+                            self.close_connections_window();
+                            return task;
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ConnectionFormTabChanged(tab) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.active_tab = tab;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormNameChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.name = value;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormHostChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.host = value;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormPortChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    let sanitized: String =
+                        value.chars().filter(|ch| ch.is_ascii_digit()).take(5).collect();
+                    form.port = sanitized;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormIncludeAction(action) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.include_action(action);
+                }
+                Task::none()
+            }
+            Message::ConnectionFormExcludeAction(action) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.exclude_action(action);
+                }
+                Task::none()
+            }
+            Message::ConnectionFormTest => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    match form.validate() {
+                        Ok(entry) => {
+                            form.validation_error = None;
+                            form.testing = true;
+                            form.test_feedback = None;
+                            let uri = entry.uri();
+                            return Task::perform(
+                                async move {
+                                    Client::with_uri_str(&uri)
+                                        .map(|_| ())
+                                        .map_err(|err| err.to_string())
+                                },
+                                Message::ConnectionFormTestResult,
+                            );
+                        }
+                        Err(error) => {
+                            form.validation_error = Some(error);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ConnectionFormTestResult(result) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.testing = false;
+                    form.test_feedback = Some(match result {
+                        Ok(()) => TestFeedback::Success(String::from("Соединение установлено")),
+                        Err(error) => TestFeedback::Failure(error),
+                    });
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSave => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    match form.validate() {
+                        Ok(entry) => {
+                            let result = match form.mode {
+                                ConnectionFormMode::Create => {
+                                    self.connections.push(entry);
+                                    Ok(self.connections.len() - 1)
+                                }
+                                ConnectionFormMode::Edit(index) => {
+                                    if let Some(slot) = self.connections.get_mut(index) {
+                                        *slot = entry;
+                                        Ok(index)
+                                    } else {
+                                        Err(String::from("Выбранное соединение не найдено"))
+                                    }
+                                }
+                            };
+
+                            match result {
+                                Ok(selected_index) => {
+                                    if let Err(error) = save_connections_to_disk(&self.connections)
+                                    {
+                                        if let Some(window) = self.connections_window.as_mut() {
+                                            window.feedback =
+                                                Some(format!("Ошибка сохранения: {error}"));
+                                        }
+                                    }
+
+                                    self.open_connections_window();
+                                    if let Some(window) = self.connections_window.as_mut() {
+                                        window.selected = Some(selected_index);
+                                        window.feedback = Some(String::from("Сохранено"));
+                                    }
+                                }
+                                Err(error) => {
+                                    form.validation_error = Some(error);
+                                    return Task::none();
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            form.validation_error = Some(error);
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::ConnectionFormCancel => {
+                self.open_connections_window();
+                Task::none()
+            }
             Message::CollectionTreeToggle { tab_id, node_id } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    if let TabKind::Collection(collection) = &mut tab.content {
-                        collection.toggle_node(node_id);
-                    }
+                    tab.collection.toggle_node(node_id);
                 }
                 Task::none()
             }
@@ -1165,9 +1993,8 @@ impl App {
         Subscription::none()
     }
 
-    fn view(&self) -> Element<Message> {
+    fn main_view(&self) -> Element<Message> {
         let menu_bar = self.build_menu_bar();
-        let toolbar = self.build_toolbar();
 
         let content_grid =
             pane_grid::PaneGrid::new(&self.panes, |_, pane_state, _| match pane_state {
@@ -1178,12 +2005,367 @@ impl App {
             .spacing(8)
             .height(Length::Fill);
 
-        Column::new()
-            .push(menu_bar)
-            .push(toolbar)
-            .push(content_grid)
-            .spacing(0)
+        Column::new().push(menu_bar).push(content_grid).spacing(0).height(Length::Fill).into()
+    }
+
+    fn view(&self) -> Element<Message> {
+        match self.mode {
+            AppMode::Main => self.main_view(),
+            AppMode::Connections => {
+                if let Some(state) = &self.connections_window {
+                    self.connections_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
+            AppMode::ConnectionForm => {
+                if let Some(state) = &self.connection_form {
+                    self.connection_form_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
+        }
+    }
+
+    fn connections_view(&self, state: &ConnectionsWindowState) -> Element<Message> {
+        let border_color = Color::from_rgb8(0xba, 0xc5, 0xd6);
+        let selected_bg = Color::from_rgb8(0xe9, 0xf0, 0xfa);
+        let normal_bg = Color::from_rgb8(0xfc, 0xfd, 0xfe);
+        let accent_bar = Color::from_rgb8(0x41, 0x82, 0xf2);
+
+        let mut entries = Column::new().spacing(4).width(Length::Fill);
+
+        if self.connections.is_empty() {
+            entries = entries.push(
+                Container::new(Text::new("Сохранённых соединений нет").size(16))
+                    .width(Length::Fill)
+                    .padding([12, 8]),
+            );
+        } else {
+            for (index, entry) in self.connections.iter().enumerate() {
+                let is_selected = state.selected == Some(index);
+                let icon = Container::new(
+                    Image::new(shared_icon_handle(&ICON_NETWORK_HANDLE, ICON_NETWORK_BYTES))
+                        .width(Length::Fixed(28.0))
+                        .height(Length::Fixed(28.0)),
+                )
+                .width(Length::Fixed(44.0))
+                .height(Length::Fixed(44.0))
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center);
+
+                let name_text = Text::new(entry.name.clone())
+                    .size(18)
+                    .color(Color::from_rgb8(0x17, 0x1a, 0x20));
+                let details_text = Text::new(format!("{}:{}", entry.host, entry.port))
+                    .size(13)
+                    .color(Color::from_rgb8(0x2f, 0x3b, 0x4b));
+
+                let labels = Column::new().spacing(4).push(name_text).push(details_text);
+
+                let filters_text = if entry.include_filter.trim().is_empty()
+                    && entry.exclude_filter.trim().is_empty()
+                {
+                    Text::new("Фильтры не заданы")
+                        .size(12)
+                        .color(Color::from_rgb8(0x8a, 0x95, 0xa5))
+                } else {
+                    Text::new("Настроены фильтры коллекций")
+                        .size(12)
+                        .color(Color::from_rgb8(0x36, 0x71, 0xc9))
+                };
+
+                let right_info =
+                    Column::new().spacing(4).align_x(Horizontal::Right).push(filters_text);
+
+                let row = Row::new()
+                    .spacing(16)
+                    .align_y(Vertical::Center)
+                    .push(icon)
+                    .push(labels)
+                    .push(Space::with_width(Length::Fill))
+                    .push(right_info);
+
+                let container =
+                    Container::new(row).padding([8, 12]).width(Length::Fill).style(move |_| {
+                        container::Style {
+                            background: Some(
+                                if is_selected { selected_bg } else { normal_bg }.into(),
+                            ),
+                            border: border::rounded(10).width(1).color(border_color),
+                            shadow: Shadow {
+                                color: Color::from_rgba8(0, 0, 0, 0.08),
+                                offset: iced::Vector::new(0.0, 1.0),
+                                blur_radius: 6.0,
+                            },
+                            ..Default::default()
+                        }
+                    });
+
+                let accent = Container::new(Space::with_width(Length::Fixed(4.0)))
+                    .height(Length::Fixed(44.0))
+                    .style(move |_| container::Style {
+                        background: Some(
+                            if is_selected { accent_bar } else { Color::TRANSPARENT }.into(),
+                        ),
+                        ..Default::default()
+                    });
+
+                let mut button = Button::new(
+                    Row::new().spacing(0).width(Length::Fill).push(accent).push(container),
+                )
+                .width(Length::Fill)
+                .on_press(Message::ConnectionsSelect(index));
+
+                if state.last_click.map_or(false, |last| {
+                    last.index == index && last.at.elapsed() <= DOUBLE_CLICK_INTERVAL
+                }) {
+                    button = button.on_press(Message::ConnectionsQuickConnect(index));
+                }
+
+                entries = entries.push(button);
+            }
+        }
+
+        let list = Scrollable::new(entries).width(Length::Fill).height(Length::Fixed(280.0));
+
+        let mut left_controls = Row::new().spacing(8).push(
+            Button::new(Text::new("Создать")).padding([6, 16]).on_press(Message::ConnectionsCreate),
+        );
+
+        let mut edit_button = Button::new(Text::new("Редактировать")).padding([6, 16]);
+        if state.selected.is_some() {
+            edit_button = edit_button.on_press(Message::ConnectionsEdit);
+        }
+        left_controls = left_controls.push(edit_button);
+
+        let mut delete_button = Button::new(Text::new("Удалить")).padding([6, 16]);
+        if state.selected.is_some() {
+            delete_button = delete_button.on_press(Message::ConnectionsDelete);
+        }
+        left_controls = left_controls.push(delete_button);
+
+        let mut connect_button = Button::new(Text::new("Соединить")).padding([6, 16]);
+        if state.selected.is_some() {
+            connect_button = connect_button.on_press(Message::ConnectionsConnect);
+        }
+
+        let right_controls = Row::new()
+            .spacing(8)
+            .push(
+                Button::new(Text::new("Отменить"))
+                    .padding([6, 16])
+                    .on_press(Message::ConnectionsCancel),
+            )
+            .push(connect_button);
+
+        let mut content =
+            Column::new().spacing(16).push(Text::new("Соединения").size(24)).push(list);
+
+        if let Some(feedback) = &state.feedback {
+            let color = if feedback.starts_with("Ошибка") {
+                Color::from_rgb8(0xd9, 0x53, 0x4f)
+            } else {
+                Color::from_rgb8(0x1e, 0x88, 0x3a)
+            };
+            content = content.push(Text::new(feedback.clone()).size(14).color(color));
+        }
+
+        if state.confirm_delete {
+            let name = state
+                .selected
+                .and_then(|index| self.connections.get(index))
+                .map(|entry| entry.name.clone())
+                .unwrap_or_else(|| String::from("соединение"));
+            let confirm_row = Row::new()
+                .spacing(12)
+                .align_y(Vertical::Center)
+                .push(Text::new(format!("Удалить \"{}\"?", name)).size(14))
+                .push(
+                    Button::new(Text::new("Да"))
+                        .padding([4, 12])
+                        .on_press(Message::ConnectionsDeleteConfirmed),
+                )
+                .push(
+                    Button::new(Text::new("Нет"))
+                        .padding([4, 12])
+                        .on_press(Message::ConnectionsDeleteCancelled),
+                );
+            content = content.push(confirm_row);
+        }
+
+        let controls_row = Row::new()
+            .spacing(16)
+            .align_y(Vertical::Center)
+            .push(left_controls)
+            .push(Space::with_width(Length::Fill))
+            .push(right_controls);
+
+        content = content.push(controls_row);
+
+        let card =
+            Container::new(content).padding(20).width(Length::Fixed(640.0)).style(Self::pane_style);
+
+        Container::new(card)
+            .width(Length::Fill)
             .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .into()
+    }
+
+    fn connection_form_view<'a>(&'a self, state: &'a ConnectionFormState) -> Element<'a, Message> {
+        let title = match state.mode {
+            ConnectionFormMode::Create => "Новое соединение",
+            ConnectionFormMode::Edit(_) => "Редактирование соединения",
+        };
+
+        let bg_active = Color::from_rgb8(0xd6, 0xe8, 0xff);
+        let bg_inactive = Color::from_rgb8(0xf6, 0xf7, 0xfa);
+        let border_color = Color::from_rgb8(0xc2, 0xc8, 0xd3);
+
+        let general_active = state.active_tab == ConnectionFormTab::General;
+        let mut general_button =
+            Button::new(Text::new("Общее").size(14)).padding([6, 16]).style(move |_, _| {
+                button::Style {
+                    background: Some((if general_active { bg_active } else { bg_inactive }).into()),
+                    text_color: Color::BLACK,
+                    border: border::rounded(6).width(1).color(border_color),
+                    shadow: Shadow::default(),
+                }
+            });
+        if !general_active {
+            general_button = general_button
+                .on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::General));
+        }
+
+        let filter_active = state.active_tab == ConnectionFormTab::Filter;
+        let mut filter_button = Button::new(Text::new("Фильтр коллекций").size(14))
+            .padding([6, 16])
+            .style(move |_, _| button::Style {
+                background: Some((if filter_active { bg_active } else { bg_inactive }).into()),
+                text_color: Color::BLACK,
+                border: border::rounded(6).width(1).color(border_color),
+                shadow: Shadow::default(),
+            });
+        if !filter_active {
+            filter_button = filter_button
+                .on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::Filter));
+        }
+
+        let tabs_row = Row::new().spacing(8).push(general_button).push(filter_button);
+
+        let tab_content: Element<_> = match state.active_tab {
+            ConnectionFormTab::General => {
+                let name_input = text_input("Название", &state.name)
+                    .on_input(Message::ConnectionFormNameChanged)
+                    .padding([6, 12])
+                    .width(Length::Fill);
+
+                let host_input = text_input("Адрес/Хост/IP", &state.host)
+                    .on_input(Message::ConnectionFormHostChanged)
+                    .padding([6, 12])
+                    .width(Length::Fill);
+
+                let port_input = text_input("Порт", &state.port)
+                    .on_input(Message::ConnectionFormPortChanged)
+                    .padding([6, 12])
+                    .align_x(Horizontal::Center)
+                    .width(Length::Fixed(120.0));
+
+                Column::new()
+                    .spacing(12)
+                    .push(Text::new("Название").size(14))
+                    .push(name_input)
+                    .push(Text::new("Адрес/Хост/IP").size(14))
+                    .push(host_input)
+                    .push(Text::new("Порт").size(14))
+                    .push(port_input)
+                    .into()
+            }
+            ConnectionFormTab::Filter => {
+                let include_editor = text_editor::TextEditor::new(&state.include_editor)
+                    .on_action(Message::ConnectionFormIncludeAction)
+                    .height(Length::Fixed(130.0));
+
+                let exclude_editor = text_editor::TextEditor::new(&state.exclude_editor)
+                    .on_action(Message::ConnectionFormExcludeAction)
+                    .height(Length::Fixed(130.0));
+
+                Column::new()
+                    .spacing(12)
+                    .push(Text::new("Включить").size(14))
+                    .push(include_editor)
+                    .push(Text::new("Исключить").size(14))
+                    .push(exclude_editor)
+                    .into()
+            }
+        };
+
+        let mut content = Column::new()
+            .spacing(16)
+            .push(Text::new(title).size(24))
+            .push(tabs_row)
+            .push(tab_content);
+
+        if let Some(error) = &state.validation_error {
+            content = content
+                .push(Text::new(error.clone()).size(14).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+        }
+
+        if let Some(feedback) = &state.test_feedback {
+            let color = if feedback.is_success() {
+                Color::from_rgb8(0x1e, 0x88, 0x3a)
+            } else {
+                Color::from_rgb8(0xd9, 0x53, 0x4f)
+            };
+            content = content.push(Text::new(feedback.message()).size(14).color(color));
+        }
+
+        if state.testing {
+            content = content.push(
+                Text::new("Тестирование...").size(14).color(Color::from_rgb8(0x1e, 0x88, 0x3a)),
+            );
+        }
+
+        let mut test_button = Button::new(Text::new("Тестировать")).padding([6, 16]);
+        if !state.testing {
+            test_button = test_button.on_press(Message::ConnectionFormTest);
+        }
+
+        let left_controls = Row::new().push(test_button);
+
+        let right_controls = Row::new()
+            .spacing(8)
+            .push(
+                Button::new(Text::new("Отменить"))
+                    .padding([6, 16])
+                    .on_press(Message::ConnectionFormCancel),
+            )
+            .push(
+                Button::new(Text::new("Сохранить"))
+                    .padding([6, 16])
+                    .on_press(Message::ConnectionFormSave),
+            );
+
+        let controls_row = Row::new()
+            .spacing(16)
+            .align_y(Vertical::Center)
+            .push(left_controls)
+            .push(Space::with_width(Length::Fill))
+            .push(right_controls);
+
+        content = content.push(controls_row);
+
+        let card =
+            Container::new(content).padding(16).width(Length::Fixed(560.0)).style(Self::pane_style);
+
+        Container::new(card)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
             .into()
     }
 
@@ -1361,9 +2543,7 @@ impl App {
                 .style(Self::pane_style)
                 .into()
         } else {
-            let active_id = self
-                .active_tab
-                .or_else(|| self.tabs.first().map(|tab| tab.id));
+            let active_id = self.active_tab.or_else(|| self.tabs.first().map(|tab| tab.id));
 
             let mut tabs_row = Row::new().spacing(8).align_y(Vertical::Center);
 
@@ -1388,24 +2568,22 @@ impl App {
                     .push(title_button)
                     .push(close_button);
 
-                let tab_container = Container::new(tab_inner)
-                    .padding([4, 8])
-                    .style(move |_| {
-                        if is_active {
-                            container::Style {
-                                background: Some(active_bg.into()),
-                                text_color: Some(Color::BLACK),
-                                border: border::rounded(6).width(1).color(border_color),
-                                ..Default::default()
-                            }
-                        } else {
-                            container::Style {
-                                background: Some(inactive_bg.into()),
-                                border: border::rounded(6).width(1).color(border_color),
-                                ..Default::default()
-                            }
+                let tab_container = Container::new(tab_inner).padding([4, 8]).style(move |_| {
+                    if is_active {
+                        container::Style {
+                            background: Some(active_bg.into()),
+                            text_color: Some(Color::BLACK),
+                            border: border::rounded(6).width(1).color(border_color),
+                            ..Default::default()
                         }
-                    });
+                    } else {
+                        container::Style {
+                            background: Some(inactive_bg.into()),
+                            border: border::rounded(6).width(1).color(border_color),
+                            ..Default::default()
+                        }
+                    }
+                });
 
                 tabs_row = tabs_row.push(tab_container);
             }
@@ -1417,9 +2595,7 @@ impl App {
             .height(Length::Shrink)
             .width(Length::Fill);
 
-            let header = Container::new(header_scroll)
-                .width(Length::Fill)
-                .padding([0, 4]);
+            let header = Container::new(header_scroll).width(Length::Fill).padding([0, 4]);
 
             let content = active_id
                 .and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
@@ -1448,29 +2624,30 @@ impl App {
     }
 
     fn build_menu_bar(&self) -> MenuBar<'_, Message, Theme, Renderer> {
-        MenuBar::new(vec![
-            self.menu_root(
-                TopMenu::File,
-                &[MenuEntry::Action("New"), MenuEntry::Action("Open"), MenuEntry::Action("Save")],
-            ),
-            self.menu_root(
-                TopMenu::View,
-                &[MenuEntry::Action("Explorer"), MenuEntry::Action("Refresh")],
-            ),
-            self.menu_root(
-                TopMenu::Options,
-                &[MenuEntry::Action("Preferences"), MenuEntry::Action("Settings")],
-            ),
-            self.menu_root(
-                TopMenu::Windows,
-                &[MenuEntry::Action("Cascade"), MenuEntry::Action("Tile")],
-            ),
-            self.menu_root(
-                TopMenu::Help,
-                &[MenuEntry::Action("Documentation"), MenuEntry::Action("About")],
-            ),
-        ])
-        .width(Length::Fill)
+        let connections_button = button(text("Соединения").size(16))
+            .padding([6, 12])
+            .on_press(Message::MenuItemSelected(TopMenu::File, MenuEntry::Action("Соединения")));
+
+        let mut roots = Vec::new();
+        roots.push(MenuItemWidget::new(connections_button));
+        roots.push(self.menu_root(
+            TopMenu::View,
+            &[MenuEntry::Action("Explorer"), MenuEntry::Action("Refresh")],
+        ));
+        roots.push(self.menu_root(
+            TopMenu::Options,
+            &[MenuEntry::Action("Preferences"), MenuEntry::Action("Settings")],
+        ));
+        roots.push(self.menu_root(
+            TopMenu::Windows,
+            &[MenuEntry::Action("Cascade"), MenuEntry::Action("Tile")],
+        ));
+        roots.push(self.menu_root(
+            TopMenu::Help,
+            &[MenuEntry::Action("Documentation"), MenuEntry::Action("About")],
+        ));
+
+        MenuBar::new(roots).width(Length::Fill)
     }
 
     fn menu_root(
@@ -1500,27 +2677,6 @@ impl App {
         MenuItemWidget::with_menu(root_button, menu_widget)
     }
 
-    fn build_toolbar(&self) -> Row<'_, Message> {
-        Row::new()
-            .spacing(8)
-            .padding([6, 12])
-            .align_y(Vertical::Center)
-            .width(Length::Fill)
-            .push(self.toolbar_button(Tool::Tool1, "Tool1"))
-            .push(self.toolbar_button(Tool::Tool2, "Tool2"))
-            .push(self.toolbar_button(Tool::Tool3, "Tool3"))
-    }
-
-    fn toolbar_button(&self, tool: Tool, label: &str) -> Element<Message> {
-        let mut label_text = label.to_owned();
-
-        if Some(tool) == self.last_tool {
-            label_text.push_str(" *");
-        }
-
-        Button::new(text(label_text)).on_press(Message::ToolSelected(tool)).padding([6, 16]).into()
-    }
-
     fn pane_style(theme: &Theme) -> iced::widget::container::Style {
         let palette = theme.extended_palette();
 
@@ -1531,58 +2687,12 @@ impl App {
         }
     }
 
-    fn handle_tool(&mut self, tool: Tool) -> Task<Message> {
-        self.last_tool = Some(tool);
-        match tool {
-            Tool::Tool1 => self.add_default_connection(),
-            Tool::Tool2 => {
-                self.add_text_tab();
-                Task::none()
-            }
-            Tool::Tool3 => {
-                self.add_form_tab();
-                Task::none()
-            }
-        }
-    }
-
-    fn add_default_connection(&mut self) -> Task<Message> {
-        let connection = OMDBConnection::from_uri(DEFAULT_URI);
-        let client_id = self.next_client_id;
-        self.next_client_id += 1;
-
-        let mut client = OMDBClient::new(client_id, connection.clone());
-        client.name = format!("Соединение #{client_id}");
-        self.clients.push(client);
-
-        Task::perform(async move { connect_and_discover(connection) }, move |result| {
-            Message::ConnectionCompleted { client_id, result }
-        })
-    }
-
-    fn add_text_tab(&mut self) {
-        let id = self.next_tab_id;
-        self.next_tab_id += 1;
-        self.tabs.push(TabData::new_text(id));
-        self.active_tab = Some(id);
-    }
-
-    fn add_form_tab(&mut self) {
-        let id = self.next_tab_id;
-        self.next_tab_id += 1;
-        self.tabs.push(TabData::new_form(id));
-        self.active_tab = Some(id);
-    }
-
     fn open_collection_tab(&mut self, client_id: ClientId, db_name: String, collection: String) {
         if let Some(existing) = self.tabs.iter().find(|tab| {
-            matches!(
-                &tab.content,
-                TabKind::Collection(existing)
-                    if existing.client_id == client_id
-                        && existing.db_name == db_name
-                        && existing.collection == collection
-            )
+            let existing = &tab.collection;
+            existing.client_id == client_id
+                && existing.db_name == db_name
+                && existing.collection == collection
         }) {
             self.active_tab = Some(existing.id);
             return;
@@ -1630,33 +2740,32 @@ impl App {
     }
 
     fn collection_query_task(&mut self, tab_id: TabId) -> Task<Message> {
-        let mut request: Option<(ClientId, String, String, Document, u64, u64)> = None;
+        let mut request: Option<(ClientId, String, String, QueryOperation, u64, u64)> = None;
 
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            if let TabKind::Collection(collection) = &mut tab.content {
-                let query_text = collection.editor.text().to_string();
-                match collection.parse_filter(&query_text) {
-                    Ok(filter) => {
-                        let skip = collection.skip_value();
-                        let limit = collection.limit_value();
-                        collection.last_query_duration = None;
-                        request = Some((
-                            collection.client_id,
-                            collection.db_name.clone(),
-                            collection.collection.clone(),
-                            filter,
-                            skip,
-                            limit,
-                        ));
-                    }
-                    Err(error) => {
-                        collection.set_tree_error(error);
-                    }
+            let collection = &mut tab.collection;
+            let query_text = collection.editor.text().to_string();
+            match collection.parse_query(&query_text) {
+                Ok(operation) => {
+                    let skip = collection.skip_value();
+                    let limit = collection.limit_value();
+                    collection.last_query_duration = None;
+                    request = Some((
+                        collection.client_id,
+                        collection.db_name.clone(),
+                        collection.collection.clone(),
+                        operation,
+                        skip,
+                        limit,
+                    ));
+                }
+                Err(error) => {
+                    collection.set_tree_error(error);
                 }
             }
         }
 
-        let Some((client_id, db_name, collection_name, filter, skip, limit)) = request else {
+        let Some((client_id, db_name, collection_name, operation, skip, limit)) = request else {
             return Task::none();
         };
 
@@ -1667,9 +2776,7 @@ impl App {
             .and_then(|client| client.handle.clone())
         else {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                if let TabKind::Collection(collection) = &mut tab.content {
-                    collection.set_tree_error(String::from("Нет активного соединения"));
-                }
+                tab.collection.set_tree_error(String::from("Нет активного соединения"));
             }
             return Task::none();
         };
@@ -1677,38 +2784,73 @@ impl App {
         Task::perform(
             async move {
                 let started = Instant::now();
-                let result = run_collection_query(
-                    handle,
-                    db_name,
-                    collection_name,
-                    filter,
-                    skip,
-                    limit,
-                );
+                let result =
+                    run_collection_query(handle, db_name, collection_name, operation, skip, limit);
                 (result, started.elapsed())
             },
-            move |(result, duration)| Message::CollectionQueryCompleted { tab_id, result, duration },
+            move |(result, duration)| Message::CollectionQueryCompleted {
+                tab_id,
+                result,
+                duration,
+            },
         )
+    }
+
+    fn open_connections_window(&mut self) {
+        let mut state =
+            self.connections_window.take().unwrap_or_else(|| ConnectionsWindowState::new(None));
+
+        if let Some(selected) = state.selected {
+            if self.connections.is_empty() {
+                state.selected = None;
+            } else if selected >= self.connections.len() {
+                state.selected = Some(self.connections.len() - 1);
+            }
+        } else if !self.connections.is_empty() {
+            state.selected = Some(0);
+        }
+
+        state.confirm_delete = false;
+        self.connections_window = Some(state);
+        self.connection_form = None;
+        self.mode = AppMode::Connections;
+    }
+
+    fn close_connections_window(&mut self) {
+        self.mode = AppMode::Main;
+        self.connections_window = None;
+        self.connection_form = None;
+    }
+
+    fn open_connection_form(&mut self, mode: ConnectionFormMode) {
+        if let Some(window) = self.connections_window.as_mut() {
+            window.confirm_delete = false;
+        }
+        let entry = match mode {
+            ConnectionFormMode::Create => None,
+            ConnectionFormMode::Edit(index) => self.connections.get(index),
+        };
+        self.connection_form = Some(ConnectionFormState::new(mode, entry));
+        self.mode = AppMode::ConnectionForm;
+    }
+
+    fn add_connection_from_entry(&mut self, entry: ConnectionEntry) -> Task<Message> {
+        let uri = entry.uri();
+        let connection = OMDBConnection::from_uri(&uri);
+        let client_id = self.next_client_id;
+        self.next_client_id += 1;
+
+        let mut client = OMDBClient::new(client_id, connection.clone());
+        client.name = entry.name;
+        self.clients.push(client);
+
+        Task::perform(async move { connect_and_discover(connection) }, move |result| {
+            Message::ConnectionCompleted { client_id, result }
+        })
     }
 }
 
 impl TabData {
-    fn new_text(id: TabId) -> Self {
-        Self {
-            id,
-            title: format!("Text {id}"),
-            content: TabKind::TextEditor { text: String::new() },
-        }
-    }
-
-    fn new_form(id: TabId) -> Self {
-        Self {
-            id,
-            title: format!("Form {id}"),
-            content: TabKind::Form { input: String::new(), clicks: 0 },
-        }
-    }
-
     fn new_collection(
         id: TabId,
         client_id: ClientId,
@@ -1721,63 +2863,19 @@ impl TabData {
         Self {
             id,
             title,
-            content: TabKind::Collection(CollectionTab::new(
-                client_id, client_name, db_name, collection, values,
-            )),
+            collection: CollectionTab::new(client_id, client_name, db_name, collection, values),
         }
     }
 
     fn view(&self) -> Element<Message> {
-        match &self.content {
-            TabKind::TextEditor { text: value } => {
-                let id = self.id;
-
-                let input = text_input("Введите текст", value)
-                    .on_input(move |content| Message::TextTabChanged(id, content))
-                    .padding([8, 12])
-                    .width(Length::Fill);
-
-                Container::new(input)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .padding([12, 16])
-                    .into()
-            }
-            TabKind::Form { input, clicks } => {
-                let id_for_input = self.id;
-                let id_for_button = self.id;
-
-                let action_row = Row::new()
-                    .spacing(12)
-                    .push(
-                        Button::new(text("Нажать"))
-                            .on_press(Message::FormButtonPressed(id_for_button))
-                            .padding([6, 16]),
-                    )
-                    .push(Text::new(format!("Нажатий: {clicks}")).size(16).width(Length::Fill));
-
-                let input_widget = text_input("Введите текст", input)
-                    .on_input(move |value| Message::FormTextChanged(id_for_input, value))
-                    .padding([8, 12])
-                    .width(Length::Fill);
-
-                Column::new()
-                    .spacing(16)
-                    .push(action_row)
-                    .push(input_widget)
-                    .width(Length::Fill)
-                    .padding([12, 16])
-                    .into()
-            }
-            TabKind::Collection(collection) => collection.view(self.id),
-        }
+        self.collection.view(self.id)
     }
 }
 
 impl TopMenu {
     fn label(self) -> &'static str {
         match self {
-            TopMenu::File => "File",
+            TopMenu::File => "Соединения",
             TopMenu::View => "View",
             TopMenu::Options => "Options",
             TopMenu::Windows => "Windows",
@@ -1832,6 +2930,10 @@ impl CollectionNode {
     }
 }
 
+fn shared_icon_handle(lock: &OnceLock<Handle>, bytes: &'static [u8]) -> Handle {
+    lock.get_or_init(|| Handle::from_bytes(bytes.to_vec())).clone()
+}
+
 fn connect_and_discover(connection: OMDBConnection) -> Result<ConnectionBootstrap, String> {
     match connection {
         OMDBConnection::Uri(uri) => {
@@ -1852,37 +2954,215 @@ fn run_collection_query(
     client: Arc<Client>,
     db_name: String,
     collection_name: String,
-    filter: Document,
+    operation: QueryOperation,
     skip: u64,
     limit: u64,
-) -> Result<Vec<Bson>, String> {
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-
+) -> Result<QueryResult, String> {
     let database = client.database(&db_name);
     let collection = database.collection::<Document>(&collection_name);
 
-    let mut find_builder = collection.find(filter);
+    match operation {
+        QueryOperation::Find { filter } => {
+            if limit == 0 {
+                return Ok(QueryResult::Documents(Vec::new()));
+            }
 
-    if skip > 0 {
-        find_builder = find_builder.skip(skip);
+            let mut builder = collection.find(filter);
+            if skip > 0 {
+                builder = builder.skip(skip);
+            }
+
+            let limit_capped = limit.min(i64::MAX as u64) as i64;
+            if limit_capped > 0 {
+                builder = builder.limit(limit_capped);
+            }
+
+            let cursor = builder.run().map_err(|err| err.to_string())?;
+            let take_limit = if limit_capped > 0 { limit_capped as usize } else { usize::MAX };
+            let mut documents = Vec::new();
+
+            for result in cursor.into_iter().take(take_limit) {
+                let document = result.map_err(|err| err.to_string())?;
+                documents.push(Bson::Document(document));
+            }
+
+            Ok(QueryResult::Documents(documents))
+        }
+        QueryOperation::FindOne { filter } => {
+            let mut builder = collection.find(filter);
+            if skip > 0 {
+                builder = builder.skip(skip);
+            }
+            builder = builder.limit(1);
+
+            let cursor = builder.run().map_err(|err| err.to_string())?;
+            if let Some(result) = cursor.into_iter().next() {
+                let document = result.map_err(|err| err.to_string())?;
+                Ok(QueryResult::SingleDocument { document })
+            } else {
+                Ok(QueryResult::Documents(Vec::new()))
+            }
+        }
+        QueryOperation::Count { filter } => {
+            let count = collection.count_documents(filter).run().map_err(|err| err.to_string())?;
+
+            let count_value = if count <= i64::MAX as u64 {
+                Bson::Int64(count as i64)
+            } else {
+                Bson::String(count.to_string())
+            };
+
+            Ok(QueryResult::Count { value: count_value })
+        }
+        QueryOperation::CountDocuments { filter, options } => {
+            let mut builder = collection.count_documents(filter);
+
+            if let Some(opts) = options {
+                if let Some(limit) = opts.limit {
+                    builder = builder.limit(limit);
+                }
+                if let Some(skip) = opts.skip {
+                    builder = builder.skip(skip);
+                }
+                if let Some(max_time) = opts.max_time {
+                    builder = builder.max_time(max_time);
+                }
+                if let Some(hint) = opts.hint {
+                    builder = builder.hint(hint);
+                }
+            }
+
+            let count = builder.run().map_err(|err| err.to_string())?;
+
+            let count_value = if count <= i64::MAX as u64 {
+                Bson::Int64(count as i64)
+            } else {
+                Bson::String(count.to_string())
+            };
+
+            Ok(QueryResult::Count { value: count_value })
+        }
+        QueryOperation::EstimatedDocumentCount { options } => {
+            let mut builder = collection.estimated_document_count();
+
+            if let Some(opts) = options {
+                if let Some(max_time) = opts.max_time {
+                    builder = builder.max_time(max_time);
+                }
+            }
+
+            let count = builder.run().map_err(|err| err.to_string())?;
+
+            let count_value = if count <= i64::MAX as u64 {
+                Bson::Int64(count as i64)
+            } else {
+                Bson::String(count.to_string())
+            };
+
+            Ok(QueryResult::Count { value: count_value })
+        }
+        QueryOperation::Distinct { field, filter } => {
+            let values =
+                collection.distinct(field.clone(), filter).run().map_err(|err| err.to_string())?;
+
+            Ok(QueryResult::Distinct { field, values })
+        }
+        QueryOperation::Aggregate { mut pipeline } => {
+            if skip > 0 {
+                let skip_i64 = i64::try_from(skip).unwrap_or(i64::MAX);
+                pipeline.push(doc! { "$skip": skip_i64 });
+            }
+
+            if limit > 0 {
+                let limit_i64 = i64::try_from(limit).unwrap_or(i64::MAX);
+                pipeline.push(doc! { "$limit": limit_i64 });
+            }
+
+            let cursor = collection.aggregate(pipeline).run().map_err(|err| err.to_string())?;
+
+            let mut documents = Vec::new();
+            for result in cursor {
+                let document = result.map_err(|err| err.to_string())?;
+                documents.push(Bson::Document(document));
+            }
+
+            Ok(QueryResult::Documents(documents))
+        }
     }
+}
 
-    let limit_capped = limit.min(i64::MAX as u64) as i64;
-    if limit_capped > 0 {
-        find_builder = find_builder.limit(limit_capped);
+fn connections_file_path() -> PathBuf {
+    PathBuf::from(CONNECTIONS_FILE)
+}
+
+fn load_connections_from_disk() -> Result<Vec<ConnectionEntry>, String> {
+    let path = connections_file_path();
+    let data = match fs::read_to_string(&path) {
+        Ok(content) => content,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => return Err(err.to_string()),
+    };
+
+    let store: ConnectionStore = toml::from_str(&data).map_err(|err| err.to_string())?;
+    Ok(store.connections)
+}
+
+fn save_connections_to_disk(connections: &[ConnectionEntry]) -> Result<(), String> {
+    let store = ConnectionStore { connections: connections.to_vec() };
+    let data = toml::to_string_pretty(&store).map_err(|err| err.to_string())?;
+    let path = connections_file_path();
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+        }
     }
+    let mut file = fs::File::create(path).map_err(|err| err.to_string())?;
+    file.write_all(data.as_bytes()).map_err(|err| err.to_string())
+}
 
-    let cursor = find_builder.run().map_err(|err| err.to_string())?;
+#[derive(Debug, Clone, Default)]
+struct CountDocumentsParsedOptions {
+    limit: Option<u64>,
+    skip: Option<u64>,
+    hint: Option<Hint>,
+    max_time: Option<Duration>,
+}
 
-    let take_limit = if limit_capped > 0 { limit_capped as usize } else { usize::MAX };
-    let mut documents = Vec::new();
-
-    for result in cursor.into_iter().take(take_limit) {
-        let document = result.map_err(|err| err.to_string())?;
-        documents.push(Bson::Document(document));
+impl CountDocumentsParsedOptions {
+    fn has_values(&self) -> bool {
+        self.limit.is_some()
+            || self.skip.is_some()
+            || self.hint.is_some()
+            || self.max_time.is_some()
     }
+}
 
-    Ok(documents)
+#[derive(Debug, Clone, Default)]
+struct EstimatedDocumentCountParsedOptions {
+    max_time: Option<Duration>,
+}
+
+impl EstimatedDocumentCountParsedOptions {
+    fn has_values(&self) -> bool {
+        self.max_time.is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
+enum QueryOperation {
+    Find { filter: Document },
+    FindOne { filter: Document },
+    Count { filter: Document },
+    CountDocuments { filter: Document, options: Option<CountDocumentsParsedOptions> },
+    EstimatedDocumentCount { options: Option<EstimatedDocumentCountParsedOptions> },
+    Distinct { field: String, filter: Document },
+    Aggregate { pipeline: Vec<Document> },
+}
+
+#[derive(Debug, Clone)]
+enum QueryResult {
+    Documents(Vec<Bson>),
+    SingleDocument { document: Document },
+    Distinct { field: String, values: Vec<Bson> },
+    Count { value: Bson },
 }

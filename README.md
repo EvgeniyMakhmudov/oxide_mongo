@@ -44,6 +44,10 @@ TODO
 ```
 ```
 
+## Knowing Issues
+
+1. After computer's hibernate wake up  the application not working, main window freeze. This is issue of GPU subsystem of Linux and not proglem directly Oxide Mongo. This issue happens in other differents software, which uses similar techmologies.
+
 ## Contributing
 
 1. Fork the repository and create a feature branch.
