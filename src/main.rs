@@ -574,12 +574,14 @@ impl BsonTree {
             roots.push(placeholder);
         } else {
             for (index, value) in values.iter().enumerate() {
+                let base_label = format!("[{}]", index + 1);
                 let key = match value {
                     Bson::Document(doc) => doc
                         .get("_id")
                         .map(Self::summarize_id)
-                        .unwrap_or_else(|| format!("doc[{index}]")),
-                    _ => format!("doc[{index}]"),
+                        .map(|id| format!("{} {}", base_label, id))
+                        .unwrap_or_else(|| base_label.clone()),
+                    _ => base_label.clone(),
                 };
                 roots.push(BsonNode::from_bson(Some(key), value, &mut id_gen));
             }
