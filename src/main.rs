@@ -1598,12 +1598,30 @@ impl CollectionTab {
     }
 
     fn set_query_result(&mut self, result: QueryResult) {
-        self.bson_tree = match result {
-            QueryResult::Documents(values) => BsonTree::from_values(&values),
-            QueryResult::SingleDocument { document } => BsonTree::from_document(document),
-            QueryResult::Distinct { field, values } => BsonTree::from_distinct(field, values),
-            QueryResult::Count { value } => BsonTree::from_count(value),
+        let start = Instant::now();
+
+        let (tree, count) = match result {
+            QueryResult::Documents(values) => {
+                let count = values.len();
+                (BsonTree::from_values(&values), count)
+            }
+            QueryResult::SingleDocument { document } => (BsonTree::from_document(document), 1),
+            QueryResult::Distinct { field, values } => {
+                let count = values.len();
+                (BsonTree::from_distinct(field, values), count)
+            }
+            QueryResult::Count { value } => (BsonTree::from_count(value), 1),
         };
+
+        let elapsed = start.elapsed();
+        println!(
+            "[table] collection='{}' documents={} processed_in_ms={:.3}",
+            self.collection,
+            count,
+            elapsed.as_secs_f64() * 1000.0
+        );
+
+        self.bson_tree = tree;
     }
 
     fn set_tree_error(&mut self, error: String) {
@@ -2516,7 +2534,7 @@ impl App {
 
         Container::new(column)
             .style(move |_| container::Style {
-                border: border::rounded(4.0).width(1).color(Color::from_rgb8(0xff, 0x00, 0x00)),
+                border: border::rounded(4.0).width(1),
                 ..Default::default()
             })
             .into()
