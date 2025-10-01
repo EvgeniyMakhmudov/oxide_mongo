@@ -50,7 +50,7 @@ fn main() -> iced::Result {
     window_settings.icon = Some(icon);
     window_settings.size.width += 280.0;
 
-    application("Oxide Mongo GUI", App::update, App::view)
+    application("Oxide Mongo", App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
         .font(MONO_FONT_BYTES)
@@ -126,6 +126,11 @@ enum Message {
     CollectionLimitChanged {
         tab_id: TabId,
         value: String,
+    },
+    CollectionPaneResized {
+        tab_id: TabId,
+        split: pane_grid::Split,
+        ratio: f32,
     },
     CollectionSkipPrev(TabId),
     CollectionSkipNext(TabId),
@@ -827,6 +832,31 @@ impl BsonTree {
 }
 
 impl CollectionTab {
+    const REQUEST_EDITOR_LINES: f32 = 4.0;
+    const REQUEST_LINE_HEIGHT: f32 = 24.0;
+    const REQUEST_VERTICAL_CHROME: f32 = 24.0;
+    const RESPONSE_REFERENCE_HEIGHT: f32 = 480.0;
+    const MIN_RESPONSE_RATIO: f32 = 0.1;
+
+    fn preferred_request_height() -> f32 {
+        Self::REQUEST_EDITOR_LINES * Self::REQUEST_LINE_HEIGHT + Self::REQUEST_VERTICAL_CHROME
+    }
+
+    fn min_request_ratio() -> f32 {
+        let preferred = Self::preferred_request_height();
+        preferred / (preferred + Self::RESPONSE_REFERENCE_HEIGHT)
+    }
+
+    fn initial_split_ratio() -> f32 {
+        Self::min_request_ratio()
+    }
+
+    fn clamp_split_ratio(ratio: f32) -> f32 {
+        let min_ratio = Self::min_request_ratio();
+        let max_ratio = 1.0 - Self::MIN_RESPONSE_RATIO;
+        ratio.clamp(min_ratio, max_ratio)
+    }
+
     fn new(
         client_id: ClientId,
         client_name: String,
@@ -838,7 +868,8 @@ impl CollectionTab {
         let (_, split) = panes
             .split(pane_grid::Axis::Horizontal, top, CollectionPane::Response)
             .expect("failed to split collection tab panes");
-        panes.resize(split, 0.2);
+        let initial_ratio = Self::clamp_split_ratio(Self::initial_split_ratio());
+        panes.resize(split, initial_ratio);
 
         let bson_tree = BsonTree::from_values(&values);
         let editor_text = format!(
@@ -858,6 +889,15 @@ impl CollectionTab {
             limit_input: DEFAULT_RESULT_LIMIT.to_string(),
             last_query_duration: None,
         }
+    }
+
+    fn resize_split(&mut self, split: pane_grid::Split, ratio: f32) {
+        if !ratio.is_finite() {
+            return;
+        }
+
+        let clamped = Self::clamp_split_ratio(ratio);
+        self.panes.resize(split, clamped);
     }
 
     fn view(&self, tab_id: TabId) -> Element<Message> {
@@ -958,9 +998,15 @@ impl CollectionTab {
                 }
             });
 
+        let resize_tab_id = tab_id;
         let panes = pane_grid::PaneGrid::new(&self.panes, |_, pane, _| match pane {
             CollectionPane::Request => pane_grid::Content::new(self.request_view(tab_id)),
             CollectionPane::Response => pane_grid::Content::new(self.response_view(tab_id)),
+        })
+        .on_resize(8, move |event| Message::CollectionPaneResized {
+            tab_id: resize_tab_id,
+            split: event.split,
+            ratio: event.ratio,
         })
         .spacing(8)
         .height(Length::Fill);
@@ -975,39 +1021,59 @@ impl CollectionTab {
     }
 
     fn request_view(&self, tab_id: TabId) -> Element<Message> {
-        let editor_height = 4.0 * 24.0;
 
         let editor = text_editor::TextEditor::new(&self.editor)
             .on_action(move |action| Message::CollectionEditorAction { tab_id, action })
-            .height(Length::Fixed(editor_height));
+            .height(Length::Fill);
 
-        let send_button = Button::new(Text::new("Send"))
+        let send_content =
+            Container::new(Text::new("Send")).center_x(Length::Shrink).center_y(Length::Fill);
+
+        let send_button = Button::new(send_content)
             .on_press(Message::CollectionSend(tab_id))
-            .padding([4, 12]);
+            .padding([4, 12])
+            .width(Length::Shrink)
+            .height(Length::Fill);
 
         let controls_row = Row::new()
             .spacing(0)
             .align_y(Vertical::Center)
             .width(Length::Fill)
-            .push(
-                Container::new(editor)
-                    .width(Length::FillPortion(9))
-                    .height(Length::Fixed(editor_height)),
-            )
+            .height(Length::Fill)
+            .push(Container::new(editor).width(Length::FillPortion(9)).height(Length::Fill).style(
+                move |_| container::Style {
+                    border: border::rounded(4.0).width(1),
+                    ..Default::default()
+                },
+            ))
             .push(
                 Container::new(send_button)
-                    .width(Length::FillPortion(1))
-                    .height(Length::Fixed(editor_height))
+                    .width(Length::Shrink)
+                    .height(Length::Fill)
                     .align_x(Horizontal::Center)
-                    .align_y(Vertical::Center),
+                    .align_y(Vertical::Center)
+                    .style(move |_| container::Style {
+                        border: border::rounded(4.0).width(1),
+                        ..Default::default()
+                    }),
             );
 
-        Column::new()
-            .spacing(8)
-            .push(controls_row)
-            .push(Space::with_height(Length::Fill))
+        let content = Column::new().spacing(8).width(Length::Fill).height(Length::Fill).push(
+            Container::new(controls_row).width(Length::Fill).height(Length::Fill).style(
+                move |_| container::Style {
+                    border: border::rounded(4.0).width(1),
+                    ..Default::default()
+                },
+            ),
+        );
+
+        Container::new(content)
             .width(Length::Fill)
             .height(Length::Fill)
+            .style(move |_| container::Style {
+                border: border::rounded(4.0).width(1),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -1744,6 +1810,12 @@ impl App {
             Message::CollectionLimitChanged { tab_id, value } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.update_limit(value);
+                }
+                Task::none()
+            }
+            Message::CollectionPaneResized { tab_id, split, ratio } => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.collection.resize_split(split, ratio);
                 }
                 Task::none()
             }
