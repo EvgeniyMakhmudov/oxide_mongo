@@ -183,7 +183,6 @@ enum OMDBConnection {
 struct OMDBClient {
     id: ClientId,
     name: String,
-    connection: OMDBConnection,
     status: ConnectionStatus,
     expanded: bool,
     handle: Option<Arc<Client>>,
@@ -1021,7 +1020,6 @@ impl CollectionTab {
     }
 
     fn request_view(&self, tab_id: TabId) -> Element<Message> {
-
         let editor = text_editor::TextEditor::new(&self.editor)
             .on_action(move |action| Message::CollectionEditorAction { tab_id, action })
             .height(Length::Fill);
@@ -2473,24 +2471,24 @@ impl App {
             ConnectionStatus::Ready => "Готово".to_owned(),
             ConnectionStatus::Failed(err) => format!("Ошибка: {err}"),
         };
-        let connection_label = client.connection.display_label();
 
         let header_row = Row::new()
             .spacing(8)
             .align_y(Vertical::Center)
             .push(text(indicator))
+            .push(
+                Image::new(shared_icon_handle(&ICON_NETWORK_HANDLE, ICON_NETWORK_BYTES))
+                    .width(Length::Fixed(16.0))
+                    .height(Length::Fixed(16.0)),
+            )
             .push(text(&client.name).size(16))
             .push(text(status_label.clone()).size(12));
 
-        let mut column = Column::new()
-            .spacing(4)
-            .push(Button::new(header_row).padding(4).on_press(Message::ToggleClient(client.id)))
-            .push(
-                Row::new()
-                    .spacing(8)
-                    .push(Space::with_width(Length::Fixed(16.0)))
-                    .push(text(connection_label).size(12)),
-            );
+        let mut column = Column::new().spacing(4).push(self.sidebar_button(
+            header_row,
+            0.0,
+            Message::ToggleClient(client.id),
+        ));
 
         if matches!(client.status, ConnectionStatus::Failed(_)) {
             column = column.push(
@@ -2516,7 +2514,12 @@ impl App {
             }
         }
 
-        column.into()
+        Container::new(column)
+            .style(move |_| container::Style {
+                border: border::rounded(4.0).width(1).color(Color::from_rgb8(0xff, 0x00, 0x00)),
+                ..Default::default()
+            })
+            .into()
     }
 
     fn render_database<'a>(
@@ -2525,19 +2528,24 @@ impl App {
         database: &'a DatabaseNode,
     ) -> Element<'a, Message> {
         let indicator = if database.expanded { "v" } else { ">" };
+        let icon_size = 14.0;
 
         let db_row = Row::new()
-            .spacing(8)
+            .spacing(6)
             .align_y(Vertical::Center)
-            .push(Space::with_width(Length::Fixed(16.0)))
             .push(text(indicator))
+            .push(
+                Image::new(shared_icon_handle(&ICON_DATABASE_HANDLE, ICON_DATABASE_BYTES))
+                    .width(Length::Fixed(icon_size))
+                    .height(Length::Fixed(icon_size)),
+            )
             .push(text(&database.name));
 
-        let mut column = Column::new().spacing(4).push(
-            Button::new(db_row)
-                .padding(4)
-                .on_press(Message::ToggleDatabase { client_id, db_name: database.name.clone() }),
-        );
+        let mut column = Column::new().spacing(4).push(self.sidebar_button(
+            db_row,
+            16.0,
+            Message::ToggleDatabase { client_id, db_name: database.name.clone() },
+        ));
 
         if database.expanded {
             match &database.state {
@@ -2588,20 +2596,69 @@ impl App {
         db_name: &str,
         collection: &'a CollectionNode,
     ) -> Element<'a, Message> {
-        let row = Row::new()
-            .spacing(8)
-            .align_y(Vertical::Center)
-            .push(Space::with_width(Length::Fixed(32.0)))
-            .push(text(&collection.name).size(12));
+        let icon_size = 12.0;
 
-        Button::new(row)
-            .padding(4)
-            .on_press(Message::CollectionClicked {
+        let row = Row::new()
+            .spacing(6)
+            .align_y(Vertical::Center)
+            .push(
+                Image::new(shared_icon_handle(&ICON_COLLECTION_HANDLE, ICON_COLLECTION_BYTES))
+                    .width(Length::Fixed(icon_size))
+                    .height(Length::Fixed(icon_size)),
+            )
+            .push(text(&collection.name).size(14));
+
+        self.sidebar_button(
+            row,
+            32.0,
+            Message::CollectionClicked {
                 client_id,
                 db_name: db_name.to_owned(),
                 collection: collection.name.clone(),
-            })
+            },
+        )
+    }
+
+    fn sidebar_button<'a>(
+        &self,
+        content: impl Into<Element<'a, Message>>,
+        indent: f32,
+        on_press: Message,
+    ) -> Element<'a, Message> {
+        let button = Button::new(content)
+            .padding([4, 4])
+            .width(Length::Shrink)
+            .height(Length::Shrink)
+            .style(Self::sidebar_button_style)
+            .on_press(on_press);
+
+        Row::new()
+            .spacing(8)
+            .align_y(Vertical::Center)
+            .push(Space::with_width(Length::Fixed(indent.max(0.0))))
+            .push(button)
             .into()
+    }
+
+    fn sidebar_button_style(theme: &Theme, status: button::Status) -> button::Style {
+        let palette = theme.extended_palette();
+        let base = Color::from_rgb8(0xf3, 0xf5, 0xfa);
+        let hover = Color::from_rgb8(0xe8, 0xec, 0xf5);
+        let pressed = Color::from_rgb8(0xdc, 0xe2, 0xef);
+        let disabled = palette.background.weak.color;
+        let background = match status {
+            button::Status::Active => base,
+            button::Status::Hovered => hover,
+            button::Status::Pressed => pressed,
+            button::Status::Disabled => disabled,
+        };
+
+        button::Style {
+            background: Some(background.into()),
+            text_color: Color::from_rgb8(0x22, 0x28, 0x38),
+            border: border::rounded(6).width(1).color(Color::from_rgb8(0xc6, 0xcc, 0xd9)),
+            shadow: Shadow::default(),
+        }
     }
 
     fn main_panel(&self) -> Element<Message> {
@@ -2981,7 +3038,6 @@ impl OMDBClient {
         Self {
             id,
             name: connection.display_label(),
-            connection,
             status: ConnectionStatus::Connecting,
             expanded: true,
             handle: None,
