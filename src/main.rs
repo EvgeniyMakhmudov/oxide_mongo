@@ -1,10 +1,13 @@
 use iced::Font;
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
+use iced::keyboard::{self, key};
 use iced::widget::image::Handle;
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::scrollable;
-use iced::widget::text_editor::{self, Action as TextEditorAction, Content as TextEditorContent};
+use iced::widget::text_editor::{
+    self, Action as TextEditorAction, Binding as TextEditorBinding, Content as TextEditorContent,
+};
 use iced::widget::{
     Button, Column, Container, Image, Row, Scrollable, Space, Text, button, container, pane_grid,
     text, text_input,
@@ -1020,7 +1023,16 @@ impl CollectionTab {
     }
 
     fn request_view(&self, tab_id: TabId) -> Element<Message> {
+        let send_tab_id = tab_id;
         let editor = text_editor::TextEditor::new(&self.editor)
+            .key_binding(move |key_press| {
+                let is_enter = matches!(key_press.key, keyboard::Key::Named(key::Named::Enter));
+                if is_enter && key_press.modifiers.command() {
+                    Some(TextEditorBinding::Custom(Message::CollectionSend(send_tab_id)))
+                } else {
+                    TextEditorBinding::from_key_press(key_press)
+                }
+            })
             .on_action(move |action| Message::CollectionEditorAction { tab_id, action })
             .height(Length::Fill);
 
