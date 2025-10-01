@@ -57,13 +57,13 @@
 # MongoDb
 ## Операции которыу нужно поддержать
 - insertOne, insertMany — вставка документов
-+ find / findOne — чтение;
+- [DONE] find / findOne — чтение;
 - findOneAndUpdate/Replace/Delete - одиночные модификации возвращающие документ
 - updateOne, updateMany, replaceOne — модификация документов возвращающие информацию о результате операции
 - deleteOne, deleteMany — удаление
-- countDocuments, estimatedDocumentCount — точный и приблизительный подсчёт
-+ distinct — набор уникальных значений поля
-+ aggregate — конвейер агрегаций
+- [DONE] countDocuments, estimatedDocumentCount — точный и приблизительный подсчёт
+- [DONE] distinct — набор уникальных значений поля
+- [DONE] aggregate — конвейер агрегаций
 - bulkWrite — пакетное выполнение разных операций (insert/update/delete)
 - watch (change streams) — подписка на изменения
 - runCommand - служебные команды коллекции
