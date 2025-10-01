@@ -2860,30 +2860,17 @@ impl App {
         }
 
         let mut client_name = String::from("Неизвестный клиент");
-        let mut values = vec![Bson::String(String::from("Нет активного соединения"))];
+        let mut values = vec![Bson::String(String::from(
+            "Запрос пока не выполнен. Сформируйте запрос и нажмите Send.",
+        ))];
 
         if let Some(client) = self.clients.iter().find(|c| c.id == client_id) {
             client_name = client.name.clone();
 
-            if let Some(handle) = client.handle.clone() {
-                let database = handle.database(&db_name);
-                let collection_handle = database.collection::<Document>(&collection);
-
-                values = match collection_handle
-                    .find(Document::new())
-                    .skip(DEFAULT_RESULT_SKIP)
-                    .limit(DEFAULT_RESULT_LIMIT)
-                    .run()
-                {
-                    Ok(cursor) => cursor
-                        .take(DEFAULT_RESULT_LIMIT as usize)
-                        .filter_map(|result| result.ok())
-                        .map(Bson::Document)
-                        .collect::<Vec<_>>(),
-                    Err(error) => {
-                        vec![Bson::String(format!("Ошибка загрузки документов: {error}"))]
-                    }
-                };
+            if client.handle.is_none() {
+                values = vec![Bson::String(String::from(
+                    "Соединение не активно. Повторите подключение, затем выполните запрос.",
+                ))];
             }
         }
 
