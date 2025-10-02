@@ -21,3 +21,4 @@ Thumbs.db
 # Oxide mongo specific
 connections.toml
 settings.toml
+.github/copilot-instructions.md

@@ -179,7 +179,11 @@ enum MenuEntry {
 
 #[derive(Debug, Clone)]
 enum OMDBConnection {
-    Uri(String),
+    Uri {
+        uri: String,
+        include_filter: String,
+        exclude_filter: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -2343,7 +2347,7 @@ impl App {
         }
 
         let filter_active = state.active_tab == ConnectionFormTab::Filter;
-        let mut filter_button = Button::new(Text::new("Фильтр коллекций").size(14))
+        let mut filter_button = Button::new(Text::new("Фильтр баз данных").size(14))
             .padding([6, 16])
             .style(move |_, _| button::Style {
                 background: Some((if filter_active { bg_active } else { bg_inactive }).into()),
@@ -2984,7 +2988,11 @@ impl App {
 
     fn add_connection_from_entry(&mut self, entry: ConnectionEntry) -> Task<Message> {
         let uri = entry.uri();
-        let connection = OMDBConnection::from_uri(&uri);
+        let connection = OMDBConnection::from_uri(
+            &uri,
+            &entry.include_filter,
+            &entry.exclude_filter,
+        );
         let client_id = self.next_client_id;
         self.next_client_id += 1;
 
@@ -3041,13 +3049,17 @@ impl MenuEntry {
 }
 
 impl OMDBConnection {
-    fn from_uri(uri: &str) -> Self {
-        Self::Uri(uri.to_owned())
+    fn from_uri(uri: &str, include_filter: &str, exclude_filter: &str) -> Self {
+        Self::Uri {
+            uri: uri.to_owned(),
+            include_filter: include_filter.to_owned(),
+            exclude_filter: exclude_filter.to_owned(),
+        }
     }
 
     fn display_label(&self) -> String {
         match self {
-            OMDBConnection::Uri(uri) => uri.clone(),
+            OMDBConnection::Uri { uri, .. } => uri.clone(),
         }
     }
 }
@@ -3083,9 +3095,23 @@ fn shared_icon_handle(lock: &OnceLock<Handle>, bytes: &'static [u8]) -> Handle {
 
 fn connect_and_discover(connection: OMDBConnection) -> Result<ConnectionBootstrap, String> {
     match connection {
-        OMDBConnection::Uri(uri) => {
-            let client = Client::with_uri_str(uri.as_str()).map_err(|err| err.to_string())?;
-            let databases = client.list_database_names().run().map_err(|err| err.to_string())?;
+        OMDBConnection::Uri { uri, include_filter, exclude_filter } => {
+            let client = Client::with_uri_str(&uri).map_err(|err| err.to_string())?;
+            let mut databases = client.list_database_names().run().map_err(|err| err.to_string())?;
+
+            let include_items: Vec<_> =
+                include_filter.lines().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+            if !include_items.is_empty() {
+                let include_set: HashSet<_> = include_items.into_iter().collect();
+                databases.retain(|db| include_set.contains(db.as_str()));
+            } else {
+                let exclude_items: Vec<_> =
+                    exclude_filter.lines().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+                if !exclude_items.is_empty() {
+                    let exclude_set: HashSet<_> = exclude_items.into_iter().collect();
+                    databases.retain(|db| !exclude_set.contains(db.as_str()));
+                }
+            }
 
             Ok(ConnectionBootstrap { handle: Arc::new(client), databases })
         }
