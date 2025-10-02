@@ -16,6 +16,7 @@ Cargo.lock
 Thumbs.db
 
 # Development specific
+.github/copilot-instructions.md
 
 
 # Oxide mongo specific
