@@ -60,7 +60,7 @@
 - [DONE] find / findOne — чтение;
 - findOneAndUpdate/Replace/Delete - одиночные модификации возвращающие документ
 - updateOne, updateMany, replaceOne — модификация документов возвращающие информацию о результате операции
-- deleteOne, deleteMany — удаление
+- [DONE] deleteOne, deleteMany — удаление
 - [DONE] countDocuments, estimatedDocumentCount — точный и приблизительный подсчёт
 - [DONE] distinct — набор уникальных значений поля
 - [DONE] aggregate — конвейер агрегаций

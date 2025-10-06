@@ -21,7 +21,7 @@ use iced_aw::{
     menu::{Item as MenuItemWidget, Menu, MenuBar},
 };
 use mongodb::bson::{self, Bson, Document, doc};
-use mongodb::options::{Acknowledgment, Hint, WriteConcern};
+use mongodb::options::{Acknowledgment, Collation, Hint, WriteConcern};
 use mongodb::sync::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1659,6 +1659,52 @@ impl CollectionTab {
 
                 Ok(QueryOperation::InsertMany { documents, options })
             }
+            "deleteOne" => {
+                if args_trimmed.is_empty() {
+                    return Err(String::from(
+                        "deleteOne требует фильтр в качестве первого аргумента.",
+                    ));
+                }
+
+                let parts = Self::split_arguments(args_trimmed);
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "deleteOne принимает фильтр и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_delete_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::DeleteOne { filter, options })
+            }
+            "deleteMany" => {
+                if args_trimmed.is_empty() {
+                    return Err(String::from(
+                        "deleteMany требует фильтр в качестве первого аргумента.",
+                    ));
+                }
+
+                let parts = Self::split_arguments(args_trimmed);
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "deleteMany принимает фильтр и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_delete_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::DeleteMany { filter, options })
+            }
             "find" => {
                 if args_trimmed.is_empty() {
                     return Ok(QueryOperation::Find { filter: Document::new() });
@@ -1667,7 +1713,7 @@ impl CollectionTab {
                 Ok(QueryOperation::Find { filter })
             }
             other => Err(format!(
-                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany.",
+                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, deleteOne, deleteMany.",
             )),
         }
     }
@@ -1963,6 +2009,41 @@ impl CollectionTab {
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
     }
 
+    fn parse_delete_options(source: &str) -> Result<Option<DeleteParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции deleteOne/deleteMany должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = DeleteParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => {
+                    options.write_concern = Self::parse_write_concern_value(value)?;
+                }
+                "collation" => {
+                    options.collation = Some(Self::parse_collation_value(value)?);
+                }
+                "hint" => {
+                    options.hint = Some(Self::parse_hint_value(value)?);
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options deleteOne/deleteMany. Доступны: writeConcern, collation, hint.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
     fn parse_write_concern_value(value: &Value) -> Result<Option<WriteConcern>, String> {
         let object = value
             .as_object()
@@ -2027,6 +2108,30 @@ impl CollectionTab {
         }
 
         if has_values { Ok(Some(write_concern)) } else { Ok(None) }
+    }
+
+    fn parse_collation_value(value: &Value) -> Result<Collation, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("collation должен быть JSON-объектом."))?;
+        let document =
+            bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))?;
+        bson::from_document::<Collation>(document)
+            .map_err(|error| format!("Collation parse error: {error}"))
+    }
+
+    fn parse_hint_value(value: &Value) -> Result<Hint, String> {
+        match value {
+            Value::String(name) => Ok(Hint::Name(name.clone())),
+            Value::Object(map) => {
+                let document = bson::to_document(map)
+                    .map_err(|error| format!("BSON conversion error: {error}"))?;
+                Ok(Hint::Keys(document))
+            }
+            _ => Err(String::from(
+                "hint должен быть строкой или JSON-объектом со спецификацией индекса.",
+            )),
+        }
     }
 
     fn parse_non_negative_u64(value: &Value, field: &str) -> Result<u64, String> {
@@ -3820,6 +3925,62 @@ fn run_collection_query(
 
             Ok(QueryResult::SingleDocument { document: response })
         }
+        QueryOperation::DeleteOne { filter, options } => {
+            let mut action = collection.delete_one(filter);
+            if let Some(opts) = options {
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+            let deleted_count = result.deleted_count;
+            let deleted_bson = if deleted_count <= i64::MAX as u64 {
+                Bson::Int64(deleted_count as i64)
+            } else {
+                Bson::String(deleted_count.to_string())
+            };
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from("deleteOne")));
+            response.insert("deletedCount", deleted_bson);
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
+        QueryOperation::DeleteMany { filter, options } => {
+            let mut action = collection.delete_many(filter);
+            if let Some(opts) = options {
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+            let deleted_count = result.deleted_count;
+            let deleted_bson = if deleted_count <= i64::MAX as u64 {
+                Bson::Int64(deleted_count as i64)
+            } else {
+                Bson::String(deleted_count.to_string())
+            };
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from("deleteMany")));
+            response.insert("deletedCount", deleted_bson);
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
     }
 }
 
@@ -3903,6 +4064,19 @@ impl InsertManyParsedOptions {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct DeleteParsedOptions {
+    write_concern: Option<WriteConcern>,
+    collation: Option<Collation>,
+    hint: Option<Hint>,
+}
+
+impl DeleteParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some() || self.collation.is_some() || self.hint.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 enum QueryOperation {
     Find { filter: Document },
@@ -3914,6 +4088,8 @@ enum QueryOperation {
     Aggregate { pipeline: Vec<Document> },
     InsertOne { document: Document, options: Option<InsertOneParsedOptions> },
     InsertMany { documents: Vec<Document>, options: Option<InsertManyParsedOptions> },
+    DeleteOne { filter: Document, options: Option<DeleteParsedOptions> },
+    DeleteMany { filter: Document, options: Option<DeleteParsedOptions> },
 }
 
 #[derive(Debug, Clone)]
