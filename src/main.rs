@@ -163,6 +163,7 @@ enum Message {
     ConnectionFormPortChanged(String),
     ConnectionFormIncludeAction(TextEditorAction),
     ConnectionFormExcludeAction(TextEditorAction),
+    ConnectionFormAddSystemFilters,
     ConnectionFormTest,
     ConnectionFormTestResult(Result<(), String>),
     ConnectionFormSave,
@@ -325,6 +326,33 @@ impl ConnectionFormState {
 
     fn exclude_action(&mut self, action: TextEditorAction) {
         self.exclude_editor.perform(action);
+    }
+
+    fn add_system_filters(&mut self) {
+        const SYSTEM_FILTERS: [&str; 4] = ["admin", "local", "config", "$external"];
+
+        let current_text = self.exclude_editor.text();
+        let mut lines: Vec<String> = if current_text.is_empty() {
+            Vec::new()
+        } else {
+            current_text.lines().map(|line| line.to_string()).collect()
+        };
+
+        let mut existing: HashSet<String> =
+            lines.iter().map(|line| line.trim().to_string()).collect();
+        let mut added = false;
+
+        for filter in SYSTEM_FILTERS {
+            if existing.insert(filter.to_string()) {
+                lines.push(filter.to_string());
+                added = true;
+            }
+        }
+
+        if added {
+            let new_text = lines.join("\n");
+            self.exclude_editor = TextEditorContent::with_text(&new_text);
+        }
     }
 }
 
@@ -2623,6 +2651,12 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ConnectionFormAddSystemFilters => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.add_system_filters();
+                }
+                Task::none()
+            }
             Message::ConnectionFormTest => {
                 if let Some(form) = self.connection_form.as_mut() {
                     match form.validate() {
@@ -3022,12 +3056,18 @@ impl App {
                     .on_action(Message::ConnectionFormExcludeAction)
                     .height(Length::Fixed(130.0));
 
+                let add_system_filters =
+                    Button::new(Text::new("Добавить фильтр системные базы данных").size(14))
+                        .padding([6, 16])
+                        .on_press(Message::ConnectionFormAddSystemFilters);
+
                 Column::new()
                     .spacing(12)
                     .push(Text::new("Включить").size(14))
                     .push(include_editor)
                     .push(Text::new("Исключить").size(14))
                     .push(exclude_editor)
+                    .push(add_system_filters)
                     .into()
             }
         };
@@ -3476,16 +3516,6 @@ impl App {
     }
 
     fn open_collection_tab(&mut self, client_id: ClientId, db_name: String, collection: String) {
-        if let Some(existing) = self.tabs.iter().find(|tab| {
-            let existing = &tab.collection;
-            existing.client_id == client_id
-                && existing.db_name == db_name
-                && existing.collection == collection
-        }) {
-            self.active_tab = Some(existing.id);
-            return;
-        }
-
         let mut client_name = String::from("Неизвестный клиент");
         let mut values = vec![Bson::String(String::from(
             "Запрос пока не выполнен. Сформируйте запрос и нажмите Send.",
