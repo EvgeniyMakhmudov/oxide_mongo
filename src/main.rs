@@ -21,11 +21,12 @@ use iced_aw::{
     menu::{Item as MenuItemWidget, Menu, MenuBar},
 };
 use mongodb::bson::{self, Bson, Document, doc};
-use mongodb::options::Hint;
+use mongodb::options::{Acknowledgment, Hint, WriteConcern};
 use mongodb::sync::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashSet;
+use std::convert::TryFrom;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -1590,6 +1591,74 @@ impl CollectionTab {
                 }
                 Ok(QueryOperation::Aggregate { pipeline })
             }
+            "insertOne" => {
+                if args_trimmed.is_empty() {
+                    return Err(String::from(
+                        "insertOne требует документ в качестве первого аргумента.",
+                    ));
+                }
+
+                let parts = Self::split_arguments(args_trimmed);
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "insertOne принимает один документ и необязательный объект options.",
+                    ));
+                }
+
+                let document = Self::parse_json_object(&parts[0])?;
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_insert_one_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::InsertOne { document, options })
+            }
+            "insertMany" => {
+                if args_trimmed.is_empty() {
+                    return Err(String::from(
+                        "insertMany требует массив документов в качестве первого аргумента.",
+                    ));
+                }
+
+                let parts = Self::split_arguments(args_trimmed);
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "insertMany принимает массив документов и необязательный объект options.",
+                    ));
+                }
+
+                let docs_value: Value = serde_json::from_str(&parts[0])
+                    .map_err(|error| format!("JSON parse error: {error}"))?;
+                let docs_array = docs_value.as_array().ok_or_else(|| {
+                    String::from("Первый аргумент insertMany должен быть массивом документов.")
+                })?;
+                if docs_array.is_empty() {
+                    return Err(String::from(
+                        "insertMany требует как минимум один документ в массиве.",
+                    ));
+                }
+
+                let mut documents = Vec::with_capacity(docs_array.len());
+                for (index, entry) in docs_array.iter().enumerate() {
+                    let object = entry.as_object().ok_or_else(|| {
+                        format!(
+                            "Элемент с индексом {index} в insertMany должен быть JSON-объектом."
+                        )
+                    })?;
+                    let doc = bson::to_document(object)
+                        .map_err(|error| format!("BSON conversion error: {error}"))?;
+                    documents.push(doc);
+                }
+
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_insert_many_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::InsertMany { documents, options })
+            }
             "find" => {
                 if args_trimmed.is_empty() {
                     return Ok(QueryOperation::Find { filter: Document::new() });
@@ -1598,7 +1667,7 @@ impl CollectionTab {
                 Ok(QueryOperation::Find { filter })
             }
             other => Err(format!(
-                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate.",
+                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany.",
             )),
         }
     }
@@ -1826,6 +1895,138 @@ impl CollectionTab {
         }
 
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_insert_one_options(source: &str) -> Result<Option<InsertOneParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции insertOne должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = InsertOneParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => {
+                    options.write_concern = Self::parse_write_concern_value(value)?;
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options insertOne. Доступно: writeConcern.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_insert_many_options(source: &str) -> Result<Option<InsertManyParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции insertMany должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = InsertManyParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => {
+                    options.write_concern = Self::parse_write_concern_value(value)?;
+                }
+                "ordered" => {
+                    let ordered = value.as_bool().ok_or_else(|| {
+                        String::from(
+                            "Параметр 'ordered' в options insertMany должен быть логическим значением.",
+                        )
+                    })?;
+                    options.ordered = Some(ordered);
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options insertMany. Доступны: writeConcern, ordered.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_write_concern_value(value: &Value) -> Result<Option<WriteConcern>, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("writeConcern должен быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut write_concern = WriteConcern::default();
+        let mut has_values = false;
+
+        for (key, value) in object {
+            match key.as_str() {
+                "w" => {
+                    let ack = match value {
+                        Value::String(s) => Acknowledgment::from(s.as_str()),
+                        Value::Number(number) => {
+                            let raw = number.as_u64().ok_or_else(|| {
+                                String::from(
+                                    "writeConcern.w должен быть неотрицательным целым числом.",
+                                )
+                            })?;
+                            let nodes = u32::try_from(raw).map_err(|_| {
+                                String::from(
+                                    "writeConcern.w не должен превышать максимально допустимое значение.",
+                                )
+                            })?;
+                            Acknowledgment::Nodes(nodes)
+                        }
+                        _ => {
+                            return Err(String::from(
+                                "writeConcern.w должен быть строкой или числом.",
+                            ));
+                        }
+                    };
+                    write_concern.w = Some(ack);
+                    has_values = true;
+                }
+                "j" => {
+                    let journal = value.as_bool().ok_or_else(|| {
+                        String::from("writeConcern.j должен быть логическим значением.")
+                    })?;
+                    write_concern.journal = Some(journal);
+                    has_values = true;
+                }
+                "wtimeout" | "wtimeoutMS" => {
+                    let millis = value.as_u64().ok_or_else(|| {
+                        String::from(
+                            "writeConcern.wtimeout должен быть неотрицательным целым числом.",
+                        )
+                    })?;
+                    write_concern.w_timeout = Some(Duration::from_millis(millis));
+                    has_values = true;
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается внутри writeConcern. Доступны: w, j, wtimeout.",
+                    ));
+                }
+            }
+        }
+
+        if has_values { Ok(Some(write_concern)) } else { Ok(None) }
     }
 
     fn parse_non_negative_u64(value: &Value, field: &str) -> Result<u64, String> {
@@ -3576,6 +3777,49 @@ fn run_collection_query(
 
             Ok(QueryResult::Documents(documents))
         }
+        QueryOperation::InsertOne { document, options } => {
+            let mut action = collection.insert_one(document);
+            if let Some(opts) = options {
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from("insertOne")));
+            response.insert("insertedId", result.inserted_id);
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
+        QueryOperation::InsertMany { documents, options } => {
+            let mut action = collection.insert_many(documents);
+            if let Some(opts) = options {
+                if let Some(ordered) = opts.ordered {
+                    action = action.ordered(ordered);
+                }
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+            let mut pairs: Vec<(usize, Bson)> = result.inserted_ids.into_iter().collect();
+            pairs.sort_by_key(|(index, _)| *index);
+
+            let mut ids_document = Document::new();
+            for (index, id) in pairs {
+                ids_document.insert(index.to_string(), id);
+            }
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from("insertMany")));
+            response.insert("insertedCount", Bson::Int64(ids_document.len() as i64));
+            response.insert("insertedIds", Bson::Document(ids_document));
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
     }
 }
 
@@ -3636,6 +3880,29 @@ impl EstimatedDocumentCountParsedOptions {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct InsertOneParsedOptions {
+    write_concern: Option<WriteConcern>,
+}
+
+impl InsertOneParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct InsertManyParsedOptions {
+    write_concern: Option<WriteConcern>,
+    ordered: Option<bool>,
+}
+
+impl InsertManyParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some() || self.ordered.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 enum QueryOperation {
     Find { filter: Document },
@@ -3645,6 +3912,8 @@ enum QueryOperation {
     EstimatedDocumentCount { options: Option<EstimatedDocumentCountParsedOptions> },
     Distinct { field: String, filter: Document },
     Aggregate { pipeline: Vec<Document> },
+    InsertOne { document: Document, options: Option<InsertOneParsedOptions> },
+    InsertMany { documents: Vec<Document>, options: Option<InsertManyParsedOptions> },
 }
 
 #[derive(Debug, Clone)]

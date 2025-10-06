@@ -56,7 +56,7 @@
 
 # MongoDb
 ## Операции которыу нужно поддержать
-- insertOne, insertMany — вставка документов
+- [DONE] insertOne, insertMany — вставка документов
 - [DONE] find / findOne — чтение;
 - findOneAndUpdate/Replace/Delete - одиночные модификации возвращающие документ
 - updateOne, updateMany, replaceOne — модификация документов возвращающие информацию о результате операции
