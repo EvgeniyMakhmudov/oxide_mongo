@@ -13,8 +13,13 @@ use iced::widget::{
     text, text_input,
 };
 use iced::window;
-use iced::{Color, Element, Length, Renderer, Shadow, Subscription, Task, Theme, application};
-use iced_aw::menu::{Item as MenuItemWidget, Menu, MenuBar};
+use iced::{
+    Color, Element, Length, Renderer, Shadow, Subscription, Task, Theme, application, clipboard,
+};
+use iced_aw::{
+    ContextMenu,
+    menu::{Item as MenuItemWidget, Menu, MenuBar},
+};
 use mongodb::bson::{self, Bson, Document, doc};
 use mongodb::options::Hint;
 use mongodb::sync::Client;
@@ -161,6 +166,11 @@ enum Message {
     ConnectionFormTestResult(Result<(), String>),
     ConnectionFormSave,
     ConnectionFormCancel,
+    TableContextMenu {
+        tab_id: TabId,
+        node_id: usize,
+        action: TableContextAction,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,13 +187,17 @@ enum MenuEntry {
     Action(&'static str),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TableContextAction {
+    CopyJson,
+    CopyKey,
+    CopyValue,
+    CopyPath,
+}
+
 #[derive(Debug, Clone)]
 enum OMDBConnection {
-    Uri {
-        uri: String,
-        include_filter: String,
-        exclude_filter: String,
-    },
+    Uri { uri: String, include_filter: String, exclude_filter: String },
 }
 
 #[derive(Debug, Clone)]
@@ -425,6 +439,17 @@ struct BsonTree {
     expanded: HashSet<usize>,
 }
 
+struct TableContextMenu;
+
+impl TableContextMenu {
+    fn new<'a>(
+        underlay: impl Into<Element<'a, Message>>,
+        overlay: impl Fn() -> Element<'a, Message> + 'a,
+    ) -> Element<'a, Message> {
+        ContextMenu::new(underlay, overlay).into()
+    }
+}
+
 struct BsonRowEntry<'a> {
     depth: usize,
     node: &'a BsonNode,
@@ -434,8 +459,10 @@ struct BsonRowEntry<'a> {
 #[derive(Debug, Clone)]
 struct BsonNode {
     id: usize,
-    key: Option<String>,
+    display_key: Option<String>,
+    path_key: Option<String>,
     kind: BsonKind,
+    bson: Bson,
 }
 
 #[derive(Debug, Clone)]
@@ -459,25 +486,53 @@ impl IdGenerator {
 }
 
 impl BsonNode {
-    fn from_bson(key: Option<String>, value: &Bson, id: &mut IdGenerator) -> Self {
+    fn from_bson(
+        display_key: Option<String>,
+        path_key: Option<String>,
+        value: &Bson,
+        id: &mut IdGenerator,
+    ) -> Self {
         let id_value = id.next();
         match value {
             Bson::Document(map) => {
-                let children =
-                    map.iter().map(|(k, v)| BsonNode::from_bson(Some(k.clone()), v, id)).collect();
-                Self { id: id_value, key, kind: BsonKind::Document(children) }
+                let children = map
+                    .iter()
+                    .map(|(k, v)| BsonNode::from_bson(Some(k.clone()), Some(k.clone()), v, id))
+                    .collect();
+                Self {
+                    id: id_value,
+                    display_key,
+                    path_key,
+                    kind: BsonKind::Document(children),
+                    bson: value.clone(),
+                }
             }
             Bson::Array(items) => {
                 let children = items
                     .iter()
                     .enumerate()
-                    .map(|(index, item)| BsonNode::from_bson(Some(format!("[{index}]")), item, id))
+                    .map(|(index, item)| {
+                        let display = format!("[{index}]");
+                        BsonNode::from_bson(Some(display), Some(index.to_string()), item, id)
+                    })
                     .collect();
-                Self { id: id_value, key, kind: BsonKind::Array(children) }
+                Self {
+                    id: id_value,
+                    display_key,
+                    path_key,
+                    kind: BsonKind::Array(children),
+                    bson: value.clone(),
+                }
             }
             other => {
                 let (display, ty) = format_bson_scalar(other);
-                Self { id: id_value, key, kind: BsonKind::Value { display, ty } }
+                Self {
+                    id: id_value,
+                    display_key,
+                    path_key,
+                    kind: BsonKind::Value { display, ty },
+                    bson: other.clone(),
+                }
             }
         }
     }
@@ -494,7 +549,7 @@ impl BsonNode {
     }
 
     fn display_key(&self) -> String {
-        self.key.clone().unwrap_or_else(|| String::from("value"))
+        self.display_key.clone().unwrap_or_else(|| String::from("value"))
     }
 
     fn value_display(&self) -> Option<String> {
@@ -527,7 +582,7 @@ fn format_bson_scalar(value: &Bson) -> (String, String) {
                 (format!("Double({f})"), String::from("Double"))
             }
         }
-        Bson::Decimal128(d) => (format!("Decimal128(\"{}\")", d), String::from("Decimal128")),
+        Bson::Decimal128(d) => (format!("numberDecimal(\"{}\")", d), String::from("Decimal128")),
         Bson::DateTime(dt) => match dt.try_to_rfc3339_string() {
             Ok(iso) => (iso, String::from("DateTime")),
             Err(_) => (format!("DateTime({})", dt.timestamp_millis()), String::from("DateTime")),
@@ -566,6 +621,140 @@ fn format_bson_scalar(value: &Bson) -> (String, String) {
     }
 }
 
+fn format_bson_shell(value: &Bson) -> String {
+    format_bson_shell_internal(value, 0)
+}
+
+fn format_bson_shell_internal(value: &Bson, level: usize) -> String {
+    match value {
+        Bson::Document(doc) => format_document_shell(doc, level),
+        Bson::Array(items) => format_array_shell(items, level),
+        _ => format_bson_shell_scalar(value),
+    }
+}
+
+fn format_document_shell(doc: &Document, level: usize) -> String {
+    if doc.is_empty() {
+        return String::from("{}");
+    }
+
+    let indent_current = shell_indent(level);
+    let indent_child = shell_indent(level + 1);
+
+    let mut entries: Vec<Vec<String>> = Vec::new();
+    for (key, value) in doc.iter() {
+        let value_repr = format_bson_shell_internal(value, level + 1);
+        let value_lines: Vec<&str> = value_repr.lines().collect();
+        let mut lines = Vec::new();
+        if let Some((first, rest)) = value_lines.split_first() {
+            lines.push(format!("{indent_child}\"{key}\": {first}"));
+            for line in rest {
+                lines.push(line.to_string());
+            }
+        } else {
+            lines.push(format!("{indent_child}\"{key}\": null"));
+        }
+        entries.push(lines);
+    }
+
+    let mut result = String::from("{\n");
+    let entry_count = entries.len();
+    for (index, mut entry) in entries.into_iter().enumerate() {
+        if let Some(last) = entry.last_mut() {
+            if index + 1 != entry_count {
+                last.push(',');
+            }
+        }
+        for line in entry {
+            result.push_str(&line);
+            result.push('\n');
+        }
+    }
+    result.push_str(&indent_current);
+    result.push('}');
+    result
+}
+
+fn format_array_shell(items: &[Bson], level: usize) -> String {
+    if items.is_empty() {
+        return String::from("[]");
+    }
+
+    let indent_current = shell_indent(level);
+    let indent_child = shell_indent(level + 1);
+
+    let mut result = String::from("[\n");
+    let len = items.len();
+    for (index, item) in items.iter().enumerate() {
+        let value_repr = format_bson_shell_internal(item, level + 1);
+        let value_lines: Vec<&str> = value_repr.lines().collect();
+        let last_line_index = value_lines.len().saturating_sub(1);
+        for (line_index, line) in value_lines.into_iter().enumerate() {
+            if line_index == 0 {
+                result.push_str(&indent_child);
+                result.push_str(line);
+            } else {
+                result.push_str(line);
+            }
+            if line_index == last_line_index && index + 1 != len {
+                result.push(',');
+            }
+            result.push('\n');
+        }
+    }
+    result.push_str(&indent_current);
+    result.push(']');
+    result
+}
+
+fn format_bson_shell_scalar(value: &Bson) -> String {
+    match value {
+        Bson::String(s) => serde_json::to_string(s).unwrap_or_else(|_| format!("\"{}\"", s)),
+        Bson::Boolean(b) => b.to_string(),
+        Bson::Int32(i) => i.to_string(),
+        Bson::Int64(i) => i.to_string(),
+        Bson::Double(f) => {
+            if f.is_finite() {
+                format!("{f}")
+            } else {
+                format!("Double({f})")
+            }
+        }
+        Bson::Decimal128(d) => format!("numberDecimal(\"{}\")", d),
+        Bson::DateTime(dt) => match dt.try_to_rfc3339_string() {
+            Ok(iso) => format!("ISODate(\"{}\")", iso),
+            Err(_) => format!("DateTime({})", dt.timestamp_millis()),
+        },
+        Bson::ObjectId(oid) => format!("ObjectId(\"{}\")", oid),
+        Bson::Binary(bin) => format!("Binary(len={}, subtype={:?})", bin.bytes.len(), bin.subtype),
+        Bson::Symbol(sym) => format!("Symbol({sym:?})"),
+        Bson::RegularExpression(regex) => {
+            if regex.options.is_empty() {
+                format!("Regex({:?})", regex.pattern)
+            } else {
+                format!("Regex({:?}, {:?})", regex.pattern, regex.options)
+            }
+        }
+        Bson::Timestamp(ts) => format!("Timestamp(time={}, increment={})", ts.time, ts.increment),
+        Bson::JavaScriptCode(code) => format!("Code({code:?})"),
+        Bson::JavaScriptCodeWithScope(code_with_scope) => {
+            let scope_len = code_with_scope.scope.len();
+            format!("CodeWithScope({:?}, scope_fields={})", code_with_scope.code, scope_len)
+        }
+        Bson::DbPointer(ptr) => format!("DbPointer({ptr:?})"),
+        Bson::Undefined => String::from("undefined"),
+        Bson::Null => String::from("null"),
+        Bson::MinKey => String::from("MinKey"),
+        Bson::MaxKey => String::from("MaxKey"),
+        Bson::Document(_) | Bson::Array(_) => unreachable!("containers handled separately"),
+    }
+}
+
+fn shell_indent(level: usize) -> String {
+    const INDENT: usize = 4;
+    " ".repeat(level * INDENT)
+}
+
 impl BsonTree {
     fn from_values(values: &[Bson]) -> Self {
         let mut id_gen = IdGenerator::default();
@@ -574,7 +763,7 @@ impl BsonTree {
         if values.is_empty() {
             let info_value = Bson::String("Документы не найдены".into());
             let placeholder =
-                BsonNode::from_bson(Some(String::from("info")), &info_value, &mut id_gen);
+                BsonNode::from_bson(Some(String::from("info")), None, &info_value, &mut id_gen);
             roots.push(placeholder);
         } else {
             for (index, value) in values.iter().enumerate() {
@@ -587,7 +776,7 @@ impl BsonTree {
                         .unwrap_or_else(|| base_label.clone()),
                     _ => base_label.clone(),
                 };
-                roots.push(BsonNode::from_bson(Some(key), value, &mut id_gen));
+                roots.push(BsonNode::from_bson(Some(key), None, value, &mut id_gen));
             }
         }
 
@@ -604,7 +793,8 @@ impl BsonTree {
     fn from_distinct(field: String, values: Vec<Bson>) -> Self {
         let mut id_gen = IdGenerator::default();
         let array_bson = Bson::Array(values);
-        let node = BsonNode::from_bson(Some(field), &array_bson, &mut id_gen);
+        let path_key = field.clone();
+        let node = BsonNode::from_bson(Some(field), Some(path_key), &array_bson, &mut id_gen);
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
 
@@ -613,7 +803,12 @@ impl BsonTree {
 
     fn from_count(value: Bson) -> Self {
         let mut id_gen = IdGenerator::default();
-        let node = BsonNode::from_bson(Some(String::from("count")), &value, &mut id_gen);
+        let node = BsonNode::from_bson(
+            Some(String::from("count")),
+            Some(String::from("count")),
+            &value,
+            &mut id_gen,
+        );
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
         Self { roots: vec![node], expanded }
@@ -632,7 +827,7 @@ impl BsonTree {
             _ => String::from("document"),
         };
 
-        let node = BsonNode::from_bson(Some(key), &value, &mut id_gen);
+        let node = BsonNode::from_bson(Some(key), None, &value, &mut id_gen);
         expanded.insert(node.id);
         roots.push(node);
 
@@ -764,14 +959,68 @@ impl BsonTree {
                 .push(separator(separator_color))
                 .push(type_cell);
 
-            let row = Container::new(row_content).width(Length::Fill).style(move |_| {
+            let menu_node_id = node.id;
+            let menu_tab_id = tab_id;
+            let path_enabled = self.node_path(menu_node_id).is_some();
+
+            let row_container = Container::new(row_content).width(Length::Fill).style(move |_| {
                 iced::widget::container::Style {
                     background: Some(background.into()),
                     ..Default::default()
                 }
             });
 
-            body = body.push(row);
+            let row_with_menu = TableContextMenu::new(row_container, move || {
+                let mut menu = Column::new().spacing(4).padding([4, 6]);
+
+                let copy_json = Button::new(Text::new("Копировать JSON").size(14))
+                    .padding([4, 12])
+                    .width(Length::Shrink)
+                    .on_press(Message::TableContextMenu {
+                        tab_id: menu_tab_id,
+                        node_id: menu_node_id,
+                        action: TableContextAction::CopyJson,
+                    });
+
+                let copy_key = Button::new(Text::new("Копировать ключ").size(14))
+                    .padding([4, 12])
+                    .width(Length::Shrink)
+                    .on_press(Message::TableContextMenu {
+                        tab_id: menu_tab_id,
+                        node_id: menu_node_id,
+                        action: TableContextAction::CopyKey,
+                    });
+
+                let copy_value = Button::new(Text::new("Копировать значение").size(14))
+                    .padding([4, 12])
+                    .width(Length::Shrink)
+                    .on_press(Message::TableContextMenu {
+                        tab_id: menu_tab_id,
+                        node_id: menu_node_id,
+                        action: TableContextAction::CopyValue,
+                    });
+
+                let mut copy_path = Button::new(Text::new("Копировать путь").size(14))
+                    .padding([4, 12])
+                    .width(Length::Shrink);
+
+                if path_enabled {
+                    copy_path = copy_path.on_press(Message::TableContextMenu {
+                        tab_id: menu_tab_id,
+                        node_id: menu_node_id,
+                        action: TableContextAction::CopyPath,
+                    });
+                }
+
+                menu = menu.push(copy_json);
+                menu = menu.push(copy_key);
+                menu = menu.push(copy_value);
+                menu = menu.push(copy_path);
+
+                menu.into()
+            });
+
+            body = body.push(row_with_menu);
         }
 
         let c_body =
@@ -822,6 +1071,30 @@ impl BsonTree {
         Self::find_node(&self.roots, node_id).map(BsonNode::is_container).unwrap_or(false)
     }
 
+    fn node_display_key(&self, node_id: usize) -> Option<String> {
+        Self::find_node(&self.roots, node_id).map(BsonNode::display_key)
+    }
+
+    fn node_value_display(&self, node_id: usize) -> Option<String> {
+        Self::find_node(&self.roots, node_id).map(|node| node.value_display().unwrap_or_default())
+    }
+
+    fn node_bson(&self, node_id: usize) -> Option<Bson> {
+        Self::find_node(&self.roots, node_id).map(|node| node.bson.clone())
+    }
+
+    fn node_path(&self, node_id: usize) -> Option<String> {
+        let nodes = Self::find_node_path(&self.roots, node_id, &mut Vec::new())?;
+        let mut components = Vec::new();
+        for node in nodes {
+            if let Some(component) = &node.path_key {
+                components.push(component.clone());
+            }
+        }
+
+        if components.is_empty() { None } else { Some(components.join(".")) }
+    }
+
     fn find_node<'a>(nodes: &'a [BsonNode], node_id: usize) -> Option<&'a BsonNode> {
         for node in nodes {
             if node.id == node_id {
@@ -833,6 +1106,30 @@ impl BsonTree {
                     return Some(found);
                 }
             }
+        }
+
+        None
+    }
+
+    fn find_node_path<'a>(
+        nodes: &'a [BsonNode],
+        node_id: usize,
+        stack: &mut Vec<&'a BsonNode>,
+    ) -> Option<Vec<&'a BsonNode>> {
+        for node in nodes {
+            stack.push(node);
+
+            if node.id == node_id {
+                return Some(stack.clone());
+            }
+
+            if let Some(children) = node.children() {
+                if let Some(result) = Self::find_node_path(children, node_id, stack) {
+                    return Some(result);
+                }
+            }
+
+            stack.pop();
         }
 
         None
@@ -1026,6 +1323,17 @@ impl CollectionTab {
             .height(Length::Fill)
             .width(Length::Fill)
             .into()
+    }
+
+    fn table_context_content(&self, node_id: usize, action: TableContextAction) -> Option<String> {
+        match action {
+            TableContextAction::CopyJson => {
+                self.bson_tree.node_bson(node_id).map(|bson| format_bson_shell(&bson))
+            }
+            TableContextAction::CopyKey => self.bson_tree.node_display_key(node_id),
+            TableContextAction::CopyValue => self.bson_tree.node_value_display(node_id),
+            TableContextAction::CopyPath => self.bson_tree.node_path(node_id),
+        }
     }
 
     fn request_view(&self, tab_id: TabId) -> Element<Message> {
@@ -1852,6 +2160,15 @@ impl App {
                     tab.collection.resize_split(split, ratio);
                 }
                 Task::none()
+            }
+            Message::TableContextMenu { tab_id, node_id, action } => {
+                let content = self
+                    .tabs
+                    .iter()
+                    .find(|tab| tab.id == tab_id)
+                    .and_then(|tab| tab.collection.table_context_content(node_id, action));
+
+                if let Some(text) = content { clipboard::write(text) } else { Task::none() }
             }
             Message::CollectionSkipPrev(tab_id) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
@@ -2988,11 +3305,8 @@ impl App {
 
     fn add_connection_from_entry(&mut self, entry: ConnectionEntry) -> Task<Message> {
         let uri = entry.uri();
-        let connection = OMDBConnection::from_uri(
-            &uri,
-            &entry.include_filter,
-            &entry.exclude_filter,
-        );
+        let connection =
+            OMDBConnection::from_uri(&uri, &entry.include_filter, &entry.exclude_filter);
         let client_id = self.next_client_id;
         self.next_client_id += 1;
 
@@ -3097,7 +3411,8 @@ fn connect_and_discover(connection: OMDBConnection) -> Result<ConnectionBootstra
     match connection {
         OMDBConnection::Uri { uri, include_filter, exclude_filter } => {
             let client = Client::with_uri_str(&uri).map_err(|err| err.to_string())?;
-            let mut databases = client.list_database_names().run().map_err(|err| err.to_string())?;
+            let mut databases =
+                client.list_database_names().run().map_err(|err| err.to_string())?;
 
             let include_items: Vec<_> =
                 include_filter.lines().map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
