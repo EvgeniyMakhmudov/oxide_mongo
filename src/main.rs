@@ -79,6 +79,7 @@ struct App {
     mode: AppMode,
     connections_window: Option<ConnectionsWindowState>,
     connection_form: Option<ConnectionFormState>,
+    collection_modal: Option<CollectionModalState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,6 +129,12 @@ enum Message {
         tab_id: TabId,
         node_id: usize,
     },
+    CollectionContextMenu {
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        action: CollectionContextAction,
+    },
     CollectionSkipChanged {
         tab_id: TabId,
         value: String,
@@ -173,6 +180,28 @@ enum Message {
         node_id: usize,
         action: TableContextAction,
     },
+    CollectionModalInputChanged(String),
+    CollectionModalConfirm,
+    CollectionModalCancel,
+    CollectionDeleteAllCompleted {
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        result: Result<u64, String>,
+    },
+    CollectionDeleteCollectionCompleted {
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        result: Result<(), String>,
+    },
+    CollectionRenameCompleted {
+        client_id: ClientId,
+        db_name: String,
+        old_collection: String,
+        new_name: String,
+        result: Result<(), String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +224,16 @@ enum TableContextAction {
     CopyKey,
     CopyValue,
     CopyPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CollectionContextAction {
+    OpenEmptyTab,
+    ViewDocuments,
+    DeleteTemplate,
+    DeleteAllDocuments,
+    DeleteCollection,
+    RenameCollection,
 }
 
 #[derive(Debug, Clone)]
@@ -356,6 +395,44 @@ impl ConnectionFormState {
     }
 }
 
+impl CollectionModalState {
+    fn new_delete_all(client_id: ClientId, db_name: String, collection: String) -> Self {
+        Self {
+            client_id,
+            db_name,
+            collection,
+            kind: CollectionModalKind::DeleteAllDocuments,
+            input: String::new(),
+            error: None,
+            processing: false,
+        }
+    }
+
+    fn new_delete_collection(client_id: ClientId, db_name: String, collection: String) -> Self {
+        Self {
+            client_id,
+            db_name,
+            collection,
+            kind: CollectionModalKind::DeleteCollection,
+            input: String::new(),
+            error: None,
+            processing: false,
+        }
+    }
+
+    fn new_rename(client_id: ClientId, db_name: String, collection: String) -> Self {
+        Self {
+            client_id,
+            db_name,
+            collection: collection.clone(),
+            kind: CollectionModalKind::RenameCollection,
+            input: collection,
+            error: None,
+            processing: false,
+        }
+    }
+}
+
 impl TestFeedback {
     fn message(&self) -> &str {
         match self {
@@ -401,6 +478,7 @@ enum AppMode {
     Main,
     Connections,
     ConnectionForm,
+    CollectionModal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,6 +505,24 @@ struct ConnectionFormState {
     validation_error: Option<String>,
     test_feedback: Option<TestFeedback>,
     testing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CollectionModalKind {
+    DeleteAllDocuments,
+    DeleteCollection,
+    RenameCollection,
+}
+
+#[derive(Debug, Clone)]
+struct CollectionModalState {
+    client_id: ClientId,
+    db_name: String,
+    collection: String,
+    kind: CollectionModalKind,
+    input: String,
+    error: Option<String>,
+    processing: bool,
 }
 
 #[derive(Debug)]
@@ -2314,6 +2410,7 @@ impl Default for App {
             mode: AppMode::Main,
             connections_window: None,
             connection_form: None,
+            collection_modal: None,
         }
     }
 }
@@ -2462,7 +2559,7 @@ impl App {
 
                 if is_double {
                     self.last_collection_click = None;
-                    self.open_collection_tab(client_id, db_name, collection);
+                    let _ = self.open_collection_tab(client_id, db_name, collection);
                 } else {
                     self.last_collection_click =
                         Some(CollectionClick { client_id, db_name, collection, at: now });
@@ -2476,7 +2573,283 @@ impl App {
                 }
                 Task::none()
             }
+            Message::CollectionContextMenu { client_id, db_name, collection, action } => {
+                match action {
+                    CollectionContextAction::OpenEmptyTab => {
+                        let _ = self.open_collection_tab(client_id, db_name, collection);
+                        Task::none()
+                    }
+                    CollectionContextAction::ViewDocuments => {
+                        let tab_id = self.open_collection_tab(
+                            client_id,
+                            db_name.clone(),
+                            collection.clone(),
+                        );
+                        self.collection_query_task(tab_id)
+                    }
+                    CollectionContextAction::DeleteTemplate => {
+                        let tab_id =
+                            self.open_collection_tab(client_id, db_name, collection.clone());
+                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                            let template = format!(
+                                "db.getCollection('{collection_name}').deleteMany({{ '': '' }});",
+                                collection_name = collection
+                            );
+                            tab.collection.editor = TextEditorContent::with_text(&template);
+                        }
+                        Task::none()
+                    }
+                    CollectionContextAction::DeleteAllDocuments => {
+                        self.collection_modal = Some(CollectionModalState::new_delete_all(
+                            client_id, db_name, collection,
+                        ));
+                        self.mode = AppMode::CollectionModal;
+                        Task::none()
+                    }
+                    CollectionContextAction::DeleteCollection => {
+                        self.collection_modal = Some(CollectionModalState::new_delete_collection(
+                            client_id, db_name, collection,
+                        ));
+                        self.mode = AppMode::CollectionModal;
+                        Task::none()
+                    }
+                    CollectionContextAction::RenameCollection => {
+                        self.collection_modal =
+                            Some(CollectionModalState::new_rename(client_id, db_name, collection));
+                        self.mode = AppMode::CollectionModal;
+                        Task::none()
+                    }
+                }
+            }
             Message::CollectionSend(tab_id) => self.collection_query_task(tab_id),
+            Message::CollectionModalInputChanged(value) => {
+                if let Some(modal) = self.collection_modal.as_mut() {
+                    modal.input = value;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::CollectionModalCancel => {
+                self.collection_modal = None;
+                self.mode = AppMode::Main;
+                Task::none()
+            }
+            Message::CollectionModalConfirm => {
+                let Some(modal) = self.collection_modal.as_mut() else {
+                    return Task::none();
+                };
+
+                if modal.processing {
+                    return Task::none();
+                }
+
+                let trimmed_input = modal.input.trim().to_string();
+                match modal.kind {
+                    CollectionModalKind::DeleteAllDocuments
+                    | CollectionModalKind::DeleteCollection => {
+                        if trimmed_input != modal.collection {
+                            modal.error = Some(String::from(
+                                "Для подтверждения введите точное имя коллекции.",
+                            ));
+                            return Task::none();
+                        }
+                    }
+                    CollectionModalKind::RenameCollection => {
+                        if trimmed_input.is_empty() {
+                            modal.error =
+                                Some(String::from("Новое имя коллекции не может быть пустым."));
+                            return Task::none();
+                        }
+
+                        if trimmed_input == modal.collection {
+                            modal.error = Some(String::from(
+                                "Новое имя коллекции должно отличаться от текущего.",
+                            ));
+                            return Task::none();
+                        }
+                    }
+                }
+
+                let client_id = modal.client_id;
+                let db_name = modal.db_name.clone();
+                let collection = modal.collection.clone();
+                let kind = modal.kind;
+
+                let handle = match self
+                    .clients
+                    .iter()
+                    .find(|client| client.id == client_id)
+                    .and_then(|client| client.handle.clone())
+                {
+                    Some(handle) => handle,
+                    None => {
+                        modal.error = Some(String::from("Нет активного соединения."));
+                        return Task::none();
+                    }
+                };
+
+                modal.processing = true;
+                modal.error = None;
+
+                match kind {
+                    CollectionModalKind::DeleteAllDocuments => {
+                        let future_db = db_name.clone();
+                        let future_collection = collection.clone();
+                        let message_db = db_name.clone();
+                        let message_collection = collection.clone();
+                        let handle_task = handle.clone();
+                        Task::perform(
+                            async move {
+                                let database = handle_task.database(&future_db);
+                                let coll = database.collection::<Document>(&future_collection);
+                                coll.delete_many(Document::new())
+                                    .run()
+                                    .map(|result| result.deleted_count)
+                                    .map_err(|error| error.to_string())
+                            },
+                            move |result| Message::CollectionDeleteAllCompleted {
+                                client_id,
+                                db_name: message_db.clone(),
+                                collection: message_collection.clone(),
+                                result,
+                            },
+                        )
+                    }
+                    CollectionModalKind::DeleteCollection => {
+                        let future_db = db_name.clone();
+                        let future_collection = collection.clone();
+                        let message_db = db_name.clone();
+                        let message_collection = collection.clone();
+                        let handle_task = handle.clone();
+                        Task::perform(
+                            async move {
+                                let database = handle_task.database(&future_db);
+                                let coll = database.collection::<Document>(&future_collection);
+                                coll.drop().run().map_err(|error| error.to_string())
+                            },
+                            move |result| Message::CollectionDeleteCollectionCompleted {
+                                client_id,
+                                db_name: message_db.clone(),
+                                collection: message_collection.clone(),
+                                result,
+                            },
+                        )
+                    }
+                    CollectionModalKind::RenameCollection => {
+                        let new_name = trimmed_input;
+                        let future_db = db_name.clone();
+                        let future_collection = collection.clone();
+                        let future_new = new_name.clone();
+                        let message_db = db_name.clone();
+                        let message_old = collection.clone();
+                        let message_new = new_name.clone();
+                        let handle_task = handle.clone();
+                        Task::perform(
+                            async move {
+                                let admin = handle_task.database("admin");
+                                let command = doc! {
+                                    "renameCollection": format!("{}.{}", future_db, future_collection),
+                                    "to": format!("{}.{}", future_db, future_new),
+                                    "dropTarget": false,
+                                };
+                                admin
+                                    .run_command(command)
+                                    .run()
+                                    .map(|_| ())
+                                    .map_err(|error| error.to_string())
+                            },
+                            move |result| Message::CollectionRenameCompleted {
+                                client_id,
+                                db_name: message_db.clone(),
+                                old_collection: message_old.clone(),
+                                new_name: message_new.clone(),
+                                result,
+                            },
+                        )
+                    }
+                }
+            }
+            Message::CollectionDeleteAllCompleted { client_id, db_name, collection, result } => {
+                if let Some(modal) = self.collection_modal.as_mut() {
+                    if modal.kind == CollectionModalKind::DeleteAllDocuments
+                        && modal.client_id == client_id
+                        && modal.db_name == db_name
+                        && modal.collection == collection
+                    {
+                        match result {
+                            Ok(_) => {
+                                self.collection_modal = None;
+                                self.mode = AppMode::Main;
+                            }
+                            Err(error) => {
+                                modal.processing = false;
+                                modal.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::CollectionDeleteCollectionCompleted {
+                client_id,
+                db_name,
+                collection,
+                result,
+            } => {
+                if let Some(modal) = self.collection_modal.as_mut() {
+                    if modal.kind == CollectionModalKind::DeleteCollection
+                        && modal.client_id == client_id
+                        && modal.db_name == db_name
+                        && modal.collection == collection
+                    {
+                        match result {
+                            Ok(()) => {
+                                self.collection_modal = None;
+                                self.mode = AppMode::Main;
+                                self.remove_collection_from_tree(client_id, &db_name, &collection);
+                            }
+                            Err(error) => {
+                                modal.processing = false;
+                                modal.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::CollectionRenameCompleted {
+                client_id,
+                db_name,
+                old_collection,
+                new_name,
+                result,
+            } => {
+                if let Some(modal) = self.collection_modal.as_mut() {
+                    if modal.kind == CollectionModalKind::RenameCollection
+                        && modal.client_id == client_id
+                        && modal.db_name == db_name
+                        && modal.collection == old_collection
+                    {
+                        match result {
+                            Ok(()) => {
+                                self.collection_modal = None;
+                                self.mode = AppMode::Main;
+                                self.rename_collection_in_tree(
+                                    client_id,
+                                    &db_name,
+                                    &old_collection,
+                                    &new_name,
+                                );
+                            }
+                            Err(error) => {
+                                modal.processing = false;
+                                modal.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
             Message::CollectionSkipChanged { tab_id, value } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.update_skip(value);
@@ -2788,6 +3161,13 @@ impl App {
                     self.main_view()
                 }
             }
+            AppMode::CollectionModal => {
+                if let Some(state) = &self.collection_modal {
+                    self.collection_modal_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
         }
     }
 
@@ -2975,6 +3355,131 @@ impl App {
             .height(Length::Fill)
             .center_x(Length::Fill)
             .center_y(Length::Fill)
+            .into()
+    }
+
+    fn collection_modal_view(&self, state: &CollectionModalState) -> Element<Message> {
+        let (title, warning, prompt, placeholder, confirm_label) = match state.kind {
+            CollectionModalKind::DeleteAllDocuments => (
+                "Удаление всех документов",
+                format!(
+                    "Будут удалены все документы из коллекции \"{}\" базы \"{}\". Это действие нельзя отменить.",
+                    state.collection, state.db_name
+                ),
+                Some(format!(
+                    "Подтвердите удаление всех документов введя название коллекции \"{}\".",
+                    state.collection
+                )),
+                state.collection.as_str(),
+                "Подтвердить удаление",
+            ),
+            CollectionModalKind::DeleteCollection => (
+                "Удаление коллекции",
+                format!(
+                    "Коллекция \"{}\" в базе \"{}\" будет удалена вместе со всеми документами. Это действие нельзя отменить.",
+                    state.collection, state.db_name
+                ),
+                Some(format!(
+                    "Подтвердите удаление коллекции введя её название \"{}\".",
+                    state.collection
+                )),
+                state.collection.as_str(),
+                "Подтвердить удаление",
+            ),
+            CollectionModalKind::RenameCollection => (
+                "Переименовать коллекцию",
+                format!(
+                    "Введите новое имя для коллекции \"{}\" в базе \"{}\".",
+                    state.collection, state.db_name
+                ),
+                None,
+                "Новое имя коллекции",
+                "Переименовать",
+            ),
+        };
+
+        let confirm_ready = match state.kind {
+            CollectionModalKind::DeleteAllDocuments | CollectionModalKind::DeleteCollection => {
+                state.input.trim() == state.collection && !state.processing
+            }
+            CollectionModalKind::RenameCollection => {
+                let trimmed = state.input.trim();
+                !trimmed.is_empty() && trimmed != state.collection && !state.processing
+            }
+        };
+
+        let mut column = Column::new()
+            .spacing(16)
+            .push(Text::new(title).size(22).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
+            .push(Text::new(warning).size(14).color(Color::from_rgb8(0x31, 0x38, 0x4a)));
+
+        if let Some(prompt) = prompt {
+            column =
+                column.push(Text::new(prompt).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
+        }
+
+        let input_field = text_input(placeholder, &state.input)
+            .padding([6, 10])
+            .width(Length::Fill)
+            .on_input(Message::CollectionModalInputChanged);
+
+        column = column.push(input_field);
+
+        if let Some(error) = &state.error {
+            column = column
+                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+        }
+
+        if state.processing {
+            column = column.push(
+                Text::new("Выполнение операции...")
+                    .size(13)
+                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+            );
+        }
+
+        let cancel_button = Button::new(Text::new("Отмена").size(14))
+            .padding([6, 16])
+            .on_press(Message::CollectionModalCancel);
+
+        let mut confirm_button = Button::new(Text::new(confirm_label).size(14)).padding([6, 16]);
+        if confirm_ready {
+            confirm_button = confirm_button.on_press(Message::CollectionModalConfirm);
+        } else {
+            confirm_button = confirm_button.style(|_, _| button::Style {
+                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
+                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
+                shadow: Shadow::default(),
+            });
+        }
+
+        let buttons = Row::new().spacing(12).push(cancel_button).push(confirm_button);
+
+        column = column.push(buttons);
+
+        let modal = Container::new(column).padding(24).width(Length::Fixed(420.0)).style(|_| {
+            container::Style {
+                background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
+                border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                shadow: Shadow {
+                    color: Color::from_rgba8(0, 0, 0, 0.18),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            }
+        });
+
+        Container::new(modal)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -3307,7 +3812,7 @@ impl App {
             )
             .push(text(&collection.name).size(14));
 
-        self.sidebar_button(
+        let base_button = self.sidebar_button(
             row,
             32.0,
             Message::CollectionClicked {
@@ -3315,7 +3820,84 @@ impl App {
                 db_name: db_name.to_owned(),
                 collection: collection.name.clone(),
             },
-        )
+        );
+
+        let db_name_owned = db_name.to_owned();
+        let collection_name = collection.name.clone();
+
+        ContextMenu::new(base_button, move || {
+            let mut menu = Column::new().spacing(2).padding([4, 6]);
+
+            let make_button = |label: &str, message: Message| -> Element<Message> {
+                Button::new(Text::new(label.to_owned()).size(14))
+                    .padding([4, 8])
+                    .on_press(message)
+                    .into()
+            };
+
+            menu = menu.push(make_button(
+                "Открыть пустую вкладку",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::OpenEmptyTab,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Посмотреть документы",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::ViewDocuments,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Удалить документы...",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::DeleteTemplate,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Удалить все документы...",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::DeleteAllDocuments,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Переименовать коллекцию...",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::RenameCollection,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Удалить коллекцию...",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::DeleteCollection,
+                },
+            ));
+
+            menu.into()
+        })
+        .into()
     }
 
     fn sidebar_button<'a>(
@@ -3515,7 +4097,12 @@ impl App {
         }
     }
 
-    fn open_collection_tab(&mut self, client_id: ClientId, db_name: String, collection: String) {
+    fn open_collection_tab(
+        &mut self,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+    ) -> TabId {
         let mut client_name = String::from("Неизвестный клиент");
         let mut values = vec![Bson::String(String::from(
             "Запрос пока не выполнен. Сформируйте запрос и нажмите Send.",
@@ -3542,6 +4129,89 @@ impl App {
             values,
         ));
         self.active_tab = Some(id);
+        id
+    }
+
+    fn remove_collection_from_tree(
+        &mut self,
+        client_id: ClientId,
+        db_name: &str,
+        collection: &str,
+    ) {
+        if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
+            if let Some(database) = client.databases.iter_mut().find(|d| d.name == db_name) {
+                database.collections.retain(|node| node.name != collection);
+            }
+        }
+
+        if let Some(click) = &self.last_collection_click {
+            if click.client_id == client_id
+                && click.db_name == db_name
+                && click.collection == collection
+            {
+                self.last_collection_click = None;
+            }
+        }
+
+        let removed: HashSet<TabId> = self
+            .tabs
+            .iter()
+            .filter(|tab| {
+                tab.collection.client_id == client_id
+                    && tab.collection.db_name == db_name
+                    && tab.collection.collection == collection
+            })
+            .map(|tab| tab.id)
+            .collect();
+
+        if !removed.is_empty() {
+            self.tabs.retain(|tab| !removed.contains(&tab.id));
+            if let Some(active) = self.active_tab {
+                if removed.contains(&active) {
+                    self.active_tab = self.tabs.last().map(|tab| tab.id);
+                }
+            }
+        }
+    }
+
+    fn rename_collection_in_tree(
+        &mut self,
+        client_id: ClientId,
+        db_name: &str,
+        old_collection: &str,
+        new_name: &str,
+    ) {
+        if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
+            if let Some(database) = client.databases.iter_mut().find(|d| d.name == db_name) {
+                if let Some(node) =
+                    database.collections.iter_mut().find(|node| node.name == old_collection)
+                {
+                    node.name = new_name.to_string();
+                }
+                database.collections.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+        }
+
+        for tab in &mut self.tabs {
+            let collection = &mut tab.collection;
+            if collection.client_id == client_id
+                && collection.db_name == db_name
+                && collection.collection == old_collection
+            {
+                collection.collection = new_name.to_string();
+                tab.title = format!("{}.{}", db_name, new_name);
+            }
+        }
+
+        if let Some(click) = &mut self.last_collection_click {
+            if click.client_id == client_id
+                && click.db_name == db_name
+                && click.collection == old_collection
+            {
+                click.collection = new_name.to_string();
+                click.at = Instant::now();
+            }
+        }
     }
 
     fn collection_query_task(&mut self, tab_id: TabId) -> Task<Message> {
