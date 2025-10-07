@@ -80,6 +80,7 @@ struct App {
     connections_window: Option<ConnectionsWindowState>,
     connection_form: Option<ConnectionFormState>,
     collection_modal: Option<CollectionModalState>,
+    database_modal: Option<DatabaseModalState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +135,11 @@ enum Message {
         db_name: String,
         collection: String,
         action: CollectionContextAction,
+    },
+    DatabaseContextMenu {
+        client_id: ClientId,
+        db_name: String,
+        action: DatabaseContextAction,
     },
     CollectionSkipChanged {
         tab_id: TabId,
@@ -202,6 +208,18 @@ enum Message {
         new_name: String,
         result: Result<(), String>,
     },
+    DatabaseModalInputChanged(String),
+    DatabaseModalConfirm,
+    DatabaseModalCancel,
+    DatabaseDropCompleted {
+        client_id: ClientId,
+        db_name: String,
+        result: Result<(), String>,
+    },
+    DatabasesRefreshed {
+        client_id: ClientId,
+        result: Result<Vec<String>, String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,6 +252,13 @@ enum CollectionContextAction {
     DeleteAllDocuments,
     DeleteCollection,
     RenameCollection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DatabaseContextAction {
+    Refresh,
+    Stats,
+    Drop,
 }
 
 #[derive(Debug, Clone)]
@@ -433,6 +458,12 @@ impl CollectionModalState {
     }
 }
 
+impl DatabaseModalState {
+    fn new_drop(client_id: ClientId, db_name: String) -> Self {
+        Self { client_id, db_name, input: String::new(), error: None, processing: false }
+    }
+}
+
 impl TestFeedback {
     fn message(&self) -> &str {
         match self {
@@ -479,6 +510,7 @@ enum AppMode {
     Connections,
     ConnectionForm,
     CollectionModal,
+    DatabaseModal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -520,6 +552,15 @@ struct CollectionModalState {
     db_name: String,
     collection: String,
     kind: CollectionModalKind,
+    input: String,
+    error: Option<String>,
+    processing: bool,
+}
+
+#[derive(Debug, Clone)]
+struct DatabaseModalState {
+    client_id: ClientId,
+    db_name: String,
     input: String,
     error: Option<String>,
     processing: bool,
@@ -1576,11 +1617,16 @@ impl CollectionTab {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(String::from(
-                "Запрос должен начинаться с db.<collection> или db.getCollection('<collection>').",
+                "Запрос должен начинаться с db.<collection>, db.getCollection('<collection>') или поддерживаемого метода базы.",
             ));
         }
 
         let cleaned = trimmed.trim_end_matches(';').trim();
+
+        if let Some(result) = self.try_parse_database_method(cleaned)? {
+            return Ok(result);
+        }
+
         let after_collection = Self::strip_collection_prefix(cleaned)?;
 
         let (method_name, args, remainder) = Self::extract_primary_method(after_collection)?;
@@ -1882,7 +1928,7 @@ impl CollectionTab {
             Err(String::from("После указания коллекции ожидается вызов метода."))
         } else {
             Err(String::from(
-                "Запрос должен начинаться с db.<collection> или db.getCollection('<collection>').",
+                "Запрос должен начинаться с db.<collection>, db.getCollection('<collection>') или поддерживаемого метода базы.",
             ))
         }
     }
@@ -2065,6 +2111,72 @@ impl CollectionTab {
         }
 
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn try_parse_database_method(&self, cleaned: &str) -> Result<Option<QueryOperation>, String> {
+        if let Some(rest) = cleaned.strip_prefix("db.") {
+            let rest = rest.trim();
+            if rest.starts_with("getCollection(") {
+                return Ok(None);
+            }
+
+            if let Some(paren_pos) = rest.find('(') {
+                let dot_pos = rest.find('.');
+                if dot_pos.is_none() || paren_pos < dot_pos.unwrap() {
+                    let synthetic = format!(".{rest}");
+                    let (method_name, args, remainder) = Self::extract_primary_method(&synthetic)?;
+                    if !remainder.trim().is_empty() {
+                        return Err(String::from(
+                            "Поддерживается только один вызов метода после указания базы данных.",
+                        ));
+                    }
+                    return self.parse_database_method(&method_name, &args).map(Some);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn parse_database_method(&self, method: &str, args: &str) -> Result<QueryOperation, String> {
+        let args_trimmed = args.trim();
+
+        match method {
+            "stats" => {
+                let mut command = doc! { "dbStats": 1 };
+
+                if !args_trimmed.is_empty() {
+                    if args_trimmed.starts_with('{') {
+                        let extras = Self::parse_json_object(args_trimmed)?;
+                        for (key, value) in extras {
+                            command.insert(key, value);
+                        }
+                    } else {
+                        let value: Value = serde_json::from_str(args_trimmed)
+                            .map_err(|error| format!("JSON parse error: {error}"))?;
+
+                        if let Some(number) = value.as_f64() {
+                            command.insert("scale", Bson::Double(number));
+                        } else if let Some(number) = value.as_i64() {
+                            command.insert("scale", Bson::Int64(number));
+                        } else if let Some(number) = value.as_u64() {
+                            if number <= i64::MAX as u64 {
+                                command.insert("scale", Bson::Int64(number as i64));
+                            } else {
+                                command.insert("scale", Bson::String(number.to_string()));
+                            }
+                        } else {
+                            return Err(String::from(
+                                "Аргумент db.stats ожидается числом или объектом с параметрами.",
+                            ));
+                        }
+                    }
+                }
+
+                Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
+            }
+            other => Err(format!("Метод db.{other} не поддерживается. Доступен: stats.",)),
+        }
     }
 
     fn parse_insert_one_options(source: &str) -> Result<Option<InsertOneParsedOptions>, String> {
@@ -2411,6 +2523,7 @@ impl Default for App {
             connections_window: None,
             connection_form: None,
             collection_modal: None,
+            database_modal: None,
         }
     }
 }
@@ -2573,6 +2686,18 @@ impl App {
                 }
                 Task::none()
             }
+            Message::DatabaseContextMenu { client_id, db_name, action } => match action {
+                DatabaseContextAction::Refresh => self.refresh_databases(client_id),
+                DatabaseContextAction::Stats => {
+                    let tab_id = self.open_database_stats_tab(client_id, db_name.clone());
+                    self.collection_query_task(tab_id)
+                }
+                DatabaseContextAction::Drop => {
+                    self.database_modal = Some(DatabaseModalState::new_drop(client_id, db_name));
+                    self.mode = AppMode::DatabaseModal;
+                    Task::none()
+                }
+            },
             Message::CollectionContextMenu { client_id, db_name, collection, action } => {
                 match action {
                     CollectionContextAction::OpenEmptyTab => {
@@ -2844,6 +2969,103 @@ impl App {
                             Err(error) => {
                                 modal.processing = false;
                                 modal.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::DatabaseModalInputChanged(value) => {
+                if let Some(modal) = self.database_modal.as_mut() {
+                    modal.input = value;
+                    modal.error = None;
+                }
+                Task::none()
+            }
+            Message::DatabaseModalCancel => {
+                self.database_modal = None;
+                self.mode = AppMode::Main;
+                Task::none()
+            }
+            Message::DatabaseModalConfirm => {
+                let Some(modal) = self.database_modal.as_mut() else {
+                    return Task::none();
+                };
+
+                if modal.processing {
+                    return Task::none();
+                }
+
+                if modal.input.trim() != modal.db_name {
+                    modal.error =
+                        Some(String::from("Для подтверждения введите точное имя базы данных."));
+                    return Task::none();
+                }
+
+                let client_id = modal.client_id;
+                let db_name = modal.db_name.clone();
+
+                let handle = match self
+                    .clients
+                    .iter()
+                    .find(|client| client.id == client_id)
+                    .and_then(|client| client.handle.clone())
+                {
+                    Some(handle) => handle,
+                    None => {
+                        modal.error = Some(String::from("Нет активного соединения."));
+                        return Task::none();
+                    }
+                };
+
+                modal.processing = true;
+                modal.error = None;
+
+                let future_db = db_name.clone();
+                let handle_task = handle.clone();
+                let message_db = db_name.clone();
+
+                Task::perform(
+                    async move {
+                        let database = handle_task.database(&future_db);
+                        database.drop().run().map_err(|error| error.to_string())
+                    },
+                    move |result| Message::DatabaseDropCompleted {
+                        client_id,
+                        db_name: message_db.clone(),
+                        result,
+                    },
+                )
+            }
+            Message::DatabaseDropCompleted { client_id, db_name, result } => {
+                if let Some(modal) = self.database_modal.as_mut() {
+                    if modal.client_id == client_id && modal.db_name == db_name {
+                        match result {
+                            Ok(()) => {
+                                self.database_modal = None;
+                                self.mode = AppMode::Main;
+                                self.remove_database_from_tree(client_id, &db_name);
+                            }
+                            Err(error) => {
+                                modal.processing = false;
+                                modal.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::DatabasesRefreshed { client_id, result } => {
+                if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
+                    match result {
+                        Ok(mut names) => {
+                            names.sort_unstable();
+                            client.databases = names.into_iter().map(DatabaseNode::new).collect();
+                        }
+                        Err(error) => {
+                            eprintln!("Не удалось обновить список баз данных: {error}");
+                            for database in &mut client.databases {
+                                database.state = DatabaseState::Error(error.clone());
                             }
                         }
                     }
@@ -3168,6 +3390,13 @@ impl App {
                     self.main_view()
                 }
             }
+            AppMode::DatabaseModal => {
+                if let Some(state) = &self.database_modal {
+                    self.database_modal_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
         }
     }
 
@@ -3483,6 +3712,92 @@ impl App {
             .into()
     }
 
+    fn database_modal_view(&self, state: &DatabaseModalState) -> Element<Message> {
+        let warning = format!(
+            "База данных \"{}\" будет полностью удалена вместе со всеми коллекциями и документами. Это действие нельзя отменить.",
+            state.db_name
+        );
+        let prompt =
+            format!("Подтвердите удаление всех данных, введя название базы \"{}\".", state.db_name);
+
+        let confirm_ready = !state.processing && state.input.trim() == state.db_name;
+
+        let mut column = Column::new()
+            .spacing(16)
+            .push(
+                Text::new("Удаление базы данных")
+                    .size(22)
+                    .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
+            )
+            .push(Text::new(warning).size(14).color(Color::from_rgb8(0x31, 0x38, 0x4a)))
+            .push(Text::new(prompt).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
+
+        let input_field = text_input("Название базы данных", &state.input)
+            .padding([6, 10])
+            .width(Length::Fill)
+            .on_input(Message::DatabaseModalInputChanged);
+
+        column = column.push(input_field);
+
+        if let Some(error) = &state.error {
+            column = column
+                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+        }
+
+        if state.processing {
+            column = column.push(
+                Text::new("Выполнение операции...")
+                    .size(13)
+                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+            );
+        }
+
+        let cancel_button = Button::new(Text::new("Отмена").size(14))
+            .padding([6, 16])
+            .on_press(Message::DatabaseModalCancel);
+
+        let mut confirm_button =
+            Button::new(Text::new("Подтвердить удаление").size(14)).padding([6, 16]);
+
+        if confirm_ready {
+            confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
+        } else {
+            confirm_button = confirm_button.style(|_, _| button::Style {
+                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
+                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
+                shadow: Shadow::default(),
+            });
+        }
+
+        let buttons = Row::new().spacing(12).push(cancel_button).push(confirm_button);
+        column = column.push(buttons);
+
+        let modal = Container::new(column).padding(24).width(Length::Fixed(420.0)).style(|_| {
+            container::Style {
+                background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
+                border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                shadow: Shadow {
+                    color: Color::from_rgba8(0, 0, 0, 0.18),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            }
+        });
+
+        Container::new(modal)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
+                ..Default::default()
+            })
+            .into()
+    }
+
     fn connection_form_view<'a>(&'a self, state: &'a ConnectionFormState) -> Element<'a, Message> {
         let title = match state.mode {
             ConnectionFormMode::Create => "Новое соединение",
@@ -3745,11 +4060,54 @@ impl App {
             )
             .push(text(&database.name));
 
-        let mut column = Column::new().spacing(4).push(self.sidebar_button(
+        let base_button = self.sidebar_button(
             db_row,
             16.0,
             Message::ToggleDatabase { client_id, db_name: database.name.clone() },
-        ));
+        );
+
+        let db_name_owned = database.name.clone();
+        let menu = ContextMenu::new(base_button, move || {
+            let mut menu = Column::new().spacing(2).padding([4, 6]);
+
+            let make_button = |label: &str, message: Message| -> Element<Message> {
+                Button::new(Text::new(label.to_owned()).size(14))
+                    .padding([4, 8])
+                    .on_press(message)
+                    .into()
+            };
+
+            menu = menu.push(make_button(
+                "Обновить",
+                Message::DatabaseContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    action: DatabaseContextAction::Refresh,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Статистика",
+                Message::DatabaseContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    action: DatabaseContextAction::Stats,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Удалить БД",
+                Message::DatabaseContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    action: DatabaseContextAction::Drop,
+                },
+            ));
+
+            menu.into()
+        });
+
+        let mut column = Column::new().spacing(4).push(menu);
 
         if database.expanded {
             match &database.state {
@@ -4132,6 +4490,41 @@ impl App {
         id
     }
 
+    fn open_database_stats_tab(&mut self, client_id: ClientId, db_name: String) -> TabId {
+        let tab_id =
+            self.open_collection_tab(client_id, db_name.clone(), String::from("(database)"));
+
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            tab.collection.editor = TextEditorContent::with_text("db.stats()");
+            tab.title = format!("{}.stats", db_name);
+        }
+
+        tab_id
+    }
+
+    fn refresh_databases(&mut self, client_id: ClientId) -> Task<Message> {
+        let handle = match self
+            .clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .and_then(|client| client.handle.clone())
+        {
+            Some(handle) => handle,
+            None => return Task::none(),
+        };
+
+        if let Some(client) = self.clients.iter_mut().find(|client| client.id == client_id) {
+            for database in &mut client.databases {
+                database.state = DatabaseState::Loading;
+            }
+        }
+
+        Task::perform(
+            async move { handle.list_database_names().run().map_err(|error| error.to_string()) },
+            move |result| Message::DatabasesRefreshed { client_id, result },
+        )
+    }
+
     fn remove_collection_from_tree(
         &mut self,
         client_id: ClientId,
@@ -4170,6 +4563,30 @@ impl App {
                 if removed.contains(&active) {
                     self.active_tab = self.tabs.last().map(|tab| tab.id);
                 }
+            }
+        }
+    }
+
+    fn remove_database_from_tree(&mut self, client_id: ClientId, db_name: &str) {
+        if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
+            client.databases.retain(|database| database.name != db_name);
+        }
+
+        if self
+            .last_collection_click
+            .as_ref()
+            .is_some_and(|click| click.client_id == client_id && click.db_name == db_name)
+        {
+            self.last_collection_click = None;
+        }
+
+        self.tabs.retain(|tab| {
+            !(tab.collection.client_id == client_id && tab.collection.db_name == db_name)
+        });
+
+        if let Some(active) = self.active_tab {
+            if self.tabs.iter().all(|tab| tab.id != active) {
+                self.active_tab = self.tabs.last().map(|tab| tab.id);
             }
         }
     }
@@ -4681,6 +5098,11 @@ fn run_collection_query(
 
             Ok(QueryResult::SingleDocument { document: response })
         }
+        QueryOperation::DatabaseCommand { db, command } => {
+            let database = client.database(&db);
+            let document = database.run_command(command).run().map_err(|err| err.to_string())?;
+            Ok(QueryResult::SingleDocument { document })
+        }
     }
 }
 
@@ -4790,6 +5212,7 @@ enum QueryOperation {
     InsertMany { documents: Vec<Document>, options: Option<InsertManyParsedOptions> },
     DeleteOne { filter: Document, options: Option<DeleteParsedOptions> },
     DeleteMany { filter: Document, options: Option<DeleteParsedOptions> },
+    DatabaseCommand { db: String, command: Document },
 }
 
 #[derive(Debug, Clone)]
