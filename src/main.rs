@@ -116,6 +116,10 @@ enum Message {
         db_name: String,
         result: Result<Vec<String>, String>,
     },
+    ConnectionContextMenu {
+        client_id: ClientId,
+        action: ConnectionContextAction,
+    },
     CollectionClicked {
         client_id: ClientId,
         db_name: String,
@@ -209,11 +213,17 @@ enum Message {
         result: Result<(), String>,
     },
     DatabaseModalInputChanged(String),
+    DatabaseModalCollectionInputChanged(String),
     DatabaseModalConfirm,
     DatabaseModalCancel,
     DatabaseDropCompleted {
         client_id: ClientId,
         db_name: String,
+        result: Result<(), String>,
+    },
+    DatabaseCreateCompleted {
+        client_id: ClientId,
+        _db_name: String,
         result: Result<(), String>,
     },
     DatabasesRefreshed {
@@ -242,6 +252,14 @@ enum TableContextAction {
     CopyKey,
     CopyValue,
     CopyPath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionContextAction {
+    CreateDatabase,
+    Refresh,
+    ServerStatus,
+    Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -460,7 +478,25 @@ impl CollectionModalState {
 
 impl DatabaseModalState {
     fn new_drop(client_id: ClientId, db_name: String) -> Self {
-        Self { client_id, db_name, input: String::new(), error: None, processing: false }
+        Self {
+            client_id,
+            mode: DatabaseModalMode::Drop { db_name },
+            input: String::new(),
+            collection_input: String::new(),
+            error: None,
+            processing: false,
+        }
+    }
+
+    fn new_create(client_id: ClientId) -> Self {
+        Self {
+            client_id,
+            mode: DatabaseModalMode::Create,
+            input: String::new(),
+            collection_input: String::new(),
+            error: None,
+            processing: false,
+        }
     }
 }
 
@@ -560,10 +596,17 @@ struct CollectionModalState {
 #[derive(Debug, Clone)]
 struct DatabaseModalState {
     client_id: ClientId,
-    db_name: String,
+    mode: DatabaseModalMode,
     input: String,
+    collection_input: String,
     error: Option<String>,
     processing: bool,
+}
+
+#[derive(Debug, Clone)]
+enum DatabaseModalMode {
+    Drop { db_name: String },
+    Create,
 }
 
 #[derive(Debug)]
@@ -1960,6 +2003,7 @@ impl CollectionTab {
 
                 Ok(QueryOperation::FindOneAndDelete { filter, options })
             }
+            "findOneAndModify" => self.parse_find_one_and_modify(args_trimmed),
             "deleteOne" => {
                 if args_trimmed.is_empty() {
                     return Err(String::from(
@@ -2713,6 +2757,196 @@ impl CollectionTab {
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
     }
 
+    fn parse_find_one_and_modify(&self, source: &str) -> Result<QueryOperation, String> {
+        if source.trim().is_empty() {
+            return Err(String::from("findOneAndModify требует JSON-объект с параметрами."));
+        }
+
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("findOneAndModify ожидает JSON-объект."))?;
+
+        let mut filter = Document::new();
+        let mut update_spec: Option<UpdateModificationsSpec> = None;
+        let mut remove = false;
+        let mut upsert = None;
+        let mut bypass_document_validation = None;
+        let mut array_filters = None;
+        let mut max_time = None;
+        let mut projection = None;
+        let mut return_after: Option<bool> = None;
+        let mut sort_doc = None;
+        let mut write_concern = None;
+        let mut collation = None;
+        let mut hint = None;
+        let mut let_vars = None;
+        let mut comment = None;
+
+        for (key, value) in object {
+            match key.as_str() {
+                "query" => {
+                    let json = serde_json::to_string(value)
+                        .map_err(|error| format!("JSON serialize error: {error}"))?;
+                    filter = Self::parse_json_object(&json)?;
+                }
+                "sort" => {
+                    let json = serde_json::to_string(value)
+                        .map_err(|error| format!("JSON serialize error: {error}"))?;
+                    sort_doc = Some(Self::parse_json_object(&json)?);
+                }
+                "update" => {
+                    let json = serde_json::to_string(value)
+                        .map_err(|error| format!("JSON serialize error: {error}"))?;
+                    update_spec = Some(Self::parse_update_spec(&json)?);
+                }
+                "remove" => {
+                    remove = value.as_bool().ok_or_else(|| {
+                        String::from("Параметр 'remove' должен быть булевым значением.")
+                    })?;
+                }
+                "new" | "returnNewDocument" => {
+                    let flag = value.as_bool().ok_or_else(|| {
+                        String::from("Параметр 'new' должен быть булевым значением.")
+                    })?;
+                    if let Some(current) = return_after {
+                        if current != flag {
+                            return Err(String::from(
+                                "Параметры 'new' и 'returnOriginal' конфликтуют.",
+                            ));
+                        }
+                    } else {
+                        return_after = Some(flag);
+                    }
+                }
+                "returnOriginal" => {
+                    let flag = value.as_bool().ok_or_else(|| {
+                        String::from("Параметр 'returnOriginal' должен быть булевым значением.")
+                    })?;
+                    let desired_after = !flag;
+                    if let Some(current) = return_after {
+                        if current != desired_after {
+                            return Err(String::from(
+                                "Параметры 'new' и 'returnOriginal' конфликтуют.",
+                            ));
+                        }
+                    } else {
+                        return_after = Some(desired_after);
+                    }
+                }
+                "fields" | "projection" => {
+                    let json = serde_json::to_string(value)
+                        .map_err(|error| format!("JSON serialize error: {error}"))?;
+                    let document = Self::parse_json_object(&json)?;
+                    if projection.is_some() {
+                        return Err(String::from(
+                            "Параметры 'fields' и 'projection' нельзя задавать одновременно.",
+                        ));
+                    }
+                    projection = Some(document);
+                }
+                "upsert" => {
+                    upsert = Some(Self::parse_bool_field(value, "upsert")?);
+                }
+                "bypassDocumentValidation" => {
+                    bypass_document_validation =
+                        Some(Self::parse_bool_field(value, "bypassDocumentValidation")?);
+                }
+                "arrayFilters" => {
+                    array_filters = Some(Self::parse_array_filters(value)?);
+                }
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    max_time = Some(Duration::from_millis(millis));
+                }
+                "writeConcern" => {
+                    write_concern = Self::parse_write_concern_value(value)?;
+                }
+                "collation" => {
+                    collation = Some(Self::parse_collation_value(value)?);
+                }
+                "hint" => {
+                    hint = Some(Self::parse_hint_value(value)?);
+                }
+                "let" => {
+                    let json = serde_json::to_string(value)
+                        .map_err(|error| format!("JSON serialize error: {error}"))?;
+                    let_vars = Some(Self::parse_json_object(&json)?);
+                }
+                "comment" => {
+                    comment = Some(Self::parse_bson_value(value)?);
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в findOneAndModify.",
+                    ));
+                }
+            }
+        }
+
+        if remove {
+            if update_spec.is_some() {
+                return Err(String::from(
+                    "Параметр 'update' не должен задаваться вместе с remove=true.",
+                ));
+            }
+            if upsert.is_some() {
+                return Err(String::from("Параметр 'upsert' не поддерживается при remove=true."));
+            }
+            if bypass_document_validation.is_some() {
+                return Err(String::from(
+                    "Параметр 'bypassDocumentValidation' не поддерживается при remove=true.",
+                ));
+            }
+            if array_filters.is_some() {
+                return Err(String::from(
+                    "Параметр 'arrayFilters' не поддерживается при remove=true.",
+                ));
+            }
+            if return_after.is_some() {
+                return Err(String::from(
+                    "Параметры возврата документа не поддерживаются при remove=true.",
+                ));
+            }
+
+            let mut options = FindOneAndDeleteParsedOptions::default();
+            options.write_concern = write_concern;
+            options.max_time = max_time;
+            options.projection = projection;
+            options.sort = sort_doc;
+            options.collation = collation;
+            options.hint = hint;
+            options.let_vars = let_vars;
+            options.comment = comment;
+
+            let options = if options.has_values() { Some(options) } else { None };
+            return Ok(QueryOperation::FindOneAndDelete { filter, options });
+        }
+
+        let update_spec = update_spec.ok_or_else(|| {
+            String::from("findOneAndModify требует параметр 'update', когда remove=false.")
+        })?;
+
+        let mut options = FindOneAndUpdateParsedOptions::default();
+        options.write_concern = write_concern;
+        options.upsert = upsert;
+        options.array_filters = array_filters;
+        options.bypass_document_validation = bypass_document_validation;
+        options.max_time = max_time;
+        options.projection = projection;
+        options.return_document = return_after
+            .map(|after| if after { ReturnDocument::After } else { ReturnDocument::Before });
+        options.sort = sort_doc;
+        options.collation = collation;
+        options.hint = hint;
+        options.let_vars = let_vars;
+        options.comment = comment;
+
+        let options = if options.has_values() { Some(options) } else { None };
+        Ok(QueryOperation::FindOneAndUpdate { filter, update: update_spec, options })
+    }
+
     fn parse_return_document(value: &Value) -> Result<ReturnDocument, String> {
         let text = value
             .as_str()
@@ -3106,6 +3340,30 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ConnectionContextMenu { client_id, action } => match action {
+                ConnectionContextAction::CreateDatabase => {
+                    let ready = self.clients.iter().any(|client| {
+                        client.id == client_id && matches!(client.status, ConnectionStatus::Ready)
+                    });
+                    if ready {
+                        self.database_modal = Some(DatabaseModalState::new_create(client_id));
+                        self.mode = AppMode::DatabaseModal;
+                    }
+                    Task::none()
+                }
+                ConnectionContextAction::Refresh => self.refresh_databases(client_id),
+                ConnectionContextAction::ServerStatus => {
+                    if let Some(task) = self.open_server_status_tab(client_id) {
+                        task
+                    } else {
+                        Task::none()
+                    }
+                }
+                ConnectionContextAction::Close => {
+                    self.close_client_connection(client_id);
+                    Task::none()
+                }
+            },
             Message::CollectionClicked { client_id, db_name, collection } => {
                 let now = Instant::now();
                 let is_double = self
@@ -3431,6 +3689,13 @@ impl App {
                 }
                 Task::none()
             }
+            Message::DatabaseModalCollectionInputChanged(value) => {
+                if let Some(modal) = self.database_modal.as_mut() {
+                    modal.collection_input = value;
+                    modal.error = None;
+                }
+                Task::none()
+            }
             Message::DatabaseModalCancel => {
                 self.database_modal = None;
                 self.mode = AppMode::Main;
@@ -3445,55 +3710,144 @@ impl App {
                     return Task::none();
                 }
 
-                if modal.input.trim() != modal.db_name {
-                    modal.error =
-                        Some(String::from("Для подтверждения введите точное имя базы данных."));
-                    return Task::none();
-                }
-
                 let client_id = modal.client_id;
-                let db_name = modal.db_name.clone();
+                match &modal.mode {
+                    DatabaseModalMode::Drop { db_name } => {
+                        if modal.input.trim() != db_name {
+                            modal.error = Some(String::from(
+                                "Для подтверждения введите точное имя базы данных.",
+                            ));
+                            return Task::none();
+                        }
 
-                let handle = match self
-                    .clients
-                    .iter()
-                    .find(|client| client.id == client_id)
-                    .and_then(|client| client.handle.clone())
-                {
-                    Some(handle) => handle,
-                    None => {
-                        modal.error = Some(String::from("Нет активного соединения."));
-                        return Task::none();
+                        let handle = match self
+                            .clients
+                            .iter()
+                            .find(|client| client.id == client_id)
+                            .and_then(|client| client.handle.clone())
+                        {
+                            Some(handle) => handle,
+                            None => {
+                                modal.error = Some(String::from("Нет активного соединения."));
+                                return Task::none();
+                            }
+                        };
+
+                        modal.processing = true;
+                        modal.error = None;
+
+                        let future_db = db_name.clone();
+                        let handle_task = handle.clone();
+                        let message_db = db_name.clone();
+
+                        Task::perform(
+                            async move {
+                                let database = handle_task.database(&future_db);
+                                database.drop().run().map_err(|error| error.to_string())
+                            },
+                            move |result| Message::DatabaseDropCompleted {
+                                client_id,
+                                db_name: message_db.clone(),
+                                result,
+                            },
+                        )
                     }
-                };
+                    DatabaseModalMode::Create => {
+                        let db_name_input = modal.input.trim();
+                        let collection_name_input = modal.collection_input.trim();
 
-                modal.processing = true;
-                modal.error = None;
+                        if db_name_input.is_empty() {
+                            modal.error = Some(String::from("Укажите имя базы данных."));
+                            return Task::none();
+                        }
 
-                let future_db = db_name.clone();
-                let handle_task = handle.clone();
-                let message_db = db_name.clone();
+                        if collection_name_input.is_empty() {
+                            modal.error = Some(String::from(
+                                "Укажите имя первой коллекции для создаваемой базы.",
+                            ));
+                            return Task::none();
+                        }
 
-                Task::perform(
-                    async move {
-                        let database = handle_task.database(&future_db);
-                        database.drop().run().map_err(|error| error.to_string())
-                    },
-                    move |result| Message::DatabaseDropCompleted {
-                        client_id,
-                        db_name: message_db.clone(),
-                        result,
-                    },
-                )
+                        let (handle, exists) = self
+                            .clients
+                            .iter()
+                            .find(|client| client.id == client_id)
+                            .map(|client| {
+                                let exists =
+                                    client.databases.iter().any(|db| db.name == db_name_input);
+                                (client.handle.clone(), exists)
+                            })
+                            .unwrap_or((None, false));
+
+                        if exists {
+                            modal.error =
+                                Some(String::from("База данных с таким именем уже существует."));
+                            return Task::none();
+                        }
+
+                        let Some(handle) = handle else {
+                            modal.error = Some(String::from("Нет активного соединения."));
+                            return Task::none();
+                        };
+
+                        modal.processing = true;
+                        modal.error = None;
+
+                        let db_name = db_name_input.to_string();
+                        let collection_name = collection_name_input.to_string();
+                        let handle_task = handle.clone();
+                        let message_db = db_name.clone();
+                        let collection_for_task = collection_name.clone();
+
+                        Task::perform(
+                            async move {
+                                let database = handle_task.database(&db_name);
+                                database
+                                    .create_collection(&collection_for_task)
+                                    .run()
+                                    .map_err(|error| error.to_string())
+                            },
+                            move |result| Message::DatabaseCreateCompleted {
+                                client_id,
+                                _db_name: message_db.clone(),
+                                result,
+                            },
+                        )
+                    }
+                }
             }
             Message::DatabaseDropCompleted { client_id, db_name, result } => {
                 if let Some(modal) = self.database_modal.as_mut() {
-                    if modal.client_id == client_id && modal.db_name == db_name {
+                    if modal.client_id == client_id {
+                        if let DatabaseModalMode::Drop { db_name: modal_db } = &modal.mode {
+                            if modal_db == &db_name {
+                                match result {
+                                    Ok(()) => {
+                                        self.database_modal = None;
+                                        self.mode = AppMode::Main;
+                                        self.remove_database_from_tree(client_id, &db_name);
+                                    }
+                                    Err(error) => {
+                                        modal.processing = false;
+                                        modal.error = Some(error);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::DatabaseCreateCompleted { client_id, _db_name: _, result } => {
+                if let Some(modal) = self.database_modal.as_mut() {
+                    if modal.client_id == client_id
+                        && matches!(modal.mode, DatabaseModalMode::Create)
+                    {
                         match result {
                             Ok(()) => {
                                 self.database_modal = None;
                                 self.mode = AppMode::Main;
-                                self.remove_database_from_tree(client_id, &db_name);
+                                return self.refresh_databases(client_id);
                             }
                             Err(error) => {
                                 modal.processing = false;
@@ -4162,67 +4516,149 @@ impl App {
     }
 
     fn database_modal_view(&self, state: &DatabaseModalState) -> Element<Message> {
-        let warning = format!(
-            "База данных \"{}\" будет полностью удалена вместе со всеми коллекциями и документами. Это действие нельзя отменить.",
-            state.db_name
-        );
-        let prompt =
-            format!("Подтвердите удаление всех данных, введя название базы \"{}\".", state.db_name);
+        let base = match &state.mode {
+            DatabaseModalMode::Drop { db_name } => {
+                let warning = format!(
+                    "База данных \"{}\" будет полностью удалена вместе со всеми коллекциями и документами. Это действие нельзя отменить.",
+                    db_name
+                );
+                let prompt = format!(
+                    "Подтвердите удаление всех данных, введя название базы \"{}\".",
+                    db_name
+                );
 
-        let confirm_ready = !state.processing && state.input.trim() == state.db_name;
+                let confirm_ready = !state.processing && state.input.trim() == db_name;
 
-        let mut column = Column::new()
-            .spacing(16)
-            .push(
-                Text::new("Удаление базы данных")
-                    .size(22)
-                    .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
-            )
-            .push(Text::new(warning).size(14).color(Color::from_rgb8(0x31, 0x38, 0x4a)))
-            .push(Text::new(prompt).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
+                let mut column = Column::new()
+                    .spacing(16)
+                    .push(
+                        Text::new("Удаление базы данных")
+                            .size(22)
+                            .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
+                    )
+                    .push(Text::new(warning).size(14).color(Color::from_rgb8(0x31, 0x38, 0x4a)))
+                    .push(Text::new(prompt).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
 
-        let input_field = text_input("Название базы данных", &state.input)
-            .padding([6, 10])
-            .width(Length::Fill)
-            .on_input(Message::DatabaseModalInputChanged);
+                let input_field = text_input("Название базы данных", &state.input)
+                    .padding([6, 10])
+                    .width(Length::Fill)
+                    .on_input(Message::DatabaseModalInputChanged);
 
-        column = column.push(input_field);
+                column = column.push(input_field);
 
-        if let Some(error) = &state.error {
-            column = column
-                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
-        }
+                if let Some(error) = &state.error {
+                    column = column.push(
+                        Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
+                    );
+                }
 
-        if state.processing {
-            column = column.push(
-                Text::new("Выполнение операции...")
-                    .size(13)
-                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-            );
-        }
+                if state.processing {
+                    column = column.push(
+                        Text::new("Выполнение операции...")
+                            .size(13)
+                            .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+                    );
+                }
 
-        let cancel_button = Button::new(Text::new("Отмена").size(14))
-            .padding([6, 16])
-            .on_press(Message::DatabaseModalCancel);
+                let cancel_button = Button::new(Text::new("Отмена").size(14))
+                    .padding([6, 16])
+                    .on_press(Message::DatabaseModalCancel);
 
-        let mut confirm_button =
-            Button::new(Text::new("Подтвердить удаление").size(14)).padding([6, 16]);
+                let mut confirm_button =
+                    Button::new(Text::new("Подтвердить удаление").size(14)).padding([6, 16]);
 
-        if confirm_ready {
-            confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
-        } else {
-            confirm_button = confirm_button.style(|_, _| button::Style {
-                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-                shadow: Shadow::default(),
-            });
-        }
+                if confirm_ready {
+                    confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
+                } else {
+                    confirm_button = confirm_button.style(|_, _| button::Style {
+                        background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
+                        text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
+                        border: border::rounded(6)
+                            .width(1)
+                            .color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
+                        shadow: Shadow::default(),
+                    });
+                }
 
-        let buttons = Row::new().spacing(12).push(cancel_button).push(confirm_button);
-        column = column.push(buttons);
+                let buttons = Row::new().spacing(12).push(cancel_button).push(confirm_button);
+                column = column.push(buttons);
 
-        let modal = Container::new(column).padding(24).width(Length::Fixed(420.0)).style(|_| {
+                column
+            }
+            DatabaseModalMode::Create => {
+                let confirm_ready = !state.processing
+                    && !state.input.trim().is_empty()
+                    && !state.collection_input.trim().is_empty();
+
+                let mut column = Column::new()
+                    .spacing(16)
+                    .push(
+                        Text::new("Создать базу данных")
+                            .size(22)
+                            .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
+                    )
+                    .push(
+                        Text::new(
+                            "MongoDB создаёт базу данных только при создании первой коллекции. Укажите имя базы и первой коллекции, которая будет создана сразу.",
+                        )
+                        .size(13)
+                        .color(Color::from_rgb8(0x55, 0x5f, 0x73)),
+                    );
+
+                let input_field = text_input("Имя базы данных", &state.input)
+                    .padding([6, 10])
+                    .width(Length::Fill)
+                    .on_input(Message::DatabaseModalInputChanged);
+
+                let collection_field = text_input("Имя первой коллекции", &state.collection_input)
+                    .padding([6, 10])
+                    .width(Length::Fill)
+                    .on_input(Message::DatabaseModalCollectionInputChanged);
+
+                column = column.push(input_field).push(collection_field);
+
+                if let Some(error) = &state.error {
+                    column = column.push(
+                        Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
+                    );
+                }
+
+                if state.processing {
+                    column = column.push(
+                        Text::new("Создание базы данных...")
+                            .size(13)
+                            .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+                    );
+                }
+
+                let cancel_button = Button::new(Text::new("Отмена").size(14))
+                    .padding([6, 16])
+                    .on_press(Message::DatabaseModalCancel);
+
+                let mut confirm_button =
+                    Button::new(Text::new("Создать").size(14)).padding([6, 16]);
+
+                if confirm_ready {
+                    confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
+                } else {
+                    confirm_button = confirm_button.style(|_, _| button::Style {
+                        background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
+                        text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
+                        border: border::rounded(6)
+                            .width(1)
+                            .color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
+                        shadow: Shadow::default(),
+                    });
+                }
+
+                let buttons = Row::new().spacing(12).push(cancel_button).push(confirm_button);
+                column = column.push(buttons);
+
+                column
+            }
+        };
+
+        let modal = Container::new(base).padding(24).width(Length::Fixed(420.0)).style(|_| {
             container::Style {
                 background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
                 border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
@@ -4452,11 +4888,53 @@ impl App {
             .push(text(&client.name).size(16))
             .push(text(status_label.clone()).size(12));
 
-        let mut column = Column::new().spacing(4).push(self.sidebar_button(
-            header_row,
-            0.0,
-            Message::ToggleClient(client.id),
-        ));
+        let base_button = self.sidebar_button(header_row, 0.0, Message::ToggleClient(client.id));
+
+        let context_client_id = client.id;
+        let is_ready = matches!(client.status, ConnectionStatus::Ready);
+
+        let menu = ContextMenu::new(base_button, move || {
+            let mut menu = Column::new().spacing(2).padding([4, 6]);
+
+            let disabled_style = |_: &Theme, _: button::Status| button::Style {
+                background: Some(Color::from_rgb8(0xe7, 0xea, 0xf0).into()),
+                text_color: Color::from_rgb8(0x92, 0x99, 0xa6),
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd2, 0xd7, 0xe1)),
+                shadow: Shadow::default(),
+            };
+
+            let make_button =
+                |label: &str, action: ConnectionContextAction, enabled: bool| -> Element<Message> {
+                    let mut button =
+                        Button::new(Text::new(label.to_owned()).size(14)).padding([4, 8]);
+                    if enabled {
+                        button = button.on_press(Message::ConnectionContextMenu {
+                            client_id: context_client_id,
+                            action,
+                        });
+                    } else {
+                        button = button.style(disabled_style);
+                    }
+                    button.into()
+                };
+
+            menu = menu.push(make_button(
+                "Создать базу данных",
+                ConnectionContextAction::CreateDatabase,
+                is_ready,
+            ));
+            menu = menu.push(make_button("Обновить", ConnectionContextAction::Refresh, is_ready));
+            menu = menu.push(make_button(
+                "Статус сервера",
+                ConnectionContextAction::ServerStatus,
+                is_ready,
+            ));
+            menu = menu.push(make_button("Закрыть", ConnectionContextAction::Close, true));
+
+            menu.into()
+        });
+
+        let mut column = Column::new().spacing(4).push(menu);
 
         if matches!(client.status, ConnectionStatus::Failed(_)) {
             column = column.push(
@@ -4945,10 +5423,62 @@ impl App {
 
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
             tab.collection.editor = TextEditorContent::with_text("db.stats()");
-            tab.title = format!("{}.stats", db_name);
+            tab.title = String::from("stats");
         }
 
         tab_id
+    }
+
+    fn open_server_status_tab(&mut self, client_id: ClientId) -> Option<Task<Message>> {
+        let (client_name, handle) = self
+            .clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .map(|client| (client.name.clone(), client.handle.clone()))?;
+
+        let handle = handle?;
+
+        let db_name = String::from("admin");
+        let collection_label = String::from("serverStatus");
+        let placeholder = vec![Bson::String(String::from("Загрузка serverStatus..."))];
+
+        let id = self.next_tab_id;
+        self.next_tab_id += 1;
+
+        let mut tab = TabData::new_collection(
+            id,
+            client_id,
+            client_name.clone(),
+            db_name,
+            collection_label,
+            placeholder,
+        );
+
+        tab.title = String::from("serverStatus");
+        tab.collection.editor = TextEditorContent::with_text("db.runCommand({ serverStatus: 1 })");
+
+        self.tabs.push(tab);
+        self.active_tab = Some(id);
+
+        Some(Self::server_status_task(handle, id))
+    }
+
+    fn server_status_task(handle: Arc<Client>, tab_id: TabId) -> Task<Message> {
+        Task::perform(
+            async move {
+                let start = Instant::now();
+                let result = handle
+                    .database("admin")
+                    .run_command(doc! { "serverStatus": 1 })
+                    .run()
+                    .map_err(|error| error.to_string());
+                (result, start.elapsed())
+            },
+            move |(result, duration)| {
+                let mapped = result.map(|document| QueryResult::SingleDocument { document });
+                Message::CollectionQueryCompleted { tab_id, result: mapped, duration }
+            },
+        )
     }
 
     fn refresh_databases(&mut self, client_id: ClientId) -> Task<Message> {
@@ -5040,6 +5570,30 @@ impl App {
         }
     }
 
+    fn close_client_connection(&mut self, client_id: ClientId) {
+        self.clients.retain(|client| client.id != client_id);
+
+        if self.last_collection_click.as_ref().is_some_and(|click| click.client_id == client_id) {
+            self.last_collection_click = None;
+        }
+
+        let removed: HashSet<TabId> = self
+            .tabs
+            .iter()
+            .filter(|tab| tab.collection.client_id == client_id)
+            .map(|tab| tab.id)
+            .collect();
+
+        if !removed.is_empty() {
+            self.tabs.retain(|tab| !removed.contains(&tab.id));
+            if let Some(active) = self.active_tab {
+                if removed.contains(&active) {
+                    self.active_tab = self.tabs.last().map(|tab| tab.id);
+                }
+            }
+        }
+    }
+
     fn rename_collection_in_tree(
         &mut self,
         client_id: ClientId,
@@ -5065,7 +5619,7 @@ impl App {
                 && collection.collection == old_collection
             {
                 collection.collection = new_name.to_string();
-                tab.title = format!("{}.{}", db_name, new_name);
+                tab.title = new_name.to_string();
             }
         }
 
@@ -5201,7 +5755,7 @@ impl TabData {
         collection: String,
         values: Vec<Bson>,
     ) -> Self {
-        let title = format!("{db_name}.{collection}");
+        let title = collection.clone();
         Self {
             id,
             title,
