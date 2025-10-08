@@ -60,8 +60,8 @@
 ## Операции которыу нужно поддержать
 - [DONE] insertOne, insertMany — вставка документов
 - [DONE] find / findOne — чтение;
-- findOneAndUpdate/Replace/Delete - одиночные модификации возвращающие документ
-- updateOne, updateMany, replaceOne — модификация документов возвращающие информацию о результате операции
+- [DONE] findOneAndUpdate/Replace/Delete - одиночные модификации возвращающие документ
+- [DONE] updateOne, updateMany, replaceOne — модификация документов возвращающие информацию о результате операции
 - [DONE] deleteOne, deleteMany — удаление
 - [DONE] countDocuments, estimatedDocumentCount — точный и приблизительный подсчёт
 - [DONE] distinct — набор уникальных значений поля

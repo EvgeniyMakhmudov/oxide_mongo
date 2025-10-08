@@ -21,7 +21,7 @@ use iced_aw::{
     menu::{Item as MenuItemWidget, Menu, MenuBar},
 };
 use mongodb::bson::{self, Bson, Document, doc};
-use mongodb::options::{Acknowledgment, Collation, Hint, WriteConcern};
+use mongodb::options::{Acknowledgment, Collation, Hint, ReturnDocument, WriteConcern};
 use mongodb::sync::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1829,6 +1829,137 @@ impl CollectionTab {
 
                 Ok(QueryOperation::InsertMany { documents, options })
             }
+            "updateOne" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() < 2 || parts.len() > 3 {
+                    return Err(String::from(
+                        "updateOne принимает фильтр, обновление и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let update = Self::parse_update_spec(&parts[1])?;
+                let options = if let Some(third) = parts.get(2) {
+                    Self::parse_update_options(third)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::UpdateOne { filter, update, options })
+            }
+            "updateMany" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() < 2 || parts.len() > 3 {
+                    return Err(String::from(
+                        "updateMany принимает фильтр, обновление и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let update = Self::parse_update_spec(&parts[1])?;
+                let options = if let Some(third) = parts.get(2) {
+                    Self::parse_update_options(third)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::UpdateMany { filter, update, options })
+            }
+            "replaceOne" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() < 2 || parts.len() > 3 {
+                    return Err(String::from(
+                        "replaceOne принимает фильтр, документ замену и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let replacement = Self::parse_json_object(&parts[1])?;
+                let options = if let Some(third) = parts.get(2) {
+                    Self::parse_replace_options(third)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::ReplaceOne { filter, replacement, options })
+            }
+            "findOneAndUpdate" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() < 2 || parts.len() > 3 {
+                    return Err(String::from(
+                        "findOneAndUpdate принимает фильтр, обновление и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let update = Self::parse_update_spec(&parts[1])?;
+                let options = if let Some(third) = parts.get(2) {
+                    Self::parse_find_one_and_update_options(third)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::FindOneAndUpdate { filter, update, options })
+            }
+            "findOneAndReplace" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() < 2 || parts.len() > 3 {
+                    return Err(String::from(
+                        "findOneAndReplace принимает фильтр, документ замены и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let replacement = Self::parse_json_object(&parts[1])?;
+                let options = if let Some(third) = parts.get(2) {
+                    Self::parse_find_one_and_replace_options(third)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::FindOneAndReplace { filter, replacement, options })
+            }
+            "findOneAndDelete" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "findOneAndDelete принимает фильтр и необязательный объект options.",
+                    ));
+                }
+
+                let filter = Self::parse_json_object(&parts[0])?;
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_find_one_and_delete_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::FindOneAndDelete { filter, options })
+            }
             "deleteOne" => {
                 if args_trimmed.is_empty() {
                     return Err(String::from(
@@ -1883,7 +2014,7 @@ impl CollectionTab {
                 Ok(QueryOperation::Find { filter })
             }
             other => Err(format!(
-                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, deleteOne, deleteMany.",
+                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany.",
             )),
         }
     }
@@ -2278,6 +2409,324 @@ impl CollectionTab {
         }
 
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_update_spec(source: &str) -> Result<UpdateModificationsSpec, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+
+        if let Some(object) = value.as_object() {
+            let document = bson::to_document(object)
+                .map_err(|error| format!("BSON conversion error: {error}"))?;
+            Ok(UpdateModificationsSpec::Document(document))
+        } else if let Some(array) = value.as_array() {
+            let mut pipeline = Vec::with_capacity(array.len());
+            for (index, entry) in array.iter().enumerate() {
+                let object = entry.as_object().ok_or_else(|| {
+                    format!("Элемент pipeline под индексом {index} должен быть JSON-объектом.",)
+                })?;
+                let document = bson::to_document(object)
+                    .map_err(|error| format!("BSON conversion error: {error}"))?;
+                pipeline.push(document);
+            }
+            if pipeline.is_empty() {
+                return Err(String::from(
+                    "Пустой массив обновления не поддерживается. Добавьте хотя бы один этап.",
+                ));
+            }
+            Ok(UpdateModificationsSpec::Pipeline(pipeline))
+        } else {
+            Err(String::from(
+                "Аргумент обновления должен быть объектом с операторами или массивом стадий.",
+            ))
+        }
+    }
+
+    fn parse_update_options(source: &str) -> Result<Option<UpdateParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции update должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = UpdateParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => options.write_concern = Self::parse_write_concern_value(value)?,
+                "upsert" => {
+                    options.upsert = Some(Self::parse_bool_field(value, "upsert")?);
+                }
+                "arrayFilters" => {
+                    options.array_filters = Some(Self::parse_array_filters(value)?);
+                }
+                "collation" => options.collation = Some(Self::parse_collation_value(value)?),
+                "hint" => options.hint = Some(Self::parse_hint_value(value)?),
+                "bypassDocumentValidation" => {
+                    options.bypass_document_validation =
+                        Some(Self::parse_bool_field(value, "bypassDocumentValidation")?);
+                }
+                "let" => {
+                    options.let_vars = Some(Self::parse_document_field(value, "let")?);
+                }
+                "comment" => {
+                    options.comment = Some(Self::parse_bson_value(value)?);
+                }
+                "sort" => {
+                    options.sort = Some(Self::parse_document_field(value, "sort")?);
+                }
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options updateOne/updateMany. Доступны: writeConcern, upsert, arrayFilters, collation, hint, bypassDocumentValidation, let, comment, sort.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_replace_options(source: &str) -> Result<Option<ReplaceParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции replace должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = ReplaceParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => options.write_concern = Self::parse_write_concern_value(value)?,
+                "upsert" => options.upsert = Some(Self::parse_bool_field(value, "upsert")?),
+                "collation" => options.collation = Some(Self::parse_collation_value(value)?),
+                "hint" => options.hint = Some(Self::parse_hint_value(value)?),
+                "bypassDocumentValidation" => {
+                    options.bypass_document_validation =
+                        Some(Self::parse_bool_field(value, "bypassDocumentValidation")?);
+                }
+                "let" => options.let_vars = Some(Self::parse_document_field(value, "let")?),
+                "comment" => options.comment = Some(Self::parse_bson_value(value)?),
+                "sort" => options.sort = Some(Self::parse_document_field(value, "sort")?),
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options replaceOne. Доступны: writeConcern, upsert, collation, hint, bypassDocumentValidation, let, comment, sort.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_bool_field(value: &Value, field: &str) -> Result<bool, String> {
+        value.as_bool().ok_or_else(|| {
+            format!("Параметр '{field}' должен быть булевым значением (true/false).")
+        })
+    }
+
+    fn parse_document_field(value: &Value, field: &str) -> Result<Document, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("Параметр '{field}' должен быть JSON-объектом."))?;
+        bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
+    }
+
+    fn parse_array_filters(value: &Value) -> Result<Vec<Document>, String> {
+        let array = value
+            .as_array()
+            .ok_or_else(|| String::from("arrayFilters должен быть массивом объектов."))?;
+        if array.is_empty() {
+            return Err(String::from("arrayFilters должен содержать хотя бы один объект фильтра."));
+        }
+
+        let mut filters = Vec::with_capacity(array.len());
+        for (index, entry) in array.iter().enumerate() {
+            let object = entry.as_object().ok_or_else(|| {
+                format!("Элемент arrayFilters с индексом {index} должен быть JSON-объектом.",)
+            })?;
+            let filter = bson::to_document(object)
+                .map_err(|error| format!("BSON conversion error: {error}"))?;
+            filters.push(filter);
+        }
+
+        Ok(filters)
+    }
+
+    fn parse_bson_value(value: &Value) -> Result<Bson, String> {
+        bson::to_bson(value).map_err(|error| format!("BSON conversion error: {error}"))
+    }
+
+    fn u64_to_bson(value: u64) -> Bson {
+        if value <= i64::MAX as u64 {
+            Bson::Int64(value as i64)
+        } else {
+            Bson::String(value.to_string())
+        }
+    }
+
+    fn parse_find_one_and_update_options(
+        source: &str,
+    ) -> Result<Option<FindOneAndUpdateParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции findOneAndUpdate должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = FindOneAndUpdateParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => options.write_concern = Self::parse_write_concern_value(value)?,
+                "upsert" => options.upsert = Some(Self::parse_bool_field(value, "upsert")?),
+                "arrayFilters" => options.array_filters = Some(Self::parse_array_filters(value)?),
+                "bypassDocumentValidation" => {
+                    options.bypass_document_validation =
+                        Some(Self::parse_bool_field(value, "bypassDocumentValidation")?);
+                }
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "projection" => {
+                    options.projection = Some(Self::parse_document_field(value, "projection")?)
+                }
+                "returnDocument" => {
+                    options.return_document = Some(Self::parse_return_document(value)?);
+                }
+                "sort" => options.sort = Some(Self::parse_document_field(value, "sort")?),
+                "collation" => options.collation = Some(Self::parse_collation_value(value)?),
+                "hint" => options.hint = Some(Self::parse_hint_value(value)?),
+                "let" => options.let_vars = Some(Self::parse_document_field(value, "let")?),
+                "comment" => options.comment = Some(Self::parse_bson_value(value)?),
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options findOneAndUpdate. Доступны: writeConcern, upsert, arrayFilters, bypassDocumentValidation, maxTimeMS, projection, returnDocument, sort, collation, hint, let, comment.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_find_one_and_replace_options(
+        source: &str,
+    ) -> Result<Option<FindOneAndReplaceParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции findOneAndReplace должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = FindOneAndReplaceParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => options.write_concern = Self::parse_write_concern_value(value)?,
+                "upsert" => options.upsert = Some(Self::parse_bool_field(value, "upsert")?),
+                "bypassDocumentValidation" => {
+                    options.bypass_document_validation =
+                        Some(Self::parse_bool_field(value, "bypassDocumentValidation")?);
+                }
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "projection" => {
+                    options.projection = Some(Self::parse_document_field(value, "projection")?)
+                }
+                "returnDocument" => {
+                    options.return_document = Some(Self::parse_return_document(value)?);
+                }
+                "sort" => options.sort = Some(Self::parse_document_field(value, "sort")?),
+                "collation" => options.collation = Some(Self::parse_collation_value(value)?),
+                "hint" => options.hint = Some(Self::parse_hint_value(value)?),
+                "let" => options.let_vars = Some(Self::parse_document_field(value, "let")?),
+                "comment" => options.comment = Some(Self::parse_bson_value(value)?),
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options findOneAndReplace. Доступны: writeConcern, upsert, bypassDocumentValidation, maxTimeMS, projection, returnDocument, sort, collation, hint, let, comment.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_find_one_and_delete_options(
+        source: &str,
+    ) -> Result<Option<FindOneAndDeleteParsedOptions>, String> {
+        let value: Value =
+            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from("Опции findOneAndDelete должны быть JSON-объектом."))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = FindOneAndDeleteParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "writeConcern" => options.write_concern = Self::parse_write_concern_value(value)?,
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "projection" => {
+                    options.projection = Some(Self::parse_document_field(value, "projection")?)
+                }
+                "sort" => options.sort = Some(Self::parse_document_field(value, "sort")?),
+                "collation" => options.collation = Some(Self::parse_collation_value(value)?),
+                "hint" => options.hint = Some(Self::parse_hint_value(value)?),
+                "let" => options.let_vars = Some(Self::parse_document_field(value, "let")?),
+                "comment" => options.comment = Some(Self::parse_bson_value(value)?),
+                other => {
+                    return Err(format!(
+                        "Параметр '{other}' не поддерживается в options findOneAndDelete. Доступны: writeConcern, maxTimeMS, projection, sort, collation, hint, let, comment.",
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_return_document(value: &Value) -> Result<ReturnDocument, String> {
+        let text = value
+            .as_str()
+            .ok_or_else(|| {
+                String::from("returnDocument должен быть строкой 'before' или 'after'.")
+            })?
+            .trim()
+            .to_lowercase();
+
+        match text.as_str() {
+            "before" => Ok(ReturnDocument::Before),
+            "after" => Ok(ReturnDocument::After),
+            _ => Err(String::from("returnDocument должен быть строкой 'before' или 'after'.")),
+        }
     }
 
     fn parse_write_concern_value(value: &Value) -> Result<Option<WriteConcern>, String> {
@@ -5042,6 +5491,110 @@ fn run_collection_query(
 
             Ok(QueryResult::SingleDocument { document: response })
         }
+        QueryOperation::UpdateOne { filter, update, options } => {
+            let mut action = match update {
+                UpdateModificationsSpec::Document(document) => {
+                    collection.update_one(filter, document)
+                }
+                UpdateModificationsSpec::Pipeline(pipeline) => {
+                    collection.update_one(filter, pipeline)
+                }
+            };
+
+            if let Some(opts) = options {
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+                if let Some(upsert) = opts.upsert {
+                    action = action.upsert(upsert);
+                }
+                if let Some(array_filters) = opts.array_filters {
+                    action = action.array_filters(array_filters);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(bypass) = opts.bypass_document_validation {
+                    action = action.bypass_document_validation(bypass);
+                }
+                if let Some(let_vars) = opts.let_vars {
+                    action = action.let_vars(let_vars);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+                if let Some(sort) = opts.sort {
+                    action = action.sort(sort);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from("updateOne")));
+            response.insert("matchedCount", CollectionTab::u64_to_bson(result.matched_count));
+            response.insert("modifiedCount", CollectionTab::u64_to_bson(result.modified_count));
+            if let Some(id) = result.upserted_id {
+                response.insert("upsertedId", id);
+            }
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
+        QueryOperation::UpdateMany { filter, update, options } => {
+            let mut action = match update {
+                UpdateModificationsSpec::Document(document) => {
+                    collection.update_many(filter, document)
+                }
+                UpdateModificationsSpec::Pipeline(pipeline) => {
+                    collection.update_many(filter, pipeline)
+                }
+            };
+
+            if let Some(opts) = options {
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+                if let Some(upsert) = opts.upsert {
+                    action = action.upsert(upsert);
+                }
+                if let Some(array_filters) = opts.array_filters {
+                    action = action.array_filters(array_filters);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(bypass) = opts.bypass_document_validation {
+                    action = action.bypass_document_validation(bypass);
+                }
+                if let Some(let_vars) = opts.let_vars {
+                    action = action.let_vars(let_vars);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+                if let Some(sort) = opts.sort {
+                    action = action.sort(sort);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from("updateMany")));
+            response.insert("matchedCount", CollectionTab::u64_to_bson(result.matched_count));
+            response.insert("modifiedCount", CollectionTab::u64_to_bson(result.modified_count));
+            if let Some(id) = result.upserted_id {
+                response.insert("upsertedId", id);
+            }
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
         QueryOperation::DeleteOne { filter, options } => {
             let mut action = collection.delete_one(filter);
             if let Some(opts) = options {
@@ -5058,11 +5611,7 @@ fn run_collection_query(
 
             let result = action.run().map_err(|err| err.to_string())?;
             let deleted_count = result.deleted_count;
-            let deleted_bson = if deleted_count <= i64::MAX as u64 {
-                Bson::Int64(deleted_count as i64)
-            } else {
-                Bson::String(deleted_count.to_string())
-            };
+            let deleted_bson = CollectionTab::u64_to_bson(deleted_count);
 
             let mut response = Document::new();
             response.insert("operation", Bson::String(String::from("deleteOne")));
@@ -5086,17 +5635,190 @@ fn run_collection_query(
 
             let result = action.run().map_err(|err| err.to_string())?;
             let deleted_count = result.deleted_count;
-            let deleted_bson = if deleted_count <= i64::MAX as u64 {
-                Bson::Int64(deleted_count as i64)
-            } else {
-                Bson::String(deleted_count.to_string())
-            };
+            let deleted_bson = CollectionTab::u64_to_bson(deleted_count);
 
             let mut response = Document::new();
             response.insert("operation", Bson::String(String::from("deleteMany")));
             response.insert("deletedCount", deleted_bson);
 
             Ok(QueryResult::SingleDocument { document: response })
+        }
+        QueryOperation::ReplaceOne { filter, replacement, options } => {
+            let mut action = collection.replace_one(filter, replacement);
+            if let Some(opts) = options {
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+                if let Some(upsert) = opts.upsert {
+                    action = action.upsert(upsert);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(bypass) = opts.bypass_document_validation {
+                    action = action.bypass_document_validation(bypass);
+                }
+                if let Some(let_vars) = opts.let_vars {
+                    action = action.let_vars(let_vars);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+                if let Some(sort) = opts.sort {
+                    action = action.sort(sort);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from("replaceOne")));
+            response.insert("matchedCount", CollectionTab::u64_to_bson(result.matched_count));
+            response.insert("modifiedCount", CollectionTab::u64_to_bson(result.modified_count));
+            if let Some(id) = result.upserted_id {
+                response.insert("upsertedId", id);
+            }
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
+        QueryOperation::FindOneAndUpdate { filter, update, options } => {
+            let mut action = match update {
+                UpdateModificationsSpec::Document(document) => {
+                    collection.find_one_and_update(filter, document)
+                }
+                UpdateModificationsSpec::Pipeline(pipeline) => {
+                    collection.find_one_and_update(filter, pipeline)
+                }
+            };
+
+            if let Some(mut opts) = options {
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+                if let Some(upsert) = opts.upsert {
+                    action = action.upsert(upsert);
+                }
+                if let Some(array_filters) = opts.array_filters.take() {
+                    action = action.array_filters(array_filters);
+                }
+                if let Some(bypass) = opts.bypass_document_validation {
+                    action = action.bypass_document_validation(bypass);
+                }
+                if let Some(max_time) = opts.max_time {
+                    action = action.max_time(max_time);
+                }
+                if let Some(projection) = opts.projection.take() {
+                    action = action.projection(projection);
+                }
+                if let Some(return_document) = opts.return_document {
+                    action = action.return_document(return_document);
+                }
+                if let Some(sort) = opts.sort.take() {
+                    action = action.sort(sort);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(let_vars) = opts.let_vars.take() {
+                    action = action.let_vars(let_vars);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+            match result {
+                Some(document) => Ok(QueryResult::SingleDocument { document }),
+                None => Ok(QueryResult::Documents(Vec::new())),
+            }
+        }
+        QueryOperation::FindOneAndReplace { filter, replacement, options } => {
+            let mut action = collection.find_one_and_replace(filter, replacement);
+
+            if let Some(mut opts) = options {
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+                if let Some(upsert) = opts.upsert {
+                    action = action.upsert(upsert);
+                }
+                if let Some(bypass) = opts.bypass_document_validation {
+                    action = action.bypass_document_validation(bypass);
+                }
+                if let Some(max_time) = opts.max_time {
+                    action = action.max_time(max_time);
+                }
+                if let Some(projection) = opts.projection.take() {
+                    action = action.projection(projection);
+                }
+                if let Some(return_document) = opts.return_document {
+                    action = action.return_document(return_document);
+                }
+                if let Some(sort) = opts.sort.take() {
+                    action = action.sort(sort);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(let_vars) = opts.let_vars.take() {
+                    action = action.let_vars(let_vars);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+            match result {
+                Some(document) => Ok(QueryResult::SingleDocument { document }),
+                None => Ok(QueryResult::Documents(Vec::new())),
+            }
+        }
+        QueryOperation::FindOneAndDelete { filter, options } => {
+            let mut action = collection.find_one_and_delete(filter);
+
+            if let Some(mut opts) = options {
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+                if let Some(max_time) = opts.max_time {
+                    action = action.max_time(max_time);
+                }
+                if let Some(projection) = opts.projection.take() {
+                    action = action.projection(projection);
+                }
+                if let Some(sort) = opts.sort.take() {
+                    action = action.sort(sort);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(let_vars) = opts.let_vars.take() {
+                    action = action.let_vars(let_vars);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+            match result {
+                Some(document) => Ok(QueryResult::SingleDocument { document }),
+                None => Ok(QueryResult::Documents(Vec::new())),
+            }
         }
         QueryOperation::DatabaseCommand { db, command } => {
             let database = client.database(&db);
@@ -5200,19 +5922,226 @@ impl DeleteParsedOptions {
 }
 
 #[derive(Debug, Clone)]
+enum UpdateModificationsSpec {
+    Document(Document),
+    Pipeline(Vec<Document>),
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpdateParsedOptions {
+    write_concern: Option<WriteConcern>,
+    upsert: Option<bool>,
+    array_filters: Option<Vec<Document>>,
+    collation: Option<Collation>,
+    hint: Option<Hint>,
+    bypass_document_validation: Option<bool>,
+    let_vars: Option<Document>,
+    comment: Option<Bson>,
+    sort: Option<Document>,
+}
+
+impl UpdateParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some()
+            || self.upsert.is_some()
+            || self.array_filters.is_some()
+            || self.collation.is_some()
+            || self.hint.is_some()
+            || self.bypass_document_validation.is_some()
+            || self.let_vars.is_some()
+            || self.comment.is_some()
+            || self.sort.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct ReplaceParsedOptions {
+    write_concern: Option<WriteConcern>,
+    upsert: Option<bool>,
+    collation: Option<Collation>,
+    hint: Option<Hint>,
+    bypass_document_validation: Option<bool>,
+    let_vars: Option<Document>,
+    comment: Option<Bson>,
+    sort: Option<Document>,
+}
+
+impl ReplaceParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some()
+            || self.upsert.is_some()
+            || self.collation.is_some()
+            || self.hint.is_some()
+            || self.bypass_document_validation.is_some()
+            || self.let_vars.is_some()
+            || self.comment.is_some()
+            || self.sort.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct FindOneAndUpdateParsedOptions {
+    write_concern: Option<WriteConcern>,
+    upsert: Option<bool>,
+    array_filters: Option<Vec<Document>>,
+    bypass_document_validation: Option<bool>,
+    max_time: Option<Duration>,
+    projection: Option<Document>,
+    return_document: Option<ReturnDocument>,
+    sort: Option<Document>,
+    collation: Option<Collation>,
+    hint: Option<Hint>,
+    let_vars: Option<Document>,
+    comment: Option<Bson>,
+}
+
+impl FindOneAndUpdateParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some()
+            || self.upsert.is_some()
+            || self.array_filters.is_some()
+            || self.bypass_document_validation.is_some()
+            || self.max_time.is_some()
+            || self.projection.is_some()
+            || self.return_document.is_some()
+            || self.sort.is_some()
+            || self.collation.is_some()
+            || self.hint.is_some()
+            || self.let_vars.is_some()
+            || self.comment.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct FindOneAndReplaceParsedOptions {
+    write_concern: Option<WriteConcern>,
+    upsert: Option<bool>,
+    bypass_document_validation: Option<bool>,
+    max_time: Option<Duration>,
+    projection: Option<Document>,
+    return_document: Option<ReturnDocument>,
+    sort: Option<Document>,
+    collation: Option<Collation>,
+    hint: Option<Hint>,
+    let_vars: Option<Document>,
+    comment: Option<Bson>,
+}
+
+impl FindOneAndReplaceParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some()
+            || self.upsert.is_some()
+            || self.bypass_document_validation.is_some()
+            || self.max_time.is_some()
+            || self.projection.is_some()
+            || self.return_document.is_some()
+            || self.sort.is_some()
+            || self.collation.is_some()
+            || self.hint.is_some()
+            || self.let_vars.is_some()
+            || self.comment.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct FindOneAndDeleteParsedOptions {
+    write_concern: Option<WriteConcern>,
+    max_time: Option<Duration>,
+    projection: Option<Document>,
+    sort: Option<Document>,
+    collation: Option<Collation>,
+    hint: Option<Hint>,
+    let_vars: Option<Document>,
+    comment: Option<Bson>,
+}
+
+impl FindOneAndDeleteParsedOptions {
+    fn has_values(&self) -> bool {
+        self.write_concern.is_some()
+            || self.max_time.is_some()
+            || self.projection.is_some()
+            || self.sort.is_some()
+            || self.collation.is_some()
+            || self.hint.is_some()
+            || self.let_vars.is_some()
+            || self.comment.is_some()
+    }
+}
+
+#[derive(Debug, Clone)]
 enum QueryOperation {
-    Find { filter: Document },
-    FindOne { filter: Document },
-    Count { filter: Document },
-    CountDocuments { filter: Document, options: Option<CountDocumentsParsedOptions> },
-    EstimatedDocumentCount { options: Option<EstimatedDocumentCountParsedOptions> },
-    Distinct { field: String, filter: Document },
-    Aggregate { pipeline: Vec<Document> },
-    InsertOne { document: Document, options: Option<InsertOneParsedOptions> },
-    InsertMany { documents: Vec<Document>, options: Option<InsertManyParsedOptions> },
-    DeleteOne { filter: Document, options: Option<DeleteParsedOptions> },
-    DeleteMany { filter: Document, options: Option<DeleteParsedOptions> },
-    DatabaseCommand { db: String, command: Document },
+    Find {
+        filter: Document,
+    },
+    FindOne {
+        filter: Document,
+    },
+    Count {
+        filter: Document,
+    },
+    CountDocuments {
+        filter: Document,
+        options: Option<CountDocumentsParsedOptions>,
+    },
+    EstimatedDocumentCount {
+        options: Option<EstimatedDocumentCountParsedOptions>,
+    },
+    Distinct {
+        field: String,
+        filter: Document,
+    },
+    Aggregate {
+        pipeline: Vec<Document>,
+    },
+    InsertOne {
+        document: Document,
+        options: Option<InsertOneParsedOptions>,
+    },
+    InsertMany {
+        documents: Vec<Document>,
+        options: Option<InsertManyParsedOptions>,
+    },
+    DeleteOne {
+        filter: Document,
+        options: Option<DeleteParsedOptions>,
+    },
+    DeleteMany {
+        filter: Document,
+        options: Option<DeleteParsedOptions>,
+    },
+    UpdateOne {
+        filter: Document,
+        update: UpdateModificationsSpec,
+        options: Option<UpdateParsedOptions>,
+    },
+    UpdateMany {
+        filter: Document,
+        update: UpdateModificationsSpec,
+        options: Option<UpdateParsedOptions>,
+    },
+    ReplaceOne {
+        filter: Document,
+        replacement: Document,
+        options: Option<ReplaceParsedOptions>,
+    },
+    FindOneAndUpdate {
+        filter: Document,
+        update: UpdateModificationsSpec,
+        options: Option<FindOneAndUpdateParsedOptions>,
+    },
+    FindOneAndReplace {
+        filter: Document,
+        replacement: Document,
+        options: Option<FindOneAndReplaceParsedOptions>,
+    },
+    FindOneAndDelete {
+        filter: Document,
+        options: Option<FindOneAndDeleteParsedOptions>,
+    },
+    DatabaseCommand {
+        db: String,
+        command: Document,
+    },
 }
 
 #[derive(Debug, Clone)]
