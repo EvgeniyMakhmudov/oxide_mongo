@@ -17,7 +17,7 @@ Thumbs.db
 
 # Development specific
 .github/copilot-instructions.md
-notes.txt
+notes/*
 
 # Oxide mongo specific
 connections.toml

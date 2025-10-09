@@ -1,10 +1,10 @@
-use iced::Font;
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
 use iced::keyboard::{self, key};
 use iced::widget::image::Handle;
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::scrollable;
+use iced::widget::text::Wrapping;
 use iced::widget::text_editor::{
     self, Action as TextEditorAction, Binding as TextEditorBinding, Content as TextEditorContent,
 };
@@ -14,7 +14,8 @@ use iced::widget::{
 };
 use iced::window;
 use iced::{
-    Color, Element, Length, Renderer, Shadow, Subscription, Task, Theme, application, clipboard,
+    Color, Element, Font, Length, Renderer, Shadow, Subscription, Task, Theme, application,
+    clipboard,
 };
 use iced_aw::{
     ContextMenu,
@@ -81,6 +82,7 @@ struct App {
     connection_form: Option<ConnectionFormState>,
     collection_modal: Option<CollectionModalState>,
     database_modal: Option<DatabaseModalState>,
+    document_modal: Option<DocumentModalState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +133,10 @@ enum Message {
     },
     CollectionSend(TabId),
     CollectionTreeToggle {
+        tab_id: TabId,
+        node_id: usize,
+    },
+    DocumentEditRequested {
         tab_id: TabId,
         node_id: usize,
     },
@@ -225,6 +231,13 @@ enum Message {
         client_id: ClientId,
         _db_name: String,
         result: Result<(), String>,
+    },
+    DocumentModalEditorAction(TextEditorAction),
+    DocumentModalSave,
+    DocumentModalCancel,
+    DocumentModalCompleted {
+        tab_id: TabId,
+        result: Result<Document, String>,
     },
     DatabasesRefreshed {
         client_id: ClientId,
@@ -500,6 +513,28 @@ impl DatabaseModalState {
     }
 }
 
+impl DocumentModalState {
+    fn new(
+        tab_id: TabId,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        document: Document,
+    ) -> Self {
+        let text = format_bson_shell(&Bson::Document(document.clone()));
+        Self {
+            tab_id,
+            client_id,
+            db_name,
+            collection,
+            original_document: document,
+            editor: TextEditorContent::with_text(&text),
+            error: None,
+            processing: false,
+        }
+    }
+}
+
 impl TestFeedback {
     fn message(&self) -> &str {
         match self {
@@ -547,6 +582,7 @@ enum AppMode {
     ConnectionForm,
     CollectionModal,
     DatabaseModal,
+    DocumentModal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -607,6 +643,18 @@ struct DatabaseModalState {
 enum DatabaseModalMode {
     Drop { db_name: String },
     Create,
+}
+
+#[derive(Debug)]
+struct DocumentModalState {
+    tab_id: TabId,
+    client_id: ClientId,
+    db_name: String,
+    collection: String,
+    original_document: Document,
+    editor: TextEditorContent,
+    error: Option<String>,
+    processing: bool,
 }
 
 #[derive(Debug)]
@@ -1171,6 +1219,7 @@ impl BsonTree {
             let menu_node_id = node.id;
             let menu_tab_id = tab_id;
             let path_enabled = self.node_path(menu_node_id).is_some();
+            let is_root_document = depth == 0 && matches!(node.kind, BsonKind::Document(_));
 
             let row_container = Container::new(row_content).width(Length::Fill).style(move |_| {
                 iced::widget::container::Style {
@@ -1225,6 +1274,17 @@ impl BsonTree {
                 menu = menu.push(copy_key);
                 menu = menu.push(copy_value);
                 menu = menu.push(copy_path);
+
+                if is_root_document {
+                    let edit_button = Button::new(Text::new("Изменить документ...").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::DocumentEditRequested {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                        });
+                    menu = menu.push(edit_button);
+                }
 
                 menu.into()
             });
@@ -1282,6 +1342,10 @@ impl BsonTree {
 
     fn node_display_key(&self, node_id: usize) -> Option<String> {
         Self::find_node(&self.roots, node_id).map(BsonNode::display_key)
+    }
+
+    fn is_root_node(&self, node_id: usize) -> bool {
+        self.roots.iter().any(|node| node.id == node_id)
     }
 
     fn node_value_display(&self, node_id: usize) -> Option<String> {
@@ -1759,16 +1823,14 @@ impl CollectionTab {
                     return Err(String::from("distinct требует как минимум имя поля."));
                 }
 
-                let field_value: Value = serde_json::from_str(&parts[0])
-                    .map_err(|error| format!("JSON parse error: {error}"))?;
+                let field_value: Value = Self::parse_shell_json_value(&parts[0])?;
                 let field = match field_value {
                     Value::String(s) => s,
                     _ => return Err(String::from("Первый аргумент distinct должен быть строкой.")),
                 };
 
                 let filter = if parts.len() > 1 {
-                    let filter_value: Value = serde_json::from_str(&parts[1])
-                        .map_err(|error| format!("JSON parse error: {error}"))?;
+                    let filter_value: Value = Self::parse_shell_json_value(&parts[1])?;
                     if !filter_value.is_object() {
                         return Err(String::from("Фильтр distinct должен быть JSON-объектом."));
                     }
@@ -1787,8 +1849,7 @@ impl CollectionTab {
                     ));
                 }
 
-                let value: Value = serde_json::from_str(args_trimmed)
-                    .map_err(|error| format!("JSON parse error: {error}"))?;
+                let value: Value = Self::parse_shell_json_value(args_trimmed)?;
                 let array = value
                     .as_array()
                     .ok_or_else(|| String::from("Аргумент aggregate должен быть массивом."))?;
@@ -1841,8 +1902,7 @@ impl CollectionTab {
                     ));
                 }
 
-                let docs_value: Value = serde_json::from_str(&parts[0])
-                    .map_err(|error| format!("JSON parse error: {error}"))?;
+                let docs_value: Value = Self::parse_shell_json_value(&parts[0])?;
                 let docs_array = docs_value.as_array().ok_or_else(|| {
                     String::from("Первый аргумент insertMany должен быть массивом документов.")
                 })?;
@@ -2203,8 +2263,7 @@ impl CollectionTab {
     fn parse_count_documents_options(
         source: &str,
     ) -> Result<Option<CountDocumentsParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции countDocuments должны быть JSON-объектом."))?;
@@ -2259,8 +2318,7 @@ impl CollectionTab {
     fn parse_estimated_count_options(
         source: &str,
     ) -> Result<Option<EstimatedDocumentCountParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value.as_object().ok_or_else(|| {
             String::from("Опции estimatedDocumentCount должны быть JSON-объектом.")
         })?;
@@ -2327,8 +2385,7 @@ impl CollectionTab {
                             command.insert(key, value);
                         }
                     } else {
-                        let value: Value = serde_json::from_str(args_trimmed)
-                            .map_err(|error| format!("JSON parse error: {error}"))?;
+                        let value: Value = Self::parse_shell_json_value(args_trimmed)?;
 
                         if let Some(number) = value.as_f64() {
                             command.insert("scale", Bson::Double(number));
@@ -2355,8 +2412,7 @@ impl CollectionTab {
     }
 
     fn parse_insert_one_options(source: &str) -> Result<Option<InsertOneParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции insertOne должны быть JSON-объектом."))?;
@@ -2384,8 +2440,7 @@ impl CollectionTab {
     }
 
     fn parse_insert_many_options(source: &str) -> Result<Option<InsertManyParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции insertMany должны быть JSON-объектом."))?;
@@ -2421,8 +2476,7 @@ impl CollectionTab {
     }
 
     fn parse_delete_options(source: &str) -> Result<Option<DeleteParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции deleteOne/deleteMany должны быть JSON-объектом."))?;
@@ -2456,8 +2510,7 @@ impl CollectionTab {
     }
 
     fn parse_update_spec(source: &str) -> Result<UpdateModificationsSpec, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
 
         if let Some(object) = value.as_object() {
             let document = bson::to_document(object)
@@ -2487,8 +2540,7 @@ impl CollectionTab {
     }
 
     fn parse_update_options(source: &str) -> Result<Option<UpdateParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции update должны быть JSON-объектом."))?;
@@ -2535,8 +2587,7 @@ impl CollectionTab {
     }
 
     fn parse_replace_options(source: &str) -> Result<Option<ReplaceParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции replace должны быть JSON-объектом."))?;
@@ -2620,8 +2671,7 @@ impl CollectionTab {
     fn parse_find_one_and_update_options(
         source: &str,
     ) -> Result<Option<FindOneAndUpdateParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции findOneAndUpdate должны быть JSON-объектом."))?;
@@ -2670,8 +2720,7 @@ impl CollectionTab {
     fn parse_find_one_and_replace_options(
         source: &str,
     ) -> Result<Option<FindOneAndReplaceParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции findOneAndReplace должны быть JSON-объектом."))?;
@@ -2719,8 +2768,7 @@ impl CollectionTab {
     fn parse_find_one_and_delete_options(
         source: &str,
     ) -> Result<Option<FindOneAndDeleteParsedOptions>, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("Опции findOneAndDelete должны быть JSON-объектом."))?;
@@ -2762,8 +2810,7 @@ impl CollectionTab {
             return Err(String::from("findOneAndModify требует JSON-объект с параметрами."));
         }
 
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
             .ok_or_else(|| String::from("findOneAndModify ожидает JSON-объект."))?;
@@ -3110,9 +3157,412 @@ impl CollectionTab {
         result
     }
 
+    fn parse_shell_json_value(source: &str) -> Result<Value, String> {
+        let normalized = Self::preprocess_shell_json(source)?;
+        serde_json::from_str(&normalized).map_err(|error| format!("JSON parse error: {error}"))
+    }
+
+    fn preprocess_shell_json(source: &str) -> Result<String, String> {
+        let chars: Vec<char> = source.chars().collect();
+        let len = chars.len();
+        let mut result = String::with_capacity(source.len());
+        let mut index = 0usize;
+
+        while index < len {
+            let ch = chars[index];
+
+            if ch == '\"' {
+                let end = Self::skip_double_quoted(&chars, index)?;
+                result.extend(chars[index..end].iter());
+                index = end;
+                continue;
+            }
+
+            if ch == '\'' {
+                let (json_literal, next_index) = Self::collect_single_quoted_string(&chars, index)?;
+                result.push_str(&json_literal);
+                index = next_index;
+                continue;
+            }
+
+            if Self::is_identifier_start(ch) {
+                let start = index;
+                index += 1;
+                while index < len && Self::is_identifier_part(chars[index]) {
+                    index += 1;
+                }
+
+                let identifier: String = chars[start..index].iter().collect();
+                if Self::is_special_construct(&identifier) {
+                    if let Some((replacement, consumed_until)) =
+                        Self::convert_special_construct(&chars, index, &identifier)?
+                    {
+                        result.push_str(&replacement);
+                        index = consumed_until;
+                        continue;
+                    }
+                }
+
+                result.push_str(&identifier);
+                continue;
+            }
+
+            result.push(ch);
+            index += 1;
+        }
+
+        Ok(result)
+    }
+
+    fn collect_single_quoted_string(
+        chars: &[char],
+        start: usize,
+    ) -> Result<(String, usize), String> {
+        let (raw, next_index) = Self::read_single_quoted(chars, start)?;
+        Ok((Value::String(raw).to_string(), next_index))
+    }
+
+    fn read_single_quoted(chars: &[char], start: usize) -> Result<(String, usize), String> {
+        let mut buffer = String::new();
+        let mut index = start + 1;
+        let len = chars.len();
+
+        while index < len {
+            match chars[index] {
+                '\\' => {
+                    index += 1;
+                    if index >= len {
+                        return Err(String::from(
+                            "Строка в одинарных кавычках содержит незавершённую escape-последовательность.",
+                        ));
+                    }
+
+                    let (ch, consumed) = match chars[index] {
+                        '\\' => ('\\', 1),
+                        '\'' => ('\'', 1),
+                        '"' => ('"', 1),
+                        'n' => ('\n', 1),
+                        'r' => ('\r', 1),
+                        't' => ('\t', 1),
+                        'b' => ('\u{0008}', 1),
+                        'f' => ('\u{000C}', 1),
+                        'v' => ('\u{000B}', 1),
+                        '0' => ('\u{0000}', 1),
+                        'x' => {
+                            if index + 2 >= len {
+                                return Err(String::from(
+                                    "Последовательность \\x должна содержать две hex-цифры.",
+                                ));
+                            }
+                            let high = Self::hex_value(chars[index + 1])?;
+                            let low = Self::hex_value(chars[index + 2])?;
+                            let value = ((high << 4) | low) as u32;
+                            (Self::codepoint_to_char(value)?, 3)
+                        }
+                        'u' => {
+                            if index + 4 >= len {
+                                return Err(String::from(
+                                    "Последовательность \\u должна содержать четыре hex-цифры.",
+                                ));
+                            }
+                            let mut value = 0u32;
+                            for offset in 1..=4 {
+                                value = (value << 4) | Self::hex_value(chars[index + offset])?;
+                            }
+                            (Self::codepoint_to_char(value)?, 5)
+                        }
+                        other => (other, 1),
+                    };
+
+                    buffer.push(ch);
+                    index += consumed;
+                }
+                '\'' => return Ok((buffer, index + 1)),
+                other => {
+                    buffer.push(other);
+                    index += 1;
+                }
+            }
+        }
+
+        Err(String::from("Строка в одинарных кавычках не закрыта."))
+    }
+
+    fn skip_single_quoted(chars: &[char], start: usize) -> Result<usize, String> {
+        let (_, next) = Self::read_single_quoted(chars, start)?;
+        Ok(next)
+    }
+
+    fn skip_double_quoted(chars: &[char], start: usize) -> Result<usize, String> {
+        let mut index = start + 1;
+        let len = chars.len();
+
+        while index < len {
+            match chars[index] {
+                '\\' => {
+                    index += 2;
+                }
+                '\"' => return Ok(index + 1),
+                _ => index += 1,
+            }
+        }
+
+        Err(String::from("Строка в двойных кавычках не закрыта."))
+    }
+
+    fn hex_value(ch: char) -> Result<u32, String> {
+        ch.to_digit(16)
+            .ok_or_else(|| format!("Некорректный hex-символ '{ch}' в escape-последовательности."))
+    }
+
+    fn codepoint_to_char(value: u32) -> Result<char, String> {
+        char::from_u32(value)
+            .ok_or_else(|| format!("Кодовая точка 0x{value:04X} не является допустимым символом."))
+    }
+
+    fn is_identifier_start(ch: char) -> bool {
+        ch.is_ascii_alphabetic() || ch == '_'
+    }
+
+    fn is_identifier_part(ch: char) -> bool {
+        ch.is_ascii_alphanumeric() || ch == '_'
+    }
+
+    fn is_special_construct(identifier: &str) -> bool {
+        matches!(
+            identifier,
+            "ObjectId"
+                | "ISODate"
+                | "Date"
+                | "NumberDecimal"
+                | "NumberLong"
+                | "NumberInt"
+                | "NumberDouble"
+                | "Timestamp"
+                | "BinData"
+                | "RegExp"
+        )
+    }
+
+    fn convert_special_construct(
+        chars: &[char],
+        after_identifier: usize,
+        identifier: &str,
+    ) -> Result<Option<(String, usize)>, String> {
+        let mut index = after_identifier;
+        let len = chars.len();
+
+        while index < len && chars[index].is_whitespace() {
+            index += 1;
+        }
+
+        if index >= len || chars[index] != '(' {
+            return Ok(None);
+        }
+
+        index += 1;
+        let args_start = index;
+        let mut depth = 0usize;
+
+        while index < len {
+            match chars[index] {
+                '(' => {
+                    depth += 1;
+                    index += 1;
+                }
+                ')' => {
+                    if depth == 0 {
+                        let args: String = chars[args_start..index].iter().collect();
+                        let replacement = Self::build_extended_json(identifier, &args)?;
+                        return Ok(Some((replacement, index + 1)));
+                    }
+                    depth -= 1;
+                    index += 1;
+                }
+                '\'' => {
+                    index = Self::skip_single_quoted(chars, index)?;
+                }
+                '\"' => {
+                    index = Self::skip_double_quoted(chars, index)?;
+                }
+                _ => index += 1,
+            }
+        }
+
+        Err(format!("Скобка вызова {identifier} не закрыта."))
+    }
+
+    fn build_extended_json(identifier: &str, args: &str) -> Result<String, String> {
+        let parts = Self::split_arguments(args);
+
+        match identifier {
+            "ObjectId" => {
+                if parts.len() != 1 {
+                    return Err(String::from("ObjectId ожидает один аргумент."));
+                }
+                let value = Self::parse_shell_json_value(&parts[0])?;
+                let hex = value
+                    .as_str()
+                    .ok_or_else(|| String::from("ObjectId ожидает строковый аргумент."))?;
+                let encoded = Value::String(hex.to_string()).to_string();
+                Ok(format!("{{\"$oid\": {encoded}}}"))
+            }
+            "ISODate" | "Date" => {
+                if parts.len() != 1 {
+                    return Err(String::from("ISODate ожидает один аргумент."));
+                }
+                let value = Self::parse_shell_json_value(&parts[0])?;
+                let iso = value
+                    .as_str()
+                    .ok_or_else(|| String::from("ISODate ожидает строковый аргумент."))?;
+                let encoded = Value::String(iso.to_string()).to_string();
+                Ok(format!("{{\"$date\": {encoded}}}"))
+            }
+            "NumberDecimal" => {
+                if parts.len() != 1 {
+                    return Err(String::from("NumberDecimal ожидает один аргумент."));
+                }
+                let value = Self::parse_shell_json_value(&parts[0])?;
+                let decimal = Self::value_as_string(&value)?;
+                let encoded = Value::String(decimal).to_string();
+                Ok(format!("{{\"$numberDecimal\": {encoded}}}"))
+            }
+            "NumberLong" => {
+                if parts.len() != 1 {
+                    return Err(String::from("NumberLong ожидает один аргумент."));
+                }
+                let value = Self::parse_shell_json_value(&parts[0])?;
+                let long = Self::value_as_string(&value)?;
+                let encoded = Value::String(long).to_string();
+                Ok(format!("{{\"$numberLong\": {encoded}}}"))
+            }
+            "NumberInt" => {
+                if parts.len() != 1 {
+                    return Err(String::from("NumberInt ожидает один аргумент."));
+                }
+                let value = Self::parse_shell_json_value(&parts[0])?;
+                let int = Self::value_as_string(&value)?;
+                let encoded = Value::String(int).to_string();
+                Ok(format!("{{\"$numberInt\": {encoded}}}"))
+            }
+            "NumberDouble" => {
+                if parts.len() != 1 {
+                    return Err(String::from("NumberDouble ожидает один аргумент."));
+                }
+                let value = Self::parse_shell_json_value(&parts[0])?;
+                let double = Self::value_as_string(&value)?;
+                let encoded = Value::String(double).to_string();
+                Ok(format!("{{\"$numberDouble\": {encoded}}}"))
+            }
+            "Timestamp" => {
+                if parts.len() != 2 {
+                    return Err(String::from("Timestamp ожидает два числовых аргумента (t, i)."));
+                }
+                let t_val = Self::parse_shell_json_value(&parts[0])?;
+                let i_val = Self::parse_shell_json_value(&parts[1])?;
+                let t = Self::value_as_i64(&t_val, "Timestamp", "t")?;
+                let i = Self::value_as_i64(&i_val, "Timestamp", "i")?;
+                Ok(format!("{{\"$timestamp\":{{\"t\":{t},\"i\":{i}}}}}"))
+            }
+            "BinData" => {
+                if parts.len() != 2 {
+                    return Err(String::from(
+                        "BinData ожидает два аргумента: подтип и base64-строку.",
+                    ));
+                }
+                let subtype_raw = Self::parse_shell_json_value(&parts[0])?;
+                let data_raw = Self::parse_shell_json_value(&parts[1])?;
+                let subtype = Self::value_as_u8(&subtype_raw)?;
+                let data = data_raw.as_str().ok_or_else(|| {
+                    String::from("BinData ожидает base64-строку вторым аргументом.")
+                })?;
+                let data_encoded = Value::String(data.to_string()).to_string();
+                let subtype_encoded = Value::String(format!("{:02x}", subtype)).to_string();
+                Ok(format!(
+                    "{{\"$binary\":{{\"base64\":{data},\"subType\":{subtype}}}}}",
+                    data = data_encoded,
+                    subtype = subtype_encoded
+                ))
+            }
+            "RegExp" => {
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from("RegExp ожидает шаблон и необязательные опции."));
+                }
+                let pattern = Self::parse_shell_json_value(&parts[0])?;
+                let pattern = pattern
+                    .as_str()
+                    .ok_or_else(|| String::from("RegExp ожидает строковый шаблон."))?;
+                let options = if let Some(opts) = parts.get(1) {
+                    let value = Self::parse_shell_json_value(opts)?;
+                    Some(
+                        value
+                            .as_str()
+                            .ok_or_else(|| String::from("Опции RegExp должны быть строкой."))?
+                            .to_string(),
+                    )
+                } else {
+                    None
+                };
+                let pattern_encoded = Value::String(pattern.to_string()).to_string();
+                let options_encoded = options
+                    .map(|opts| Value::String(opts).to_string())
+                    .unwrap_or_else(|| Value::String(String::new()).to_string());
+                Ok(format!(
+                    "{{\"$regularExpression\":{{\"pattern\":{pattern},\"options\":{options}}}}}",
+                    pattern = pattern_encoded,
+                    options = options_encoded
+                ))
+            }
+            _ => Ok(format!("{identifier}")),
+        }
+    }
+
+    fn value_as_string(value: &Value) -> Result<String, String> {
+        if let Some(s) = value.as_str() {
+            Ok(s.to_string())
+        } else if value.is_number() {
+            Ok(value.to_string())
+        } else {
+            Err(String::from("Аргумент должен быть строкой или числом."))
+        }
+    }
+
+    fn value_as_i64(value: &Value, context: &str, field: &str) -> Result<i64, String> {
+        if let Some(number) = value.as_i64() {
+            Ok(number)
+        } else if let Some(number) = value.as_u64() {
+            i64::try_from(number)
+                .map_err(|_| format!("Аргумент {context}::{field} выходит за пределы i64."))
+        } else if let Some(number) = value.as_f64() {
+            Ok(number as i64)
+        } else if let Some(text) = value.as_str() {
+            text.parse::<i64>()
+                .map_err(|_| format!("Аргумент {context}::{field} должен быть числом."))
+        } else {
+            Err(format!("Аргумент {context}::{field} должен быть числом."))
+        }
+    }
+
+    fn value_as_u8(value: &Value) -> Result<u8, String> {
+        if let Some(number) = value.as_u64() {
+            u8::try_from(number)
+                .map_err(|_| String::from("Подтип BinData должен быть числом от 0 до 255."))
+        } else if let Some(number) = value.as_i64() {
+            if (0..=255).contains(&number) {
+                Ok(number as u8)
+            } else {
+                Err(String::from("Подтип BinData должен быть числом от 0 до 255."))
+            }
+        } else if let Some(text) = value.as_str() {
+            u8::from_str_radix(text, 16)
+                .map_err(|_| String::from("Подтип BinData должен быть числом или hex-строкой."))
+        } else {
+            Err(String::from("Подтип BinData должен быть числом."))
+        }
+    }
+
     fn parse_json_object(source: &str) -> Result<Document, String> {
-        let value: Value =
-            serde_json::from_str(source).map_err(|error| format!("JSON parse error: {error}"))?;
+        let value = Self::parse_shell_json_value(source)?;
         let object =
             value.as_object().ok_or_else(|| String::from("Аргумент должен быть JSON-объектом"))?;
         bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
@@ -3207,6 +3657,7 @@ impl Default for App {
             connection_form: None,
             collection_modal: None,
             database_modal: None,
+            document_modal: None,
         }
     }
 }
@@ -3858,6 +4309,121 @@ impl App {
                 }
                 Task::none()
             }
+            Message::DocumentModalEditorAction(action) => {
+                if let Some(modal) = self.document_modal.as_mut() {
+                    modal.editor.perform(action);
+                }
+                Task::none()
+            }
+            Message::DocumentModalCancel => {
+                self.document_modal = None;
+                self.mode = AppMode::Main;
+                Task::none()
+            }
+            Message::DocumentModalSave => {
+                let Some(modal) = self.document_modal.as_mut() else {
+                    return Task::none();
+                };
+
+                if modal.processing {
+                    return Task::none();
+                }
+
+                let editor_text = modal.editor.text().to_string();
+                let replacement = match CollectionTab::parse_shell_json_value(&editor_text) {
+                    Ok(value) => {
+                        let object = match value.as_object() {
+                            Some(obj) => obj,
+                            None => {
+                                modal.error =
+                                    Some(String::from("Документ должен быть JSON-объектом."));
+                                return Task::none();
+                            }
+                        };
+                        match bson::to_document(object) {
+                            Ok(doc) => doc,
+                            Err(error) => {
+                                modal.error = Some(format!("BSON conversion error: {error}"));
+                                return Task::none();
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        modal.error = Some(error);
+                        return Task::none();
+                    }
+                };
+
+                let original_id = match modal.original_document.get("_id") {
+                    Some(id) => id.clone(),
+                    None => {
+                        modal.error = Some(String::from(
+                            "Документ не содержит поле _id, редактирование невозможно.",
+                        ));
+                        return Task::none();
+                    }
+                };
+
+                let mut replacement = replacement;
+                if !replacement.contains_key("_id") {
+                    replacement.insert("_id", original_id.clone());
+                }
+
+                let filter = doc! { "_id": original_id };
+
+                let client_handle = self
+                    .clients
+                    .iter()
+                    .find(|client| client.id == modal.client_id)
+                    .and_then(|client| client.handle.clone());
+
+                let Some(handle) = client_handle else {
+                    modal.error = Some(String::from("Нет активного соединения."));
+                    return Task::none();
+                };
+
+                modal.processing = true;
+                modal.error = None;
+
+                let tab_id = modal.tab_id;
+                let db_name = modal.db_name.clone();
+                let collection_name = modal.collection.clone();
+                let handle_task = handle.clone();
+                let filter_clone = filter.clone();
+                let replacement_clone = replacement.clone();
+
+                Task::perform(
+                    async move {
+                        let collection =
+                            handle_task.database(&db_name).collection::<Document>(&collection_name);
+                        let result = collection
+                            .find_one_and_replace(filter_clone, replacement_clone)
+                            .return_document(ReturnDocument::After)
+                            .run()
+                            .map_err(|error| error.to_string())?;
+                        result.ok_or_else(|| {
+                            String::from(
+                                "Документ не найден. Возможно, он был удалён или изменение не применено.",
+                            )
+                        })
+                    },
+                    move |result| Message::DocumentModalCompleted { tab_id, result },
+                )
+            }
+            Message::DocumentModalCompleted { tab_id, result } => match result {
+                Ok(_) => {
+                    self.document_modal = None;
+                    self.mode = AppMode::Main;
+                    return self.collection_query_task(tab_id);
+                }
+                Err(error) => {
+                    if let Some(modal) = self.document_modal.as_mut() {
+                        modal.processing = false;
+                        modal.error = Some(error);
+                    }
+                    Task::none()
+                }
+            },
             Message::DatabasesRefreshed { client_id, result } => {
                 if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
                     match result {
@@ -4147,6 +4713,33 @@ impl App {
                 }
                 Task::none()
             }
+            Message::DocumentEditRequested { tab_id, node_id } => {
+                let doc_state = self.tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| {
+                    if !tab.collection.bson_tree.is_root_node(node_id) {
+                        return None;
+                    }
+                    let bson = tab.collection.bson_tree.node_bson(node_id)?;
+                    let document = match bson {
+                        Bson::Document(doc) => doc,
+                        _ => return None,
+                    };
+
+                    Some(DocumentModalState::new(
+                        tab_id,
+                        tab.collection.client_id,
+                        tab.collection.db_name.clone(),
+                        tab.collection.collection.clone(),
+                        document,
+                    ))
+                });
+
+                if let Some(state) = doc_state {
+                    self.document_modal = Some(state);
+                    self.mode = AppMode::DocumentModal;
+                }
+
+                Task::none()
+            }
         }
     }
 
@@ -4196,6 +4789,13 @@ impl App {
             AppMode::DatabaseModal => {
                 if let Some(state) = &self.database_modal {
                     self.database_modal_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
+            AppMode::DocumentModal => {
+                if let Some(state) = &self.document_modal {
+                    self.document_modal_view(state)
                 } else {
                     self.main_view()
                 }
@@ -4669,6 +5269,96 @@ impl App {
                 },
                 ..Default::default()
             }
+        });
+
+        Container::new(modal)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn document_modal_view<'a>(&self, state: &'a DocumentModalState) -> Element<'a, Message> {
+        let title =
+            Text::new("Изменение документа").size(22).color(Color::from_rgb8(0x17, 0x1a, 0x20));
+
+        let hint = Text::new(
+            "Отредактируйте JSON-представление документа. При сохранении документ будет полностью заменён.",
+        )
+        .size(13)
+        .color(Color::from_rgb8(0x55, 0x5f, 0x73));
+
+        let editor = text_editor::TextEditor::new(&state.editor)
+            .font(MONO_FONT)
+            .wrapping(Wrapping::Glyph)
+            .height(Length::Shrink)
+            .on_action(Message::DocumentModalEditorAction);
+
+        let editor_scroll = Scrollable::new(editor).width(Length::Fill).height(Length::Fill);
+
+        let editor_container = Container::new(editor_scroll)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .style(|_| container::Style {
+                border: border::rounded(8).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                background: Some(Color::from_rgb8(0xf6, 0xf7, 0xfa).into()),
+                ..Default::default()
+            });
+
+        let mut column = Column::new().spacing(16).push(title).push(hint).push(editor_container);
+
+        if let Some(error) = &state.error {
+            column = column
+                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+        }
+
+        if state.processing {
+            column = column.push(
+                Text::new("Сохранение документа...")
+                    .size(13)
+                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+            );
+        }
+
+        let cancel_button = Button::new(Text::new("Отмена").size(14))
+            .padding([6, 16])
+            .on_press(Message::DocumentModalCancel)
+            .style(|_, _| button::Style {
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                shadow: Shadow::default(),
+                ..Default::default()
+            });
+
+        let mut save_button = Button::new(Text::new("Сохранить").size(14)).padding([6, 16]);
+        if state.processing {
+            save_button = save_button.style(|_, _| button::Style {
+                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
+                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
+                shadow: Shadow::default(),
+            });
+        } else {
+            save_button = save_button.on_press(Message::DocumentModalSave);
+        }
+
+        let buttons = Row::new().spacing(12).push(cancel_button).push(save_button);
+        column = column.push(buttons);
+
+        // let modal = Container::new(column).padding(24).width(Length::Fixed(540.0)).style(|_| {
+        let modal = Container::new(column).padding(24).style(|_| container::Style {
+            background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
+            border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+            shadow: Shadow {
+                color: Color::from_rgba8(0, 0, 0, 0.18),
+                offset: iced::Vector::new(0.0, 8.0),
+                blur_radius: 24.0,
+            },
+            ..Default::default()
         });
 
         Container::new(modal)
@@ -5575,6 +6265,11 @@ impl App {
 
         if self.last_collection_click.as_ref().is_some_and(|click| click.client_id == client_id) {
             self.last_collection_click = None;
+        }
+
+        if self.document_modal.as_ref().is_some_and(|modal| modal.client_id == client_id) {
+            self.document_modal = None;
+            self.mode = AppMode::Main;
         }
 
         let removed: HashSet<TabId> = self
