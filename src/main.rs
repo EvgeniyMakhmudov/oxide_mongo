@@ -1,5 +1,8 @@
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
+use iced::font::Weight;
 use iced::keyboard::{self, key};
 use iced::widget::image::Handle;
 use iced::widget::pane_grid::ResizeEvent;
@@ -21,7 +24,11 @@ use iced_aw::{
     ContextMenu,
     menu::{Item as MenuItemWidget, Menu, MenuBar},
 };
-use mongodb::bson::{self, Bson, Document, doc};
+use mongodb::bson::spec::BinarySubtype;
+use mongodb::bson::{
+    self, Binary, Bson, DateTime, Decimal128, Document, JavaScriptCodeWithScope, Regex,
+    Timestamp as BsonTimestamp, doc, oid::ObjectId,
+};
 use mongodb::options::{Acknowledgment, Collation, Hint, ReturnDocument, WriteConcern};
 use mongodb::sync::Client;
 use serde::{Deserialize, Serialize};
@@ -31,9 +38,11 @@ use std::convert::TryFrom;
 use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+use uuid::Uuid;
 
 type TabId = u32;
 type ClientId = u32;
@@ -83,6 +92,7 @@ struct App {
     collection_modal: Option<CollectionModalState>,
     database_modal: Option<DatabaseModalState>,
     document_modal: Option<DocumentModalState>,
+    value_edit_modal: Option<ValueEditModalState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +149,13 @@ enum Message {
     DocumentEditRequested {
         tab_id: TabId,
         node_id: usize,
+    },
+    ValueEditModalEditorAction(TextEditorAction),
+    ValueEditModalSave,
+    ValueEditModalCancel,
+    ValueEditModalCompleted {
+        tab_id: TabId,
+        result: Result<Document, String>,
     },
     CollectionContextMenu {
         client_id: ClientId,
@@ -265,6 +282,7 @@ enum TableContextAction {
     CopyKey,
     CopyValue,
     CopyPath,
+    EditValue,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -583,6 +601,7 @@ enum AppMode {
     CollectionModal,
     DatabaseModal,
     DocumentModal,
+    ValueEditModal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -657,10 +676,459 @@ struct DocumentModalState {
     processing: bool,
 }
 
+#[derive(Debug, Clone)]
+struct ValueEditContext {
+    path: String,
+    filter: Document,
+    current_value: Bson,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueEditKind {
+    String,
+    Boolean,
+    Int32,
+    Int64,
+    Double,
+    Decimal128,
+    DateTime,
+    ObjectId,
+    Null,
+    Document,
+    Array,
+    Binary,
+    Regex,
+    Code,
+    CodeWithScope,
+    Timestamp,
+    DbPointer,
+    MinKey,
+    MaxKey,
+    Undefined,
+    Other,
+}
+
+#[derive(Debug)]
+struct ValueEditModalState {
+    tab_id: TabId,
+    client_id: ClientId,
+    db_name: String,
+    collection: String,
+    filter: Document,
+    path: String,
+    value_input: String,
+    value_editor: TextEditorContent,
+    value_kind: ValueEditKind,
+    value_label: String,
+    error: Option<String>,
+    processing: bool,
+}
+
 #[derive(Debug)]
 enum TestFeedback {
     Success(String),
     Failure(String),
+}
+
+impl ValueEditKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::String => "String",
+            Self::Boolean => "Boolean",
+            Self::Int32 => "Int32",
+            Self::Int64 => "Int64",
+            Self::Double => "Double",
+            Self::Decimal128 => "Decimal128",
+            Self::DateTime => "DateTime",
+            Self::ObjectId => "ObjectId",
+            Self::Null => "Null",
+            Self::Document => "Document",
+            Self::Array => "Array",
+            Self::Binary => "Binary",
+            Self::Regex => "RegExp",
+            Self::Code => "Code",
+            Self::CodeWithScope => "CodeWithScope",
+            Self::Timestamp => "Timestamp",
+            Self::DbPointer => "DBRef",
+            Self::MinKey => "MinKey",
+            Self::MaxKey => "MaxKey",
+            Self::Undefined => "Undefined",
+            Self::Other => "Value",
+        }
+    }
+
+    fn infer(input: &str) -> Option<Self> {
+        if let Ok(bson) = CollectionTab::parse_shell_bson_value(input) {
+            return Some(Self::from_bson(&bson));
+        }
+
+        let trimmed = input.trim();
+
+        if trimmed.is_empty() {
+            return Some(Self::String);
+        }
+
+        if trimmed.eq_ignore_ascii_case("null") {
+            return Some(Self::Null);
+        }
+
+        if Self::parse_boolean_literal(trimmed).is_some() {
+            return Some(Self::Boolean);
+        }
+
+        if Self::parse_object_id_literal(trimmed).is_ok() {
+            return Some(Self::ObjectId);
+        }
+
+        if Self::parse_datetime_literal(trimmed).is_ok() {
+            return Some(Self::DateTime);
+        }
+
+        let has_decimal_wrapper =
+            Self::strip_call(trimmed, &["NumberDecimal", "numberDecimal"]).is_some();
+        if has_decimal_wrapper && Self::parse_decimal_literal(trimmed).is_ok() {
+            return Some(Self::Decimal128);
+        }
+
+        let has_double_wrapper =
+            Self::strip_call(trimmed, &["NumberDouble", "numberDouble"]).is_some();
+        let looks_like_float = has_double_wrapper
+            || trimmed.contains('.')
+            || trimmed.contains('e')
+            || trimmed.contains('E');
+        if looks_like_float && Self::parse_double_literal(trimmed).is_ok() {
+            return Some(Self::Double);
+        }
+
+        if let Ok(value) = Self::parse_int_literal(trimmed) {
+            return if value >= i32::MIN as i128 && value <= i32::MAX as i128 {
+                Some(Self::Int32)
+            } else {
+                Some(Self::Int64)
+            };
+        }
+
+        Some(Self::String)
+    }
+
+    fn from_bson(bson: &Bson) -> Self {
+        match bson {
+            Bson::String(_) => Self::String,
+            Bson::Boolean(_) => Self::Boolean,
+            Bson::Int32(_) => Self::Int32,
+            Bson::Int64(_) => Self::Int64,
+            Bson::Double(_) => Self::Double,
+            Bson::Decimal128(_) => Self::Decimal128,
+            Bson::DateTime(_) => Self::DateTime,
+            Bson::ObjectId(_) => Self::ObjectId,
+            Bson::Null => Self::Null,
+            Bson::Document(_) => Self::Document,
+            Bson::Array(_) => Self::Array,
+            Bson::Binary(_) => Self::Binary,
+            Bson::RegularExpression(_) => Self::Regex,
+            Bson::JavaScriptCode(_) => Self::Code,
+            Bson::JavaScriptCodeWithScope(_) => Self::CodeWithScope,
+            Bson::Timestamp(_) => Self::Timestamp,
+            Bson::DbPointer(_) => Self::DbPointer,
+            Bson::Undefined => Self::Undefined,
+            Bson::MinKey => Self::MinKey,
+            Bson::MaxKey => Self::MaxKey,
+            _ => Self::Other,
+        }
+    }
+
+    fn parse(self, input: &str) -> Result<Bson, String> {
+        if let Ok(bson) = CollectionTab::parse_shell_bson_value(input) {
+            return Ok(bson);
+        }
+
+        match self {
+            Self::String => Ok(Bson::String(Self::parse_string_literal(input))),
+            Self::Boolean => Self::parse_boolean_literal(input)
+                .map(Bson::Boolean)
+                .ok_or_else(|| String::from("Логическое значение должно быть true или false.")),
+            Self::Int32 => Self::parse_int32_value(input),
+            Self::Int64 => Self::parse_int64_value(input),
+            Self::Double => Self::parse_double_literal(input).map(Bson::Double),
+            Self::Decimal128 => Self::parse_decimal_literal(input).map(Bson::Decimal128),
+            Self::DateTime => Self::parse_datetime_literal(input).map(Bson::DateTime),
+            Self::ObjectId => Self::parse_object_id_literal(input).map(Bson::ObjectId),
+            Self::Null => {
+                if input.trim().eq_ignore_ascii_case("null") {
+                    Ok(Bson::Null)
+                } else {
+                    Err(String::from("Для значения Null используйте литерал null."))
+                }
+            }
+            Self::Document => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::Document(_) => Ok(bson),
+                    other => Err(format!("Ожидался документ, получено {other:?}.")),
+                }
+            }
+            Self::Array => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::Array(_) => Ok(bson),
+                    other => Err(format!("Ожидался массив, получено {other:?}.")),
+                }
+            }
+            Self::Binary => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::Binary(_) => Ok(bson),
+                    other => Err(format!("Ожидались бинарные данные, получено {other:?}.")),
+                }
+            }
+            Self::Regex => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::RegularExpression(_) => Ok(bson),
+                    other => Err(format!("Ожидалось регулярное выражение, получено {other:?}.")),
+                }
+            }
+            Self::Code => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::JavaScriptCode(_) => Ok(bson),
+                    other => Err(format!("Ожидался JavaScript-код, получено {other:?}.")),
+                }
+            }
+            Self::CodeWithScope => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::JavaScriptCodeWithScope(_) => Ok(bson),
+                    other => Err(format!("Ожидался JavaScript-код со scope, получено {other:?}.")),
+                }
+            }
+            Self::Timestamp => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::Timestamp(_) => Ok(bson),
+                    other => Err(format!("Ожидался Timestamp, получено {other:?}.")),
+                }
+            }
+            Self::DbPointer => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::DbPointer(_) => Ok(bson),
+                    other => Err(format!("Ожидался DBRef, получено {other:?}.")),
+                }
+            }
+            Self::MinKey => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::MinKey => Ok(Bson::MinKey),
+                    other => Err(format!("Ожидался MinKey, получено {other:?}.")),
+                }
+            }
+            Self::MaxKey => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::MaxKey => Ok(Bson::MaxKey),
+                    other => Err(format!("Ожидался MaxKey, получено {other:?}.")),
+                }
+            }
+            Self::Undefined => {
+                let bson = CollectionTab::parse_shell_bson_value(input)?;
+                match bson {
+                    Bson::Undefined => Ok(Bson::Undefined),
+                    other => Err(format!("Ожидалось значение undefined, получено {other:?}.")),
+                }
+            }
+            Self::Other => CollectionTab::parse_shell_bson_value(input)
+                .or_else(|_| Ok(Bson::String(Self::parse_string_literal(input)))),
+        }
+    }
+
+    fn parse_string_literal(input: &str) -> String {
+        Self::trim_quotes(input).unwrap_or(input.trim()).to_string()
+    }
+
+    fn parse_boolean_literal(input: &str) -> Option<bool> {
+        let trimmed = input.trim();
+        if trimmed.eq_ignore_ascii_case("true") {
+            Some(true)
+        } else if trimmed.eq_ignore_ascii_case("false") {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
+    fn parse_int32_value(input: &str) -> Result<Bson, String> {
+        let literal = Self::extract_numeric_literal(input, &["NumberInt", "numberInt"])
+            .unwrap_or_else(|| input.trim().to_string());
+
+        literal
+            .parse::<i32>()
+            .map(Bson::Int32)
+            .map_err(|_| String::from("Значение должно быть целым числом в диапазоне Int32."))
+    }
+
+    fn parse_int64_value(input: &str) -> Result<Bson, String> {
+        let literal = Self::extract_numeric_literal(input, &["NumberLong", "numberLong"])
+            .unwrap_or_else(|| input.trim().to_string());
+
+        literal
+            .parse::<i64>()
+            .map(Bson::Int64)
+            .map_err(|_| String::from("Значение должно быть целым числом в диапазоне Int64."))
+    }
+
+    fn parse_double_literal(input: &str) -> Result<f64, String> {
+        let literal = Self::extract_numeric_literal(input, &["NumberDouble", "numberDouble"])
+            .unwrap_or_else(|| input.trim().to_string());
+
+        literal.parse::<f64>().map_err(|_| String::from("Значение должно быть числом (Double)."))
+    }
+
+    fn parse_decimal_literal(input: &str) -> Result<Decimal128, String> {
+        let literal = Self::extract_numeric_literal(input, &["NumberDecimal", "numberDecimal"])
+            .unwrap_or_else(|| input.trim().to_string());
+
+        Decimal128::from_str(literal.trim())
+            .map_err(|_| String::from("Значение должно быть корректным Decimal128."))
+    }
+
+    fn parse_datetime_literal(input: &str) -> Result<DateTime, String> {
+        if let Some(argument) = Self::strip_call(input, &["ISODate", "Date"]) {
+            return Self::coerce_datetime(argument);
+        }
+
+        Self::coerce_datetime(input)
+    }
+
+    fn parse_object_id_literal(input: &str) -> Result<ObjectId, String> {
+        let literal = if let Some(argument) = Self::strip_call(input, &["ObjectId"]) {
+            Self::trim_quotes(argument).unwrap_or(argument.trim()).to_string()
+        } else {
+            input.trim().to_string()
+        };
+
+        ObjectId::parse_str(literal)
+            .map_err(|_| String::from("ObjectId должен состоять из 24 шестнадцатеричных символов."))
+    }
+
+    fn parse_int_literal(input: &str) -> Result<i128, String> {
+        let literal = Self::extract_numeric_literal(
+            input,
+            &["NumberInt", "numberInt", "NumberLong", "numberLong"],
+        )
+        .unwrap_or_else(|| input.trim().to_string());
+
+        literal.parse::<i128>().map_err(|_| String::from("Значение должно быть целым числом."))
+    }
+
+    fn coerce_datetime(input: &str) -> Result<DateTime, String> {
+        let literal = Self::trim_quotes(input).unwrap_or(input.trim());
+
+        if let Ok(dt) = DateTime::parse_rfc3339_str(literal) {
+            return Ok(dt);
+        }
+
+        let millis: i64 = literal.parse().map_err(|_| {
+            String::from("Введите ISO 8601 дату или количество миллисекунд с начала эпохи.")
+        })?;
+        Ok(DateTime::from_millis(millis))
+    }
+
+    fn extract_numeric_literal(input: &str, names: &[&str]) -> Option<String> {
+        Self::strip_call(input, names)
+            .map(|argument| Self::trim_quotes(argument).unwrap_or(argument.trim()).to_string())
+    }
+
+    fn strip_call<'a>(input: &'a str, names: &[&str]) -> Option<&'a str> {
+        let trimmed = input.trim();
+
+        for name in names {
+            if trimmed.starts_with(name) {
+                let rest = trimmed[name.len()..].trim_start();
+                if rest.starts_with('(') && rest.ends_with(')') && rest.len() >= 2 {
+                    return Some(rest[1..rest.len() - 1].trim());
+                }
+            }
+        }
+
+        None
+    }
+
+    fn trim_quotes(input: &str) -> Option<&str> {
+        let trimmed = input.trim();
+        if trimmed.len() >= 2 {
+            let bytes = trimmed.as_bytes();
+            let first = bytes[0];
+            let last = bytes[trimmed.len() - 1];
+            if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
+                return Some(&trimmed[1..trimmed.len() - 1]);
+            }
+        }
+        None
+    }
+}
+
+impl ValueEditModalState {
+    fn new(tab_id: TabId, collection: &CollectionTab, context: ValueEditContext) -> Self {
+        let value_input = Self::initial_value_input(&context.current_value);
+        let value_kind = ValueEditKind::from_bson(&context.current_value);
+        let value_label = CollectionTab::bson_type_name(&context.current_value).to_string();
+        Self {
+            tab_id,
+            client_id: collection.client_id,
+            db_name: collection.db_name.clone(),
+            collection: collection.collection.clone(),
+            filter: context.filter,
+            path: context.path,
+            value_editor: TextEditorContent::with_text(&value_input),
+            value_input,
+            value_kind,
+            value_label,
+            error: None,
+            processing: false,
+        }
+    }
+
+    fn initial_value_input(value: &Bson) -> String {
+        match value {
+            Bson::String(text) => text.clone(),
+            _ => CollectionTab::format_shell_value(value),
+        }
+    }
+
+    fn apply_editor_action(&mut self, action: TextEditorAction) {
+        self.value_editor.perform(action);
+        self.value_input = self.value_editor.text().to_string();
+        self.recalculate_kind_and_label();
+        self.error = None;
+    }
+
+    fn recalculate_kind_and_label(&mut self) {
+        if let Ok(bson) = CollectionTab::parse_shell_bson_value(&self.value_input) {
+            self.value_kind = ValueEditKind::from_bson(&bson);
+            self.value_label = CollectionTab::bson_type_name(&bson).to_string();
+        } else if let Some(kind) = ValueEditKind::infer(&self.value_input) {
+            self.value_kind = kind;
+            self.value_label = kind.label().to_string();
+        }
+    }
+
+    fn prepare_value(&mut self) -> Result<Bson, String> {
+        if let Ok(bson) = CollectionTab::parse_shell_bson_value(&self.value_input) {
+            self.value_kind = ValueEditKind::from_bson(&bson);
+            self.value_label = CollectionTab::bson_type_name(&bson).to_string();
+            return Ok(bson);
+        }
+
+        if let Some(kind) = ValueEditKind::infer(&self.value_input) {
+            self.value_kind = kind;
+            self.value_label = kind.label().to_string();
+        }
+
+        let bson = self.value_kind.parse(&self.value_input)?;
+        self.value_label = CollectionTab::bson_type_name(&bson).to_string();
+        Ok(bson)
+    }
 }
 
 struct CollectionClick {
@@ -971,38 +1439,69 @@ fn format_bson_shell_scalar(value: &Bson) -> String {
         Bson::Int32(i) => i.to_string(),
         Bson::Int64(i) => i.to_string(),
         Bson::Double(f) => {
-            if f.is_finite() {
-                format!("{f}")
+            if f.is_nan() {
+                String::from("NaN")
+            } else if f.is_infinite() {
+                if f.is_sign_negative() {
+                    String::from("-Infinity")
+                } else {
+                    String::from("Infinity")
+                }
             } else {
-                format!("Double({f})")
+                format!("{f}")
             }
         }
-        Bson::Decimal128(d) => format!("numberDecimal(\"{}\")", d),
+        Bson::Decimal128(d) => format!("NumberDecimal(\"{}\")", d),
         Bson::DateTime(dt) => match dt.try_to_rfc3339_string() {
             Ok(iso) => format!("ISODate(\"{}\")", iso),
             Err(_) => format!("DateTime({})", dt.timestamp_millis()),
         },
         Bson::ObjectId(oid) => format!("ObjectId(\"{}\")", oid),
-        Bson::Binary(bin) => format!("Binary(len={}, subtype={:?})", bin.bytes.len(), bin.subtype),
-        Bson::Symbol(sym) => format!("Symbol({sym:?})"),
-        Bson::RegularExpression(regex) => {
-            if regex.options.is_empty() {
-                format!("Regex({:?})", regex.pattern)
+        Bson::Binary(bin) => {
+            if bin.subtype == BinarySubtype::Uuid && bin.bytes.len() == 16 {
+                if let Ok(uuid) = Uuid::from_slice(&bin.bytes) {
+                    format!("UUID(\"{}\")", uuid)
+                } else {
+                    let encoded = BASE64_STANDARD.encode(&bin.bytes);
+                    let subtype: u8 = bin.subtype.into();
+                    format!("BinData({}, \"{}\")", subtype, encoded)
+                }
             } else {
-                format!("Regex({:?}, {:?})", regex.pattern, regex.options)
+                let encoded = BASE64_STANDARD.encode(&bin.bytes);
+                let subtype: u8 = bin.subtype.into();
+                format!("BinData({}, \"{}\")", subtype, encoded)
             }
         }
-        Bson::Timestamp(ts) => format!("Timestamp(time={}, increment={})", ts.time, ts.increment),
-        Bson::JavaScriptCode(code) => format!("Code({code:?})"),
-        Bson::JavaScriptCodeWithScope(code_with_scope) => {
-            let scope_len = code_with_scope.scope.len();
-            format!("CodeWithScope({:?}, scope_fields={})", code_with_scope.code, scope_len)
+        Bson::Symbol(sym) => {
+            let text = serde_json::to_string(sym).unwrap_or_else(|_| format!("\"{}\"", sym));
+            format!("Symbol({text})")
         }
-        Bson::DbPointer(ptr) => format!("DbPointer({ptr:?})"),
+        Bson::RegularExpression(regex) => {
+            let pattern = serde_json::to_string(&regex.pattern)
+                .unwrap_or_else(|_| format!("\"{}\"", regex.pattern));
+            let options = serde_json::to_string(&regex.options)
+                .unwrap_or_else(|_| format!("\"{}\"", regex.options));
+            format!("RegExp({pattern}, {options})")
+        }
+        Bson::Timestamp(ts) => format!("Timestamp({}, {})", ts.time, ts.increment),
+        Bson::JavaScriptCode(code) => {
+            let text = serde_json::to_string(code).unwrap_or_else(|_| format!("\"{}\"", code));
+            format!("Code({text})")
+        }
+        Bson::JavaScriptCodeWithScope(code_with_scope) => {
+            let code_text = serde_json::to_string(&code_with_scope.code)
+                .unwrap_or_else(|_| format!("\"{}\"", code_with_scope.code));
+            let scope =
+                CollectionTab::format_shell_value(&Bson::Document(code_with_scope.scope.clone()));
+            format!("Code({code_text}, {scope})")
+        }
+        Bson::DbPointer(_) => {
+            serde_json::to_string(value).unwrap_or_else(|_| String::from("{\"$dbPointer\":{...}}"))
+        }
         Bson::Undefined => String::from("undefined"),
         Bson::Null => String::from("null"),
-        Bson::MinKey => String::from("MinKey"),
-        Bson::MaxKey => String::from("MaxKey"),
+        Bson::MinKey => String::from("MinKey()"),
+        Bson::MaxKey => String::from("MaxKey()"),
         Bson::Document(_) | Bson::Array(_) => unreachable!("containers handled separately"),
     }
 }
@@ -1010,6 +1509,10 @@ fn format_bson_shell_scalar(value: &Bson) -> String {
 fn shell_indent(level: usize) -> String {
     const INDENT: usize = 4;
     " ".repeat(level * INDENT)
+}
+
+fn is_editable_scalar(_value: &Bson) -> bool {
+    true
 }
 
 impl BsonTree {
@@ -1181,20 +1684,38 @@ impl BsonTree {
             }
 
             let key_label = node.display_key();
-            key_row = key_row.push(Text::new(key_label.clone()).size(14).font(MONO_FONT));
+            key_row = key_row.push(
+                Text::new(key_label.clone())
+                    .size(14)
+                    .font(MONO_FONT)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
+            );
 
             let value_text = node.value_display().unwrap_or_default();
             let type_text = node.type_label();
 
             let key_cell = Container::new(key_row).width(Length::FillPortion(4)).padding([6, 8]);
 
-            let value_cell = Container::new(Text::new(value_text.clone()).size(14).font(MONO_FONT))
-                .width(Length::FillPortion(5))
-                .padding([6, 8]);
+            let value_cell = Container::new(
+                Text::new(value_text.clone())
+                    .size(14)
+                    .font(MONO_FONT)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
+            )
+            .width(Length::FillPortion(5))
+            .padding([6, 8]);
 
-            let type_cell = Container::new(Text::new(type_text.clone()).size(14).font(MONO_FONT))
-                .width(Length::FillPortion(3))
-                .padding([6, 8]);
+            let type_cell = Container::new(
+                Text::new(type_text.clone())
+                    .size(14)
+                    .font(MONO_FONT)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
+            )
+            .width(Length::FillPortion(3))
+            .padding([6, 8]);
 
             let separator = |color: Color| {
                 Container::new(Space::with_width(Length::Fixed(1.0)))
@@ -1220,6 +1741,7 @@ impl BsonTree {
             let menu_tab_id = tab_id;
             let path_enabled = self.node_path(menu_node_id).is_some();
             let is_root_document = depth == 0 && matches!(node.kind, BsonKind::Document(_));
+            let value_edit_enabled = self.can_edit_value(menu_node_id);
 
             let row_container = Container::new(row_content).width(Length::Fill).style(move |_| {
                 iced::widget::container::Style {
@@ -1273,6 +1795,17 @@ impl BsonTree {
                 menu = menu.push(copy_json);
                 menu = menu.push(copy_key);
                 menu = menu.push(copy_value);
+                if value_edit_enabled {
+                    let edit_value = Button::new(Text::new("Изменить только значение...").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::EditValue,
+                        });
+                    menu = menu.push(edit_value);
+                }
                 menu = menu.push(copy_path);
 
                 if is_root_document {
@@ -1368,6 +1901,58 @@ impl BsonTree {
         if components.is_empty() { None } else { Some(components.join(".")) }
     }
 
+    fn can_edit_value(&self, node_id: usize) -> bool {
+        self.edit_requirements(node_id).is_some()
+    }
+
+    fn value_edit_context(&self, node_id: usize) -> Option<ValueEditContext> {
+        let (components, root_doc, value_node) = self.edit_requirements(node_id)?;
+        let mut filter = Document::new();
+        filter.insert("_id", root_doc.get("_id")?.clone());
+
+        Some(ValueEditContext {
+            path: components.join("."),
+            filter,
+            current_value: value_node.bson.clone(),
+        })
+    }
+
+    fn edit_requirements(&self, node_id: usize) -> Option<(Vec<String>, &Document, &BsonNode)> {
+        let nodes = Self::find_node_path(&self.roots, node_id, &mut Vec::new())?;
+        let target = nodes.last()?;
+
+        if !matches!(target.kind, BsonKind::Value { .. }) {
+            return None;
+        }
+
+        if !is_editable_scalar(&target.bson) {
+            return None;
+        }
+
+        let mut components = Vec::new();
+        for node in nodes.iter().skip(1) {
+            if let Some(component) = &node.path_key {
+                components.push(component.clone());
+            }
+        }
+
+        if components.is_empty() {
+            return None;
+        }
+
+        let root = nodes.first()?;
+        let root_document = match &root.bson {
+            Bson::Document(doc) => doc,
+            _ => return None,
+        };
+
+        if !root_document.contains_key("_id") {
+            return None;
+        }
+
+        Some((components, root_document, target))
+    }
+
     fn find_node<'a>(nodes: &'a [BsonNode], node_id: usize) -> Option<&'a BsonNode> {
         for node in nodes {
             if node.id == node_id {
@@ -1427,6 +2012,45 @@ impl CollectionTab {
 
     fn initial_split_ratio() -> f32 {
         Self::min_request_ratio()
+    }
+
+    fn format_shell_value(value: &Bson) -> String {
+        match value {
+            Bson::String(text) => text.clone(),
+            _ => format_bson_shell(value),
+        }
+    }
+
+    fn bson_type_name(bson: &Bson) -> &'static str {
+        match bson {
+            Bson::Document(_) => "Document",
+            Bson::Array(_) => "Array",
+            Bson::String(_) => "String",
+            Bson::Boolean(_) => "Boolean",
+            Bson::Int32(_) => "Int32",
+            Bson::Int64(_) => "Int64",
+            Bson::Double(_) => "Double",
+            Bson::Decimal128(_) => "Decimal128",
+            Bson::DateTime(_) => "DateTime",
+            Bson::ObjectId(_) => "ObjectId",
+            Bson::Binary(binary) => {
+                if binary.subtype == BinarySubtype::Uuid && binary.bytes.len() == 16 {
+                    "UUID"
+                } else {
+                    "Binary"
+                }
+            }
+            Bson::RegularExpression(_) => "RegExp",
+            Bson::JavaScriptCode(_) => "Code",
+            Bson::JavaScriptCodeWithScope(_) => "CodeWithScope",
+            Bson::Timestamp(_) => "Timestamp",
+            Bson::DbPointer(_) => "DBRef",
+            Bson::Undefined => "Undefined",
+            Bson::Null => "Null",
+            Bson::MinKey => "MinKey",
+            Bson::MaxKey => "MaxKey",
+            Bson::Symbol(_) => "Symbol",
+        }
     }
 
     fn clamp_split_ratio(ratio: f32) -> f32 {
@@ -1606,7 +2230,12 @@ impl CollectionTab {
             TableContextAction::CopyKey => self.bson_tree.node_display_key(node_id),
             TableContextAction::CopyValue => self.bson_tree.node_value_display(node_id),
             TableContextAction::CopyPath => self.bson_tree.node_path(node_id),
+            TableContextAction::EditValue => None,
         }
+    }
+
+    fn value_edit_context(&self, node_id: usize) -> Option<ValueEditContext> {
+        self.bson_tree.value_edit_context(node_id)
     }
 
     fn request_view(&self, tab_id: TabId) -> Element<Message> {
@@ -3173,7 +3802,7 @@ impl CollectionTab {
 
             if ch == '\"' {
                 let end = Self::skip_double_quoted(&chars, index)?;
-                result.extend(chars[index..end].iter());
+                result.extend(&chars[index..end]);
                 index = end;
                 continue;
             }
@@ -3185,14 +3814,68 @@ impl CollectionTab {
                 continue;
             }
 
+            if ch == '-' {
+                if let Some((replacement, consumed)) =
+                    Self::try_parse_negative_constant(&chars, index)?
+                {
+                    result.push_str(&replacement);
+                    index = consumed;
+                    continue;
+                }
+            }
+
+            if ch == '/' {
+                if let Some((replacement, consumed)) = Self::try_parse_regex_literal(&chars, index)?
+                {
+                    result.push_str(&replacement);
+                    index = consumed;
+                    continue;
+                }
+            }
+
             if Self::is_identifier_start(ch) {
-                let start = index;
-                index += 1;
-                while index < len && Self::is_identifier_part(chars[index]) {
-                    index += 1;
+                let start_index = index;
+                let (identifier, mut next_index) = Self::read_identifier(&chars, index);
+                index = next_index;
+
+                if identifier == "new" {
+                    next_index = Self::skip_whitespace(&chars, next_index);
+                    let (next_identifier, after_identifier) =
+                        Self::read_identifier(&chars, next_index);
+                    if !next_identifier.is_empty() && Self::is_special_construct(&next_identifier) {
+                        if let Some((replacement, consumed)) = Self::convert_special_construct(
+                            &chars,
+                            after_identifier,
+                            &next_identifier,
+                        )? {
+                            result.push_str(&replacement);
+                            index = consumed;
+                            continue;
+                        }
+                    }
+
+                    result.push_str("new");
+                    if !next_identifier.is_empty() {
+                        result.push(' ');
+                        result.push_str(&next_identifier);
+                        index = after_identifier;
+                    }
+                    continue;
                 }
 
-                let identifier: String = chars[start..index].iter().collect();
+                if identifier == "function" {
+                    let (code, consumed) = Self::extract_function_literal(&chars, start_index)?;
+                    let replacement = Self::bson_to_extended_json(Bson::JavaScriptCode(code))?;
+                    result.push_str(&replacement);
+                    index = consumed;
+                    continue;
+                }
+
+                if let Some(replacement) = Self::convert_constant(&identifier)? {
+                    result.push_str(&replacement);
+                    continue;
+                }
+
                 if Self::is_special_construct(&identifier) {
                     if let Some((replacement, consumed_until)) =
                         Self::convert_special_construct(&chars, index, &identifier)?
@@ -3212,6 +3895,184 @@ impl CollectionTab {
         }
 
         Ok(result)
+    }
+
+    fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
+        let len = chars.len();
+        while index < len && chars[index].is_whitespace() {
+            index += 1;
+        }
+        index
+    }
+
+    fn read_identifier(chars: &[char], start: usize) -> (String, usize) {
+        let len = chars.len();
+        if start >= len || !Self::is_identifier_start(chars[start]) {
+            return (String::new(), start);
+        }
+        let mut index = start + 1;
+        while index < len && Self::is_identifier_part(chars[index]) {
+            index += 1;
+        }
+        (chars[start..index].iter().collect(), index)
+    }
+
+    fn convert_constant(identifier: &str) -> Result<Option<String>, String> {
+        match identifier {
+            "Infinity" => Ok(Some(Self::bson_to_extended_json(Bson::Double(f64::INFINITY))?)),
+            "NaN" => Ok(Some(Self::bson_to_extended_json(Bson::Double(f64::NAN))?)),
+            "undefined" => Ok(Some(Self::bson_to_extended_json(Bson::Undefined)?)),
+            _ => Ok(None),
+        }
+    }
+
+    fn matches_keyword(chars: &[char], start: usize, keyword: &str) -> bool {
+        let len = chars.len();
+        let keyword_len = keyword.len();
+        if start + keyword_len > len {
+            return false;
+        }
+
+        chars[start..start + keyword_len].iter().zip(keyword.chars()).all(|(&ch, kw)| ch == kw)
+    }
+
+    fn prev_non_whitespace(chars: &[char], index: usize) -> Option<char> {
+        let mut idx = index;
+        while idx > 0 {
+            idx -= 1;
+            let ch = chars[idx];
+            if !ch.is_whitespace() {
+                return Some(ch);
+            }
+        }
+        None
+    }
+
+    fn try_parse_negative_constant(
+        chars: &[char],
+        index: usize,
+    ) -> Result<Option<(String, usize)>, String> {
+        if Self::matches_keyword(chars, index + 1, "Infinity") {
+            let consumed = index + 1 + "Infinity".len();
+            let replacement = Self::bson_to_extended_json(Bson::Double(f64::NEG_INFINITY))?;
+            return Ok(Some((replacement, consumed)));
+        }
+
+        Ok(None)
+    }
+
+    fn try_parse_regex_literal(
+        chars: &[char],
+        index: usize,
+    ) -> Result<Option<(String, usize)>, String> {
+        if chars[index] != '/' {
+            return Ok(None);
+        }
+
+        if let Some(prev) = Self::prev_non_whitespace(chars, index) {
+            if !matches!(prev, ':' | ',' | '{' | '[' | '(') {
+                return Ok(None);
+            }
+        }
+
+        let len = chars.len();
+        let mut pattern = String::new();
+        let mut escape = false;
+        let mut cursor = index + 1;
+
+        while cursor < len {
+            let ch = chars[cursor];
+            if escape {
+                pattern.push(ch);
+                escape = false;
+            } else if ch == '\\' {
+                pattern.push(ch);
+                escape = true;
+            } else if ch == '/' {
+                break;
+            } else {
+                pattern.push(ch);
+            }
+            cursor += 1;
+        }
+
+        if cursor >= len || chars[cursor] != '/' {
+            return Err(String::from("Регулярное выражение не закрыто символом '/'."));
+        }
+
+        cursor += 1;
+        let mut options = String::new();
+        while cursor < len && chars[cursor].is_ascii_alphabetic() {
+            options.push(chars[cursor]);
+            cursor += 1;
+        }
+
+        let regex = Regex { pattern, options };
+        let replacement = Self::bson_to_extended_json(Bson::RegularExpression(regex))?;
+        Ok(Some((replacement, cursor)))
+    }
+
+    fn extract_function_literal(chars: &[char], start: usize) -> Result<(String, usize), String> {
+        let len = chars.len();
+        let mut index = start;
+        let mut buffer = String::new();
+        let mut in_string = false;
+        let mut string_delim = '\'';
+        let mut escape = false;
+        let mut paren_depth = 0i32;
+        let mut brace_depth = 0i32;
+        let mut encountered_brace = false;
+
+        while index < len {
+            let ch = chars[index];
+            buffer.push(ch);
+            index += 1;
+
+            if in_string {
+                if escape {
+                    escape = false;
+                    continue;
+                }
+                if ch == '\\' {
+                    escape = true;
+                } else if ch == string_delim {
+                    in_string = false;
+                }
+                continue;
+            }
+
+            match ch {
+                '\'' | '"' => {
+                    in_string = true;
+                    string_delim = ch;
+                }
+                '(' => paren_depth += 1,
+                ')' => {
+                    if paren_depth > 0 {
+                        paren_depth -= 1;
+                    }
+                }
+                '{' => {
+                    brace_depth += 1;
+                    encountered_brace = true;
+                }
+                '}' => {
+                    if brace_depth > 0 {
+                        brace_depth -= 1;
+                        if encountered_brace && brace_depth == 0 && paren_depth == 0 {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if brace_depth != 0 {
+            return Err(String::from("Функция не содержит закрывающую фигурную скобку."));
+        }
+
+        Ok((buffer.trim().to_string(), index))
     }
 
     fn collect_single_quoted_string(
@@ -3325,22 +4186,35 @@ impl CollectionTab {
     }
 
     fn is_identifier_part(ch: char) -> bool {
-        ch.is_ascii_alphanumeric() || ch == '_'
+        ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'
     }
 
     fn is_special_construct(identifier: &str) -> bool {
         matches!(
             identifier,
             "ObjectId"
+                | "ObjectId.fromDate"
                 | "ISODate"
                 | "Date"
                 | "NumberDecimal"
                 | "NumberLong"
                 | "NumberInt"
                 | "NumberDouble"
-                | "Timestamp"
+                | "Number"
+                | "String"
+                | "Boolean"
                 | "BinData"
+                | "HexData"
+                | "UUID"
+                | "Timestamp"
                 | "RegExp"
+                | "Code"
+                | "Array"
+                | "Object"
+                | "DBRef"
+                | "MinKey"
+                | "MaxKey"
+                | "Undefined"
         )
     }
 
@@ -3394,75 +4268,109 @@ impl CollectionTab {
 
     fn build_extended_json(identifier: &str, args: &str) -> Result<String, String> {
         let parts = Self::split_arguments(args);
+        let bson = Self::build_special_bson(identifier, &parts)?;
+        Self::bson_to_extended_json(bson)
+    }
 
+    fn build_special_bson(identifier: &str, parts: &[String]) -> Result<Bson, String> {
         match identifier {
             "ObjectId" => {
+                let object_id = match parts.len() {
+                    0 => ObjectId::new(),
+                    1 => {
+                        let value = Self::parse_shell_json_value(&parts[0])?;
+                        let hex = Self::value_as_string(&value)?;
+                        ObjectId::from_str(&hex).map_err(|_| {
+                            String::from("ObjectId требует 24-символьную hex-строку либо вызывается без аргументов.")
+                        })?
+                    }
+                    _ => {
+                        return Err(String::from(
+                            "ObjectId поддерживает либо ноль, либо один строковый аргумент.",
+                        ));
+                    }
+                };
+                Ok(Bson::ObjectId(object_id))
+            }
+            "ObjectId.fromDate" => {
                 if parts.len() != 1 {
-                    return Err(String::from("ObjectId ожидает один аргумент."));
+                    return Err(String::from("ObjectId.fromDate ожидает один аргумент."));
                 }
-                let value = Self::parse_shell_json_value(&parts[0])?;
-                let hex = value
-                    .as_str()
-                    .ok_or_else(|| String::from("ObjectId ожидает строковый аргумент."))?;
-                let encoded = Value::String(hex.to_string()).to_string();
-                Ok(format!("{{\"$oid\": {encoded}}}"))
+                let date = Self::parse_date_constructor(&[parts[0].clone()])?;
+                let seconds = (date.timestamp_millis() / 1000) as u32;
+                Ok(Bson::ObjectId(ObjectId::from_parts(seconds, [0; 5], [0; 3])))
             }
             "ISODate" | "Date" => {
-                if parts.len() != 1 {
-                    return Err(String::from("ISODate ожидает один аргумент."));
-                }
-                let value = Self::parse_shell_json_value(&parts[0])?;
-                let iso = value
-                    .as_str()
-                    .ok_or_else(|| String::from("ISODate ожидает строковый аргумент."))?;
-                let encoded = Value::String(iso.to_string()).to_string();
-                Ok(format!("{{\"$date\": {encoded}}}"))
+                let datetime = Self::parse_date_constructor(parts)?;
+                Ok(Bson::DateTime(datetime))
             }
             "NumberDecimal" => {
-                if parts.len() != 1 {
-                    return Err(String::from("NumberDecimal ожидает один аргумент."));
-                }
-                let value = Self::parse_shell_json_value(&parts[0])?;
-                let decimal = Self::value_as_string(&value)?;
-                let encoded = Value::String(decimal).to_string();
-                Ok(format!("{{\"$numberDecimal\": {encoded}}}"))
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let value = Self::parse_shell_json_value(&literal)?;
+                let text = Self::value_as_string(&value)?;
+                let decimal = Decimal128::from_str(&text).map_err(|_| {
+                    String::from("NumberDecimal ожидает корректное десятичное значение.")
+                })?;
+                Ok(Bson::Decimal128(decimal))
             }
             "NumberLong" => {
-                if parts.len() != 1 {
-                    return Err(String::from("NumberLong ожидает один аргумент."));
-                }
-                let value = Self::parse_shell_json_value(&parts[0])?;
-                let long = Self::value_as_string(&value)?;
-                let encoded = Value::String(long).to_string();
-                Ok(format!("{{\"$numberLong\": {encoded}}}"))
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let value = Self::parse_shell_json_value(&literal)?;
+                let text = Self::value_as_string(&value)?;
+                let parsed = i128::from_str(&text)
+                    .map_err(|_| String::from("NumberLong ожидает целое число."))?;
+                let value = i64::try_from(parsed).map_err(|_| {
+                    String::from("Значение NumberLong выходит за пределы диапазона i64.")
+                })?;
+                Ok(Bson::Int64(value))
             }
             "NumberInt" => {
-                if parts.len() != 1 {
-                    return Err(String::from("NumberInt ожидает один аргумент."));
-                }
-                let value = Self::parse_shell_json_value(&parts[0])?;
-                let int = Self::value_as_string(&value)?;
-                let encoded = Value::String(int).to_string();
-                Ok(format!("{{\"$numberInt\": {encoded}}}"))
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let value = Self::parse_shell_json_value(&literal)?;
+                let text = Self::value_as_string(&value)?;
+                let parsed = i64::from_str(&text)
+                    .map_err(|_| String::from("NumberInt ожидает целое число."))?;
+                let value = i32::try_from(parsed)
+                    .map_err(|_| String::from("Значение NumberInt выходит за диапазон Int32."))?;
+                Ok(Bson::Int32(value))
             }
-            "NumberDouble" => {
-                if parts.len() != 1 {
-                    return Err(String::from("NumberDouble ожидает один аргумент."));
-                }
-                let value = Self::parse_shell_json_value(&parts[0])?;
-                let double = Self::value_as_string(&value)?;
-                let encoded = Value::String(double).to_string();
-                Ok(format!("{{\"$numberDouble\": {encoded}}}"))
+            "NumberDouble" | "Number" => {
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let value = Self::parse_shell_json_value(&literal)?;
+                let number = Self::value_as_f64(&value)?;
+                Ok(Bson::Double(number))
             }
-            "Timestamp" => {
-                if parts.len() != 2 {
-                    return Err(String::from("Timestamp ожидает два числовых аргумента (t, i)."));
-                }
-                let t_val = Self::parse_shell_json_value(&parts[0])?;
-                let i_val = Self::parse_shell_json_value(&parts[1])?;
-                let t = Self::value_as_i64(&t_val, "Timestamp", "t")?;
-                let i = Self::value_as_i64(&i_val, "Timestamp", "i")?;
-                Ok(format!("{{\"$timestamp\":{{\"t\":{t},\"i\":{i}}}}}"))
+            "Boolean" => {
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("false"));
+                let value = Self::parse_shell_json_value(&literal)?;
+                let flag = Self::value_as_bool(&value)?;
+                Ok(Bson::Boolean(flag))
+            }
+            "String" => {
+                let text = if let Some(arg) = parts.get(0) {
+                    let value = Self::parse_shell_json_value(arg)?;
+                    Self::value_as_string(&value)?
+                } else {
+                    String::new()
+                };
+                Ok(Bson::String(text))
+            }
+            "UUID" => {
+                let uuid = if let Some(arg) = parts.get(0) {
+                    let value = Self::parse_shell_json_value(arg)?;
+                    let text = Self::value_as_string(&value)?;
+                    Uuid::parse_str(&text).map_err(|_| {
+                        String::from(
+                            "UUID ожидает строку формата xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.",
+                        )
+                    })?
+                } else {
+                    Uuid::new_v4()
+                };
+                Ok(Bson::Binary(Binary {
+                    subtype: BinarySubtype::Uuid,
+                    bytes: uuid.as_bytes().to_vec(),
+                }))
             }
             "BinData" => {
                 if parts.len() != 2 {
@@ -3470,51 +4378,314 @@ impl CollectionTab {
                         "BinData ожидает два аргумента: подтип и base64-строку.",
                     ));
                 }
-                let subtype_raw = Self::parse_shell_json_value(&parts[0])?;
-                let data_raw = Self::parse_shell_json_value(&parts[1])?;
-                let subtype = Self::value_as_u8(&subtype_raw)?;
-                let data = data_raw.as_str().ok_or_else(|| {
+                let subtype_value = Self::parse_shell_json_value(&parts[0])?;
+                let subtype = Self::value_as_u8(&subtype_value)?;
+                let data_value = Self::parse_shell_json_value(&parts[1])?;
+                let encoded = data_value.as_str().ok_or_else(|| {
                     String::from("BinData ожидает base64-строку вторым аргументом.")
                 })?;
-                let data_encoded = Value::String(data.to_string()).to_string();
-                let subtype_encoded = Value::String(format!("{:02x}", subtype)).to_string();
-                Ok(format!(
-                    "{{\"$binary\":{{\"base64\":{data},\"subType\":{subtype}}}}}",
-                    data = data_encoded,
-                    subtype = subtype_encoded
-                ))
+                let bytes = BASE64_STANDARD
+                    .decode(encoded)
+                    .map_err(|_| String::from("Невозможно декодировать base64-строку BinData."))?;
+                Ok(Bson::Binary(Binary { subtype: BinarySubtype::from(subtype), bytes }))
+            }
+            "HexData" => {
+                if parts.len() != 2 {
+                    return Err(String::from(
+                        "HexData ожидает два аргумента: подтип и hex-строку.",
+                    ));
+                }
+                let subtype_value = Self::parse_shell_json_value(&parts[0])?;
+                let subtype = Self::value_as_u8(&subtype_value)?;
+                let hex_value = Self::parse_shell_json_value(&parts[1])?;
+                let hex_string = hex_value
+                    .as_str()
+                    .ok_or_else(|| String::from("HexData ожидает строку во втором аргументе."))?;
+                let bytes = Self::decode_hex(hex_string)?;
+                Ok(Bson::Binary(Binary { subtype: BinarySubtype::from(subtype), bytes }))
+            }
+            "Array" => {
+                let mut items = Vec::new();
+                for part in parts {
+                    let value = Self::parse_shell_bson_value(part)?;
+                    items.push(value);
+                }
+                Ok(Bson::Array(items))
+            }
+            "Object" => {
+                if parts.is_empty() {
+                    return Ok(Bson::Document(Document::new()));
+                }
+                let value = Self::parse_shell_bson_value(&parts[0])?;
+                match value {
+                    Bson::Document(doc) => Ok(Bson::Document(doc)),
+                    other => Err(format!(
+                        "Object ожидает JSON-объект, получено значение типа {other:?}."
+                    )),
+                }
+            }
+            "Timestamp" => {
+                if parts.len() != 2 {
+                    return Err(String::from(
+                        "Timestamp ожидает два аргумента: время и инкремент.",
+                    ));
+                }
+                let time = Self::parse_timestamp_seconds(&parts[0])?;
+                let increment = Self::parse_u32_argument(&parts[1], "Timestamp", "i")?;
+                Ok(Bson::Timestamp(BsonTimestamp { time, increment }))
             }
             "RegExp" => {
                 if parts.is_empty() || parts.len() > 2 {
                     return Err(String::from("RegExp ожидает шаблон и необязательные опции."));
                 }
-                let pattern = Self::parse_shell_json_value(&parts[0])?;
-                let pattern = pattern
+                let pattern_value = Self::parse_shell_json_value(&parts[0])?;
+                let pattern = pattern_value
                     .as_str()
-                    .ok_or_else(|| String::from("RegExp ожидает строковый шаблон."))?;
-                let options = if let Some(opts) = parts.get(1) {
-                    let value = Self::parse_shell_json_value(opts)?;
-                    Some(
-                        value
-                            .as_str()
-                            .ok_or_else(|| String::from("Опции RegExp должны быть строкой."))?
-                            .to_string(),
-                    )
+                    .ok_or_else(|| String::from("RegExp ожидает строковый шаблон."))?
+                    .to_string();
+                let options = if let Some(arg) = parts.get(1) {
+                    let options_value = Self::parse_shell_json_value(arg)?;
+                    options_value
+                        .as_str()
+                        .ok_or_else(|| String::from("Опции RegExp должны быть строкой."))?
+                        .to_string()
+                } else {
+                    String::new()
+                };
+                Ok(Bson::RegularExpression(Regex { pattern, options }))
+            }
+            "Code" => {
+                let code_text = parts.get(0).cloned().unwrap_or_else(String::new);
+                let code_value = Self::parse_shell_json_value(&code_text)?;
+                let code = Self::value_as_string(&code_value)?;
+                if let Some(scope_part) = parts.get(1) {
+                    let scope_bson = Self::parse_shell_bson_value(scope_part)?;
+                    let scope = match scope_bson {
+                        Bson::Document(doc) => doc,
+                        _ => {
+                            return Err(String::from("Второй аргумент Code должен быть объектом."));
+                        }
+                    };
+                    Ok(Bson::JavaScriptCodeWithScope(JavaScriptCodeWithScope { code, scope }))
+                } else {
+                    Ok(Bson::JavaScriptCode(code))
+                }
+            }
+            "DBRef" => {
+                if parts.len() < 2 || parts.len() > 3 {
+                    return Err(String::from(
+                        "DBRef ожидает два или три аргумента: коллекция, _id и опционально имя базы данных.",
+                    ));
+                }
+                let collection_value = Self::parse_shell_json_value(&parts[0])?;
+                let collection = Self::value_as_string(&collection_value)?;
+                let id_bson = Self::parse_shell_bson_value(&parts[1])?;
+                let id = match id_bson {
+                    Bson::ObjectId(oid) => oid,
+                    _ => {
+                        return Err(String::from(
+                            "DBRef ожидает ObjectId в качестве второго аргумента.",
+                        ));
+                    }
+                };
+                let db_name = if let Some(db_part) = parts.get(2) {
+                    let value = Self::parse_shell_json_value(db_part)?;
+                    Some(Self::value_as_string(&value)?)
                 } else {
                     None
                 };
-                let pattern_encoded = Value::String(pattern.to_string()).to_string();
-                let options_encoded = options
-                    .map(|opts| Value::String(opts).to_string())
-                    .unwrap_or_else(|| Value::String(String::new()).to_string());
-                Ok(format!(
-                    "{{\"$regularExpression\":{{\"pattern\":{pattern},\"options\":{options}}}}}",
-                    pattern = pattern_encoded,
-                    options = options_encoded
-                ))
+                let mut doc = Document::new();
+                doc.insert("$ref", Bson::String(collection));
+                doc.insert("$id", Bson::ObjectId(id));
+                if let Some(db) = db_name {
+                    doc.insert("$db", Bson::String(db));
+                }
+                Ok(Bson::Document(doc))
             }
-            _ => Ok(format!("{identifier}")),
+            "MinKey" => Ok(Bson::MinKey),
+            "MaxKey" => Ok(Bson::MaxKey),
+            "Undefined" => Ok(Bson::Undefined),
+            _ => Err(format!("Конструктор '{identifier}' не поддерживается.")),
         }
+    }
+
+    fn bson_to_extended_json(value: Bson) -> Result<String, String> {
+        serde_json::to_string(&value).map_err(|error| format!("JSON serialization error: {error}"))
+    }
+
+    fn parse_shell_bson_value(source: &str) -> Result<Bson, String> {
+        let normalized = Self::preprocess_shell_json(source)?;
+        serde_json::from_str(&normalized).map_err(|error| format!("JSON parse error: {error}"))
+    }
+
+    fn value_as_bool(value: &Value) -> Result<bool, String> {
+        if let Some(flag) = value.as_bool() {
+            Ok(flag)
+        } else if let Some(number) = value.as_i64() {
+            Ok(number != 0)
+        } else if let Some(number) = value.as_u64() {
+            Ok(number != 0)
+        } else if let Some(text) = value.as_str() {
+            match text.trim().to_lowercase().as_str() {
+                "true" | "1" => Ok(true),
+                "false" | "0" => Ok(false),
+                _ => Err(String::from("Строка должна быть true или false.")),
+            }
+        } else {
+            Err(String::from(
+                "Значение должно быть логическим, числовым или строкой со значениями true/false.",
+            ))
+        }
+    }
+
+    fn value_as_f64(value: &Value) -> Result<f64, String> {
+        if let Some(number) = value.as_f64() {
+            Ok(number)
+        } else if let Some(number) = value.as_i64() {
+            Ok(number as f64)
+        } else if let Some(number) = value.as_u64() {
+            Ok(number as f64)
+        } else if let Some(text) = value.as_str() {
+            match text.trim().to_lowercase().as_str() {
+                "infinity" => Ok(f64::INFINITY),
+                "-infinity" => Ok(f64::NEG_INFINITY),
+                "nan" => Ok(f64::NAN),
+                other => other.parse::<f64>().map_err(|_| {
+                    String::from("Строковое значение не удалось преобразовать в число.")
+                }),
+            }
+        } else {
+            Err(String::from("Значение должно быть числом или строкой."))
+        }
+    }
+
+    fn parse_date_constructor(parts: &[String]) -> Result<DateTime, String> {
+        if parts.is_empty() {
+            return Ok(DateTime::now());
+        }
+
+        if parts.len() == 1 {
+            let bson = Self::parse_shell_bson_value(&parts[0])?;
+            return match bson {
+                Bson::DateTime(dt) => Ok(dt),
+                Bson::String(text) => DateTime::parse_rfc3339_str(&text)
+                    .or_else(|_| {
+                        if let Ok(ms) = text.parse::<i128>() {
+                            Ok(DateTime::from_millis(ms as i64))
+                        } else {
+                            Err(())
+                        }
+                    })
+                    .map_err(|_| String::from("Не удалось преобразовать строку в дату.")),
+                Bson::Int32(value) => Ok(DateTime::from_millis(value as i64)),
+                Bson::Int64(value) => Ok(DateTime::from_millis(value)),
+                Bson::Double(value) => Ok(DateTime::from_millis(value as i64)),
+                Bson::Decimal128(value) => {
+                    let millis = value.to_string().parse::<f64>().map_err(|_| {
+                        String::from("Не удалось преобразовать Decimal128 в число.")
+                    })?;
+                    Ok(DateTime::from_millis(millis as i64))
+                }
+                Bson::Null => Ok(DateTime::now()),
+                other => Err(format!("Невозможно преобразовать значение типа {other:?} в дату.")),
+            };
+        }
+
+        Self::construct_date_from_components(parts)
+    }
+
+    fn construct_date_from_components(parts: &[String]) -> Result<DateTime, String> {
+        let mut components = [0i64; 7];
+        for (index, part) in parts.iter().enumerate().take(7) {
+            let value = Self::parse_shell_json_value(part)?;
+            let number = Self::value_as_f64(&value)?;
+            components[index] = number.trunc() as i64;
+        }
+
+        let year = components[0] as i32;
+        let month_zero = components.get(1).copied().unwrap_or(0);
+        let month = (month_zero + 1).clamp(1, 12) as u32;
+        let day = components.get(2).copied().unwrap_or(1).clamp(1, 31) as u32;
+        let hour = components.get(3).copied().unwrap_or(0).clamp(0, 23) as u32;
+        let minute = components.get(4).copied().unwrap_or(0).clamp(0, 59) as u32;
+        let second = components.get(5).copied().unwrap_or(0).clamp(0, 59) as u32;
+        let millis = components.get(6).copied().unwrap_or(0);
+
+        let base = Utc
+            .with_ymd_and_hms(year, month, day, hour, minute, second)
+            .single()
+            .ok_or_else(|| String::from("Невозможно построить дату с указанными компонентами."))?;
+
+        let chrono_dt = base + ChronoDuration::milliseconds(millis);
+        Ok(DateTime::from_millis(chrono_dt.timestamp_millis()))
+    }
+
+    fn parse_timestamp_seconds(value: &str) -> Result<u32, String> {
+        let trimmed = value.trim();
+        if let Some(prefix) = trimmed.strip_suffix(".getTime()/1000") {
+            let date = Self::parse_date_constructor(&[prefix.trim().to_string()])?;
+            return Ok((date.timestamp_millis() / 1000) as u32);
+        }
+
+        if let Some(prefix) = trimmed.strip_suffix(".getTime()") {
+            let date = Self::parse_date_constructor(&[prefix.trim().to_string()])?;
+            return Ok(date.timestamp_millis() as u32);
+        }
+
+        let bson = Self::parse_shell_bson_value(trimmed)?;
+        match bson {
+            Bson::DateTime(dt) => Ok((dt.timestamp_millis() / 1000) as u32),
+            Bson::Int32(value) => Ok(value as u32),
+            Bson::Int64(value) => u32::try_from(value)
+                .map_err(|_| String::from("Значение времени Timestamp должно помещаться в u32.")),
+            Bson::Double(value) => Ok(value as u32),
+            Bson::String(text) => {
+                if let Ok(dt) = DateTime::parse_rfc3339_str(&text) {
+                    Ok((dt.timestamp_millis() / 1000) as u32)
+                } else {
+                    let number = text.parse::<f64>().map_err(|_| {
+                        String::from(
+                            "Строковое значение в Timestamp должно быть числом или ISO-датой.",
+                        )
+                    })?;
+                    Ok(number as u32)
+                }
+            }
+            other => Err(format!(
+                "Первый аргумент Timestamp должен быть числом или датой, получено {other:?}."
+            )),
+        }
+    }
+
+    fn parse_u32_argument(value: &str, context: &str, field: &str) -> Result<u32, String> {
+        let bson = Self::parse_shell_bson_value(value)?;
+        match bson {
+            Bson::Int32(v) => Ok(v as u32),
+            Bson::Int64(v) => u32::try_from(v)
+                .map_err(|_| format!("Аргумент {context}::{field} должен помещаться в u32.")),
+            Bson::Double(v) => Ok(v as u32),
+            Bson::String(text) => text.parse::<u32>().map_err(|_| {
+                format!("Аргумент {context}::{field} должен быть положительным целым числом.")
+            }),
+            other => {
+                Err(format!("Аргумент {context}::{field} должен быть числом, получено {other:?}."))
+            }
+        }
+    }
+
+    fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+        let cleaned: String = value.chars().filter(|ch| !ch.is_whitespace()).collect();
+        if cleaned.len() % 2 != 0 {
+            return Err(String::from("Hex-строка должна содержать чётное количество символов."));
+        }
+        let mut bytes = Vec::with_capacity(cleaned.len() / 2);
+        let chars: Vec<char> = cleaned.chars().collect();
+        for chunk in chars.chunks(2) {
+            let high = Self::hex_value(chunk[0])?;
+            let low = Self::hex_value(chunk[1])?;
+            bytes.push(((high << 4) | low) as u8);
+        }
+        Ok(bytes)
     }
 
     fn value_as_string(value: &Value) -> Result<String, String> {
@@ -3524,22 +4695,6 @@ impl CollectionTab {
             Ok(value.to_string())
         } else {
             Err(String::from("Аргумент должен быть строкой или числом."))
-        }
-    }
-
-    fn value_as_i64(value: &Value, context: &str, field: &str) -> Result<i64, String> {
-        if let Some(number) = value.as_i64() {
-            Ok(number)
-        } else if let Some(number) = value.as_u64() {
-            i64::try_from(number)
-                .map_err(|_| format!("Аргумент {context}::{field} выходит за пределы i64."))
-        } else if let Some(number) = value.as_f64() {
-            Ok(number as i64)
-        } else if let Some(text) = value.as_str() {
-            text.parse::<i64>()
-                .map_err(|_| format!("Аргумент {context}::{field} должен быть числом."))
-        } else {
-            Err(format!("Аргумент {context}::{field} должен быть числом."))
         }
     }
 
@@ -3658,6 +4813,7 @@ impl Default for App {
             collection_modal: None,
             database_modal: None,
             document_modal: None,
+            value_edit_modal: None,
         }
     }
 }
@@ -4424,6 +5580,92 @@ impl App {
                     Task::none()
                 }
             },
+            Message::ValueEditModalEditorAction(action) => {
+                if let Some(modal) = self.value_edit_modal.as_mut() {
+                    modal.apply_editor_action(action);
+                }
+                Task::none()
+            }
+            Message::ValueEditModalCancel => {
+                self.value_edit_modal = None;
+                self.mode = AppMode::Main;
+                Task::none()
+            }
+            Message::ValueEditModalSave => {
+                let Some(modal) = self.value_edit_modal.as_mut() else {
+                    return Task::none();
+                };
+
+                if modal.processing {
+                    return Task::none();
+                }
+
+                let new_value = match modal.prepare_value() {
+                    Ok(value) => value,
+                    Err(error) => {
+                        modal.error = Some(error);
+                        return Task::none();
+                    }
+                };
+
+                let Some(handle) = self
+                    .clients
+                    .iter()
+                    .find(|client| client.id == modal.client_id)
+                    .and_then(|client| client.handle.clone())
+                else {
+                    modal.error = Some(String::from("Нет активного соединения."));
+                    return Task::none();
+                };
+
+                let mut set_doc = Document::new();
+                set_doc.insert(modal.path.clone(), new_value);
+
+                let mut update_doc = Document::new();
+                update_doc.insert("$set", Bson::Document(set_doc));
+
+                modal.processing = true;
+                modal.error = None;
+
+                let tab_id = modal.tab_id;
+                let db_name = modal.db_name.clone();
+                let collection_name = modal.collection.clone();
+                let filter_clone = modal.filter.clone();
+                let update_clone = update_doc.clone();
+                let handle_task = handle.clone();
+
+                Task::perform(
+                    async move {
+                        let collection =
+                            handle_task.database(&db_name).collection::<Document>(&collection_name);
+                        let result = collection
+                            .find_one_and_update(filter_clone, update_clone)
+                            .return_document(ReturnDocument::After)
+                            .run()
+                            .map_err(|error| error.to_string())?;
+                        result.ok_or_else(|| {
+                            String::from(
+                                "Документ не найден. Возможно, он был удалён или изменение не применено.",
+                            )
+                        })
+                    },
+                    move |result| Message::ValueEditModalCompleted { tab_id, result },
+                )
+            }
+            Message::ValueEditModalCompleted { tab_id, result } => match result {
+                Ok(_) => {
+                    self.value_edit_modal = None;
+                    self.mode = AppMode::Main;
+                    return self.collection_query_task(tab_id);
+                }
+                Err(error) => {
+                    if let Some(modal) = self.value_edit_modal.as_mut() {
+                        modal.processing = false;
+                        modal.error = Some(error);
+                    }
+                    Task::none()
+                }
+            },
             Message::DatabasesRefreshed { client_id, result } => {
                 if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
                     match result {
@@ -4459,15 +5701,32 @@ impl App {
                 }
                 Task::none()
             }
-            Message::TableContextMenu { tab_id, node_id, action } => {
-                let content = self
-                    .tabs
-                    .iter()
-                    .find(|tab| tab.id == tab_id)
-                    .and_then(|tab| tab.collection.table_context_content(node_id, action));
+            Message::TableContextMenu { tab_id, node_id, action } => match action {
+                TableContextAction::EditValue => {
+                    let modal_state =
+                        self.tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| {
+                            tab.collection.value_edit_context(node_id).map(|context| {
+                                ValueEditModalState::new(tab_id, &tab.collection, context)
+                            })
+                        });
 
-                if let Some(text) = content { clipboard::write(text) } else { Task::none() }
-            }
+                    if let Some(state) = modal_state {
+                        self.value_edit_modal = Some(state);
+                        self.mode = AppMode::ValueEditModal;
+                    }
+
+                    Task::none()
+                }
+                _ => {
+                    let content = self
+                        .tabs
+                        .iter()
+                        .find(|tab| tab.id == tab_id)
+                        .and_then(|tab| tab.collection.table_context_content(node_id, action));
+
+                    if let Some(text) = content { clipboard::write(text) } else { Task::none() }
+                }
+            },
             Message::CollectionSkipPrev(tab_id) => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.decrement_skip_by_limit();
@@ -4796,6 +6055,13 @@ impl App {
             AppMode::DocumentModal => {
                 if let Some(state) = &self.document_modal {
                     self.document_modal_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
+            AppMode::ValueEditModal => {
+                if let Some(state) = &self.value_edit_modal {
+                    self.value_edit_modal_view(state)
                 } else {
                     self.main_view()
                 }
@@ -5359,6 +6625,142 @@ impl App {
                 blur_radius: 24.0,
             },
             ..Default::default()
+        });
+
+        Container::new(modal)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
+                ..Default::default()
+            })
+            .into()
+    }
+
+    fn value_edit_modal_view<'a>(&self, state: &'a ValueEditModalState) -> Element<'a, Message> {
+        let bold_font = Font { weight: Weight::Bold, ..MONO_FONT };
+
+        let description = Column::new()
+            .spacing(4)
+            .push(
+                Text::new("Будет изменено значение поля")
+                    .size(14)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
+            )
+            .push(
+                Text::new(state.path.clone())
+                    .size(14)
+                    .font(bold_font)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
+            );
+
+        let editor = text_editor::TextEditor::new(&state.value_editor)
+            .font(MONO_FONT)
+            .wrapping(Wrapping::Glyph)
+            .height(Length::Shrink)
+            .on_action(Message::ValueEditModalEditorAction);
+
+        let editor_scroll =
+            Scrollable::new(editor).width(Length::Fill).height(Length::Fixed(220.0));
+
+        let value_editor = Container::new(editor_scroll)
+            .width(Length::FillPortion(5))
+            .height(Length::Fixed(220.0))
+            .style(|_| container::Style {
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                background: Some(Color::from_rgb8(0xf6, 0xf7, 0xfa).into()),
+                ..Default::default()
+            });
+
+        let type_indicator = Container::new(
+            Text::new(state.value_label.clone())
+                .size(14)
+                .color(Color::from_rgb8(0x17, 0x1a, 0x20))
+                .wrapping(Wrapping::Word)
+                .width(Length::Fill),
+        )
+        .padding([6, 10])
+        .width(Length::FillPortion(2))
+        .style(|_| container::Style {
+            border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+            background: Some(Color::from_rgb8(0xf6, 0xf7, 0xfa).into()),
+            ..Default::default()
+        });
+
+        let inputs_row = Row::new().spacing(12).push(value_editor);
+
+        let type_label = Column::new()
+            .spacing(4)
+            .push(
+                Text::new("Тип значения")
+                    .size(14)
+                    .color(Color::from_rgb8(0x55, 0x5f, 0x73))
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Shrink),
+            )
+            .push(type_indicator);
+
+        let type_row = Row::new().spacing(12).push(type_label);
+
+        let mut column =
+            Column::new().spacing(16).push(description).push(inputs_row).push(type_row);
+
+        if let Some(error) = &state.error {
+            column = column
+                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+        }
+
+        if state.processing {
+            column = column.push(
+                Text::new("Сохранение значения...")
+                    .size(13)
+                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+            );
+        }
+
+        let cancel_button = Button::new(Text::new("Отмена").size(14))
+            .padding([6, 16])
+            .on_press(Message::ValueEditModalCancel)
+            .style(|_, _| button::Style {
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                shadow: Shadow::default(),
+                ..Default::default()
+            });
+
+        let mut save_button = Button::new(Text::new("Сохранить").size(14)).padding([6, 16]);
+        if state.processing {
+            save_button = save_button.style(|_, _| button::Style {
+                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
+                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
+                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
+                shadow: Shadow::default(),
+            });
+        } else {
+            save_button = save_button.on_press(Message::ValueEditModalSave);
+        }
+
+        let buttons = Row::new()
+            .spacing(12)
+            .push(Space::with_width(Length::Fill))
+            .push(cancel_button)
+            .push(save_button);
+        column = column.push(buttons);
+
+        let modal = Container::new(column).padding(24).width(Length::Fixed(480.0)).style(|_| {
+            container::Style {
+                background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
+                border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                shadow: Shadow {
+                    color: Color::from_rgba8(0, 0, 0, 0.18),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            }
         });
 
         Container::new(modal)
