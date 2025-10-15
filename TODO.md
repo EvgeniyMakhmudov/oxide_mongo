@@ -74,7 +74,7 @@
 - [DONE] aggregate — конвейер агрегаций
 - bulkWrite — пакетное выполнение разных операций (insert/update/delete)
 - watch (change streams) — подписка на изменения
-- runCommand - служебные команды коллекции
+- [DONE] runCommand - служебные команды коллекции
 - listIndexes / createIndex / dropIndex и т.п. — основные операции с индексами
 
 # Интернационализация

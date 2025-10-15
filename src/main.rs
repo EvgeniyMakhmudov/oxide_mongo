@@ -3036,7 +3036,39 @@ impl CollectionTab {
 
                 Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
             }
-            other => Err(format!("Метод db.{other} не поддерживается. Доступен: stats.",)),
+            "runCommand" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+
+                if parts.is_empty() {
+                    return Err(String::from(
+                        "db.runCommand ожидает документ с описанием команды.",
+                    ));
+                }
+                if parts.len() > 1 {
+                    return Err(String::from(
+                        "db.runCommand поддерживает только один аргумент (документ команды).",
+                    ));
+                }
+
+                let command_bson = Self::parse_shell_bson_value(&parts[0])?;
+                let command = match command_bson {
+                    Bson::Document(doc) => doc,
+                    _ => {
+                        return Err(String::from(
+                            "Первый аргумент db.runCommand должен быть документом.",
+                        ));
+                    }
+                };
+
+                Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
+            }
+            other => {
+                Err(format!("Метод db.{other} не поддерживается. Доступны: stats, runCommand.",))
+            }
         }
     }
 
