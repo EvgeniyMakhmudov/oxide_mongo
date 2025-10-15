@@ -301,6 +301,7 @@ enum CollectionContextAction {
     DeleteAllDocuments,
     DeleteCollection,
     RenameCollection,
+    Stats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5090,6 +5091,14 @@ impl App {
                         self.mode = AppMode::CollectionModal;
                         Task::none()
                     }
+                    CollectionContextAction::Stats => {
+                        let tab_id = self.open_collection_stats_tab(
+                            client_id,
+                            db_name.clone(),
+                            collection.clone(),
+                        );
+                        self.collection_query_task(tab_id)
+                    }
                 }
             }
             Message::CollectionSend(tab_id) => self.collection_query_task(tab_id),
@@ -7304,6 +7313,16 @@ impl App {
                 },
             ));
 
+            menu = menu.push(make_button(
+                "Статистика",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::Stats,
+                },
+            ));
+
             menu.into()
         })
         .into()
@@ -7548,6 +7567,27 @@ impl App {
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
             tab.collection.editor = TextEditorContent::with_text("db.stats()");
             tab.title = String::from("stats");
+        }
+
+        tab_id
+    }
+
+    fn open_collection_stats_tab(
+        &mut self,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+    ) -> TabId {
+        let tab_id =
+            self.open_collection_tab(client_id, db_name.clone(), format!("{collection} (stats)"));
+
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            let command = format!(
+                "db.runCommand({{ \"collStats\": \"{collection}\" }})",
+                collection = collection
+            );
+            tab.collection.editor = TextEditorContent::with_text(&command);
+            tab.title = String::from("collStats");
         }
 
         tab_id
