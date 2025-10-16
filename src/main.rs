@@ -1,5 +1,8 @@
+mod i18n;
+
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use chrono::{Duration as ChronoDuration, TimeZone, Utc};
+use i18n::{tr, tr_format};
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
 use iced::font::Weight;
@@ -418,8 +421,8 @@ impl ConnectionFormState {
             .unwrap_or_else(|| {
                 (
                     String::new(),
-                    String::from("localhost"),
-                    String::from("27017"),
+                    String::from(tr("localhost")),
+                    String::from(tr("27017")),
                     String::new(),
                     String::new(),
                 )
@@ -442,19 +445,19 @@ impl ConnectionFormState {
     fn validate(&self) -> Result<ConnectionEntry, String> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Err(String::from("Название не может быть пустым"));
+            return Err(String::from(tr("Name cannot be empty")));
         }
 
         let host = self.host.trim();
         if host.is_empty() {
-            return Err(String::from("Адрес/Хост/IP не может быть пустым"));
+            return Err(String::from(tr("Address/Host/IP cannot be empty")));
         }
 
         let port: u16 = self
             .port
             .trim()
             .parse()
-            .map_err(|_| String::from("Порт должен быть числом от 0 до 65535"))?;
+            .map_err(|_| String::from(tr("Port must be a number between 0 and 65535")))?;
 
         Ok(ConnectionEntry {
             name: name.to_string(),
@@ -936,7 +939,7 @@ impl ValueEditKind {
             Self::String => Ok(Bson::String(Self::parse_string_literal(input))),
             Self::Boolean => Self::parse_boolean_literal(input)
                 .map(Bson::Boolean)
-                .ok_or_else(|| String::from("Логическое значение должно быть true или false.")),
+                .ok_or_else(|| String::from(tr("Boolean value must be true or false."))),
             Self::Int32 => Self::parse_int32_value(input),
             Self::Int64 => Self::parse_int64_value(input),
             Self::Double => Self::parse_double_literal(input).map(Bson::Double),
@@ -947,84 +950,90 @@ impl ValueEditKind {
                 if input.trim().eq_ignore_ascii_case("null") {
                     Ok(Bson::Null)
                 } else {
-                    Err(String::from("Для значения Null используйте литерал null."))
+                    Err(String::from(tr("Use the literal null for a Null value.")))
                 }
             }
             Self::Document => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::Document(_) => Ok(bson),
-                    other => Err(format!("Ожидался документ, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected a document, got"), other)),
                 }
             }
             Self::Array => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::Array(_) => Ok(bson),
-                    other => Err(format!("Ожидался массив, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected an array, got"), other)),
                 }
             }
             Self::Binary => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::Binary(_) => Ok(bson),
-                    other => Err(format!("Ожидались бинарные данные, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected binary data, got"), other)),
                 }
             }
             Self::Regex => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::RegularExpression(_) => Ok(bson),
-                    other => Err(format!("Ожидалось регулярное выражение, получено {other:?}.")),
+                    other => {
+                        Err(format!("{} {:?}", tr("Expected a regular expression, got"), other))
+                    }
                 }
             }
             Self::Code => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::JavaScriptCode(_) => Ok(bson),
-                    other => Err(format!("Ожидался JavaScript-код, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected JavaScript code, got"), other)),
                 }
             }
             Self::CodeWithScope => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::JavaScriptCodeWithScope(_) => Ok(bson),
-                    other => Err(format!("Ожидался JavaScript-код со scope, получено {other:?}.")),
+                    other => Err(format!(
+                        "{} {:?}",
+                        tr("Expected JavaScript code with scope, got"),
+                        other
+                    )),
                 }
             }
             Self::Timestamp => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::Timestamp(_) => Ok(bson),
-                    other => Err(format!("Ожидался Timestamp, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected a Timestamp, got"), other)),
                 }
             }
             Self::DbPointer => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::DbPointer(_) => Ok(bson),
-                    other => Err(format!("Ожидался DBRef, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected a DBRef, got"), other)),
                 }
             }
             Self::MinKey => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::MinKey => Ok(Bson::MinKey),
-                    other => Err(format!("Ожидался MinKey, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected a MinKey, got"), other)),
                 }
             }
             Self::MaxKey => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::MaxKey => Ok(Bson::MaxKey),
-                    other => Err(format!("Ожидался MaxKey, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected a MaxKey, got"), other)),
                 }
             }
             Self::Undefined => {
                 let bson = CollectionTab::parse_shell_bson_value(input)?;
                 match bson {
                     Bson::Undefined => Ok(Bson::Undefined),
-                    other => Err(format!("Ожидалось значение undefined, получено {other:?}.")),
+                    other => Err(format!("{} {:?}", tr("Expected undefined, got"), other)),
                 }
             }
             Self::Other => CollectionTab::parse_shell_bson_value(input)
@@ -1054,7 +1063,7 @@ impl ValueEditKind {
         literal
             .parse::<i32>()
             .map(Bson::Int32)
-            .map_err(|_| String::from("Значение должно быть целым числом в диапазоне Int32."))
+            .map_err(|_| String::from(tr("Value must be an integer in the Int32 range.")))
     }
 
     fn parse_int64_value(input: &str) -> Result<Bson, String> {
@@ -1064,14 +1073,14 @@ impl ValueEditKind {
         literal
             .parse::<i64>()
             .map(Bson::Int64)
-            .map_err(|_| String::from("Значение должно быть целым числом в диапазоне Int64."))
+            .map_err(|_| String::from(tr("Value must be an integer in the Int64 range.")))
     }
 
     fn parse_double_literal(input: &str) -> Result<f64, String> {
         let literal = Self::extract_numeric_literal(input, &["NumberDouble", "numberDouble"])
             .unwrap_or_else(|| input.trim().to_string());
 
-        literal.parse::<f64>().map_err(|_| String::from("Значение должно быть числом (Double)."))
+        literal.parse::<f64>().map_err(|_| String::from(tr("Value must be a Double.")))
     }
 
     fn parse_decimal_literal(input: &str) -> Result<Decimal128, String> {
@@ -1079,7 +1088,7 @@ impl ValueEditKind {
             .unwrap_or_else(|| input.trim().to_string());
 
         Decimal128::from_str(literal.trim())
-            .map_err(|_| String::from("Значение должно быть корректным Decimal128."))
+            .map_err(|_| String::from(tr("Value must be a valid Decimal128.")))
     }
 
     fn parse_datetime_literal(input: &str) -> Result<DateTime, String> {
@@ -1098,7 +1107,7 @@ impl ValueEditKind {
         };
 
         ObjectId::parse_str(literal)
-            .map_err(|_| String::from("ObjectId должен состоять из 24 шестнадцатеричных символов."))
+            .map_err(|_| String::from(tr("ObjectId must consist of 24 hexadecimal characters.")))
     }
 
     fn parse_int_literal(input: &str) -> Result<i128, String> {
@@ -1108,7 +1117,7 @@ impl ValueEditKind {
         )
         .unwrap_or_else(|| input.trim().to_string());
 
-        literal.parse::<i128>().map_err(|_| String::from("Значение должно быть целым числом."))
+        literal.parse::<i128>().map_err(|_| String::from(tr("Value must be an integer.")))
     }
 
     fn coerce_datetime(input: &str) -> Result<DateTime, String> {
@@ -1119,7 +1128,7 @@ impl ValueEditKind {
         }
 
         let millis: i64 = literal.parse().map_err(|_| {
-            String::from("Введите ISO 8601 дату или количество миллисекунд с начала эпохи.")
+            String::from(tr("Enter an ISO 8601 date or milliseconds since the epoch."))
         })?;
         Ok(DateTime::from_millis(millis))
     }
@@ -1371,7 +1380,7 @@ impl BsonNode {
     }
 
     fn display_key(&self) -> String {
-        self.display_key.clone().unwrap_or_else(|| String::from("value"))
+        self.display_key.clone().unwrap_or_else(|| String::from(tr("value")))
     }
 
     fn value_display(&self) -> Option<String> {
@@ -1384,8 +1393,8 @@ impl BsonNode {
 
     fn type_label(&self) -> String {
         match &self.kind {
-            BsonKind::Document(_) => String::from("Document"),
-            BsonKind::Array(_) => String::from("Array"),
+            BsonKind::Document(_) => String::from(tr("Document")),
+            BsonKind::Array(_) => String::from(tr("Array")),
             BsonKind::Value { ty, .. } => ty.clone(),
         }
     }
@@ -1393,52 +1402,61 @@ impl BsonNode {
 
 fn format_bson_scalar(value: &Bson) -> (String, String) {
     match value {
-        Bson::String(s) => (s.clone(), String::from("String")),
-        Bson::Boolean(b) => (b.to_string(), String::from("Boolean")),
-        Bson::Int32(i) => (i.to_string(), String::from("Int32")),
-        Bson::Int64(i) => (i.to_string(), String::from("Int64")),
+        Bson::String(s) => (s.clone(), String::from(tr("String"))),
+        Bson::Boolean(b) => (b.to_string(), String::from(tr("Boolean"))),
+        Bson::Int32(i) => (i.to_string(), String::from(tr("Int32"))),
+        Bson::Int64(i) => (i.to_string(), String::from(tr("Int64"))),
         Bson::Double(f) => {
             if f.is_finite() {
-                (format!("{f}"), String::from("Double"))
+                (format!("{f}"), String::from(tr("Double")))
             } else {
-                (format!("Double({f})"), String::from("Double"))
+                (format!("Double({f})"), String::from(tr("Double")))
             }
         }
-        Bson::Decimal128(d) => (format!("numberDecimal(\"{}\")", d), String::from("Decimal128")),
+        Bson::Decimal128(d) => {
+            (format!("numberDecimal(\"{}\")", d), String::from(tr("Decimal128")))
+        }
         Bson::DateTime(dt) => match dt.try_to_rfc3339_string() {
-            Ok(iso) => (iso, String::from("DateTime")),
-            Err(_) => (format!("DateTime({})", dt.timestamp_millis()), String::from("DateTime")),
+            Ok(iso) => (iso, String::from(tr("DateTime"))),
+            Err(_) => {
+                (format!("DateTime({})", dt.timestamp_millis()), String::from(tr("DateTime")))
+            }
         },
-        Bson::ObjectId(oid) => (format!("ObjectId(\"{}\")", oid), String::from("ObjectId")),
+        Bson::ObjectId(oid) => (format!("ObjectId(\"{}\")", oid), String::from(tr("ObjectId"))),
         Bson::Binary(bin) => (
             format!("Binary(len={}, subtype={:?})", bin.bytes.len(), bin.subtype),
-            String::from("Binary"),
+            String::from(tr("Binary")),
         ),
-        Bson::Symbol(sym) => (format!("Symbol({sym:?})"), String::from("Symbol")),
+        Bson::Symbol(sym) => (format!("Symbol({sym:?})"), String::from(tr("Symbol"))),
         Bson::RegularExpression(regex) => {
             if regex.options.is_empty() {
-                (format!("Regex({:?})", regex.pattern), String::from("Regex"))
+                (format!("Regex({:?})", regex.pattern), String::from(tr("Regex")))
             } else {
-                (format!("Regex({:?}, {:?})", regex.pattern, regex.options), String::from("Regex"))
+                (
+                    format!("Regex({:?}, {:?})", regex.pattern, regex.options),
+                    String::from(tr("Regex")),
+                )
             }
         }
         Bson::Timestamp(ts) => (
             format!("Timestamp(time={}, increment={})", ts.time, ts.increment),
-            String::from("Timestamp"),
+            String::from(tr("Timestamp")),
         ),
-        Bson::JavaScriptCode(code) => (format!("Code({code:?})"), String::from("JavaScriptCode")),
+        Bson::JavaScriptCode(code) => {
+            (format!("Code({code:?})"), String::from(tr("JavaScriptCode")))
+        }
         Bson::JavaScriptCodeWithScope(code_with_scope) => {
             let scope_len = code_with_scope.scope.len();
             (
                 format!("CodeWithScope({:?}, scope_fields={})", code_with_scope.code, scope_len),
-                String::from("JavaScriptCodeWithScope"),
+                String::from(tr("JavaScriptCodeWithScope")),
             )
         }
-        Bson::DbPointer(ptr) => (format!("DbPointer({ptr:?})"), String::from("DbPointer")),
-        Bson::Undefined => (String::from("undefined"), String::from("Undefined")),
-        Bson::Null => (String::from("null"), String::from("Null")),
-        Bson::MinKey => (String::from("MinKey"), String::from("MinKey")),
-        Bson::MaxKey => (String::from("MaxKey"), String::from("MaxKey")),
+        Bson::DbPointer(ptr) => (format!("DbPointer({ptr:?})"), String::from(tr("DbPointer"))),
+        Bson::Undefined => (String::from(tr("undefined")), String::from(tr("Undefined"))),
+        Bson::Null => (String::from(tr("null")), String::from(tr("Null"))),
+        Bson::MinKey => (String::from(tr("MinKey")), String::from(tr("MinKey"))),
+        Bson::MaxKey => (String::from(tr("MaxKey")), String::from(tr("MaxKey"))),
         Bson::Document(_) | Bson::Array(_) => unreachable!("containers handled separately"),
     }
 }
@@ -1457,7 +1475,7 @@ fn format_bson_shell_internal(value: &Bson, level: usize) -> String {
 
 fn format_document_shell(doc: &Document, level: usize) -> String {
     if doc.is_empty() {
-        return String::from("{}");
+        return String::from(tr("{}"));
     }
 
     let indent_current = shell_indent(level);
@@ -1479,7 +1497,7 @@ fn format_document_shell(doc: &Document, level: usize) -> String {
         entries.push(lines);
     }
 
-    let mut result = String::from("{\n");
+    let mut result = String::from(tr("{\n"));
     let entry_count = entries.len();
     for (index, mut entry) in entries.into_iter().enumerate() {
         if let Some(last) = entry.last_mut() {
@@ -1499,13 +1517,13 @@ fn format_document_shell(doc: &Document, level: usize) -> String {
 
 fn format_array_shell(items: &[Bson], level: usize) -> String {
     if items.is_empty() {
-        return String::from("[]");
+        return String::from(tr("[]"));
     }
 
     let indent_current = shell_indent(level);
     let indent_child = shell_indent(level + 1);
 
-    let mut result = String::from("[\n");
+    let mut result = String::from(tr("[\n"));
     let len = items.len();
     for (index, item) in items.iter().enumerate() {
         let value_repr = format_bson_shell_internal(item, level + 1);
@@ -1537,12 +1555,12 @@ fn format_bson_shell_scalar(value: &Bson) -> String {
         Bson::Int64(i) => i.to_string(),
         Bson::Double(f) => {
             if f.is_nan() {
-                String::from("NaN")
+                String::from(tr("NaN"))
             } else if f.is_infinite() {
                 if f.is_sign_negative() {
-                    String::from("-Infinity")
+                    String::from(tr("-Infinity"))
                 } else {
-                    String::from("Infinity")
+                    String::from(tr("Infinity"))
                 }
             } else {
                 format!("{f}")
@@ -1592,13 +1610,12 @@ fn format_bson_shell_scalar(value: &Bson) -> String {
                 CollectionTab::format_shell_value(&Bson::Document(code_with_scope.scope.clone()));
             format!("Code({code_text}, {scope})")
         }
-        Bson::DbPointer(_) => {
-            serde_json::to_string(value).unwrap_or_else(|_| String::from("{\"$dbPointer\":{...}}"))
-        }
-        Bson::Undefined => String::from("undefined"),
-        Bson::Null => String::from("null"),
-        Bson::MinKey => String::from("MinKey()"),
-        Bson::MaxKey => String::from("MaxKey()"),
+        Bson::DbPointer(_) => serde_json::to_string(value)
+            .unwrap_or_else(|_| String::from(tr("{\"$dbPointer\":{...}}"))),
+        Bson::Undefined => String::from(tr("undefined")),
+        Bson::Null => String::from(tr("null")),
+        Bson::MinKey => String::from(tr("MinKey()")),
+        Bson::MaxKey => String::from(tr("MaxKey()")),
         Bson::Document(_) | Bson::Array(_) => unreachable!("containers handled separately"),
     }
 }
@@ -1618,9 +1635,9 @@ impl BsonTree {
         let mut roots = Vec::new();
 
         if values.is_empty() {
-            let info_value = Bson::String("Документы не найдены".into());
+            let info_value = Bson::String(String::from(tr("No documents found")));
             let placeholder =
-                BsonNode::from_bson(Some(String::from("info")), None, &info_value, &mut id_gen);
+                BsonNode::from_bson(Some(String::from(tr("info"))), None, &info_value, &mut id_gen);
             roots.push(placeholder);
         } else {
             for (index, value) in values.iter().enumerate() {
@@ -1661,8 +1678,8 @@ impl BsonTree {
     fn from_count(value: Bson) -> Self {
         let mut id_gen = IdGenerator::default();
         let node = BsonNode::from_bson(
-            Some(String::from("count")),
-            Some(String::from("count")),
+            Some(String::from(tr("count"))),
+            Some(String::from(tr("count"))),
             &value,
             &mut id_gen,
         );
@@ -1678,10 +1695,11 @@ impl BsonTree {
         let mut expanded = HashSet::new();
 
         let key = match &value {
-            Bson::Document(doc) => {
-                doc.get("_id").map(Self::summarize_id).unwrap_or_else(|| String::from("document"))
-            }
-            _ => String::from("document"),
+            Bson::Document(doc) => doc
+                .get("_id")
+                .map(Self::summarize_id)
+                .unwrap_or_else(|| String::from(tr("document"))),
+            _ => String::from(tr("document")),
         };
 
         let node = BsonNode::from_bson(Some(key), None, &value, &mut id_gen);
@@ -1771,7 +1789,7 @@ impl BsonTree {
             .width(Length::Fill)
             .height(Length::Shrink)
             .push(
-                Container::new(Text::new("Key").size(14).font(MONO_FONT))
+                Container::new(Text::new(tr("Key")).size(14).font(MONO_FONT))
                     .width(Length::FillPortion(4))
                     .padding([6, 8]),
             )
@@ -1786,7 +1804,7 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(Text::new("Value").size(14).font(MONO_FONT))
+                Container::new(Text::new(tr("Value")).size(14).font(MONO_FONT))
                     .width(Length::FillPortion(5))
                     .padding([6, 8]),
             )
@@ -1801,7 +1819,7 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(Text::new("Type").size(14).font(MONO_FONT))
+                Container::new(Text::new(tr("Type")).size(14).font(MONO_FONT))
                     .width(Length::FillPortion(3))
                     .padding([6, 8]),
             );
@@ -1937,29 +1955,31 @@ impl BsonTree {
                 let mut menu = Column::new().spacing(4).padding([4, 6]);
 
                 if node.is_container() {
-                    let expand_button = Button::new(Text::new("Развернуть иерархично").size(14))
-                        .padding([4, 12])
-                        .width(Length::Shrink)
-                        .on_press(Message::TableContextMenu {
-                            tab_id: menu_tab_id,
-                            node_id: menu_node_id,
-                            action: TableContextAction::ExpandHierarchy,
-                        });
+                    let expand_button =
+                        Button::new(Text::new(tr("Expand Hierarchically")).size(14))
+                            .padding([4, 12])
+                            .width(Length::Shrink)
+                            .on_press(Message::TableContextMenu {
+                                tab_id: menu_tab_id,
+                                node_id: menu_node_id,
+                                action: TableContextAction::ExpandHierarchy,
+                            });
 
-                    let collapse_button = Button::new(Text::new("Свернуть иерархично").size(14))
-                        .padding([4, 12])
-                        .width(Length::Shrink)
-                        .on_press(Message::TableContextMenu {
-                            tab_id: menu_tab_id,
-                            node_id: menu_node_id,
-                            action: TableContextAction::CollapseHierarchy,
-                        });
+                    let collapse_button =
+                        Button::new(Text::new(tr("Collapse Hierarchically")).size(14))
+                            .padding([4, 12])
+                            .width(Length::Shrink)
+                            .on_press(Message::TableContextMenu {
+                                tab_id: menu_tab_id,
+                                node_id: menu_node_id,
+                                action: TableContextAction::CollapseHierarchy,
+                            });
 
                     menu = menu.push(expand_button);
                     menu = menu.push(collapse_button);
                 }
 
-                let copy_json = Button::new(Text::new("Копировать JSON").size(14))
+                let copy_json = Button::new(Text::new(tr("Copy JSON")).size(14))
                     .padding([4, 12])
                     .width(Length::Shrink)
                     .on_press(Message::TableContextMenu {
@@ -1968,7 +1988,7 @@ impl BsonTree {
                         action: TableContextAction::CopyJson,
                     });
 
-                let copy_key = Button::new(Text::new("Копировать ключ").size(14))
+                let copy_key = Button::new(Text::new(tr("Copy Key")).size(14))
                     .padding([4, 12])
                     .width(Length::Shrink)
                     .on_press(Message::TableContextMenu {
@@ -1977,7 +1997,7 @@ impl BsonTree {
                         action: TableContextAction::CopyKey,
                     });
 
-                let copy_value = Button::new(Text::new("Копировать значение").size(14))
+                let copy_value = Button::new(Text::new(tr("Copy Value")).size(14))
                     .padding([4, 12])
                     .width(Length::Shrink)
                     .on_press(Message::TableContextMenu {
@@ -1986,7 +2006,7 @@ impl BsonTree {
                         action: TableContextAction::CopyValue,
                     });
 
-                let mut copy_path = Button::new(Text::new("Копировать путь").size(14))
+                let mut copy_path = Button::new(Text::new(tr("Copy Path")).size(14))
                     .padding([4, 12])
                     .width(Length::Shrink);
 
@@ -2003,7 +2023,7 @@ impl BsonTree {
                 menu = menu.push(copy_value);
                 menu = menu.push(copy_path);
                 if value_edit_enabled {
-                    let edit_value = Button::new(Text::new("Изменить только значение...").size(14))
+                    let edit_value = Button::new(Text::new(tr("Edit Value Only...")).size(14))
                         .padding([4, 12])
                         .width(Length::Shrink)
                         .on_press(Message::TableContextMenu {
@@ -2015,7 +2035,7 @@ impl BsonTree {
                 }
 
                 if let Some((index_name, hidden_state, _ttl_enabled)) = index_context.clone() {
-                    let mut delete_button = Button::new(Text::new("Удалить индекс").size(14))
+                    let mut delete_button = Button::new(Text::new(tr("Delete Index")).size(14))
                         .padding([4, 12])
                         .width(Length::Shrink);
                     if index_name != "_id_" {
@@ -2029,7 +2049,7 @@ impl BsonTree {
 
                     let hidden = hidden_state.unwrap_or(false);
 
-                    let mut hide_button = Button::new(Text::new("Спрятать индекс").size(14))
+                    let mut hide_button = Button::new(Text::new(tr("Hide Index")).size(14))
                         .padding([4, 12])
                         .width(Length::Shrink);
                     if !hidden {
@@ -2041,7 +2061,7 @@ impl BsonTree {
                     }
                     menu = menu.push(hide_button);
 
-                    let mut unhide_button = Button::new(Text::new("Не прятать индекс").size(14))
+                    let mut unhide_button = Button::new(Text::new(tr("Unhide Index")).size(14))
                         .padding([4, 12])
                         .width(Length::Shrink);
                     if hidden {
@@ -2055,7 +2075,7 @@ impl BsonTree {
                 }
 
                 if self.is_indexes_view() {
-                    let mut edit_button = Button::new(Text::new("Изменить индекс...").size(14))
+                    let mut edit_button = Button::new(Text::new(tr("Edit Index...")).size(14))
                         .padding([4, 12])
                         .width(Length::Shrink);
 
@@ -2078,7 +2098,7 @@ impl BsonTree {
 
                     menu = menu.push(edit_button);
                 } else if is_root_document {
-                    let edit_button = Button::new(Text::new("Изменить документ...").size(14))
+                    let edit_button = Button::new(Text::new(tr("Edit Document...")).size(14))
                         .padding([4, 12])
                         .width(Length::Shrink)
                         .on_press(Message::DocumentEditRequested {
@@ -2410,27 +2430,27 @@ impl CollectionTab {
         let duration_text = self
             .last_query_duration
             .map(Self::format_duration)
-            .unwrap_or_else(|| String::from("—"));
+            .unwrap_or_else(|| String::from(tr("—")));
 
         let icon_size = 18.0;
 
-        let skip_input = text_input("skip", &self.skip_input)
+        let skip_input = text_input(tr("skip"), &self.skip_input)
             .padding([4, 6])
             .align_x(Horizontal::Center)
             .on_input(move |value| Message::CollectionSkipChanged { tab_id: skip_tab_id, value })
             .width(Length::Fixed(52.0));
 
-        let limit_input = text_input("limit", &self.limit_input)
+        let limit_input = text_input(tr("limit"), &self.limit_input)
             .padding([4, 6])
             .align_x(Horizontal::Center)
             .on_input(move |value| Message::CollectionLimitChanged { tab_id: limit_tab_id, value })
             .width(Length::Fixed(52.0));
 
-        let skip_prev = Button::new(Text::new("◀").size(16))
+        let skip_prev = Button::new(Text::new(tr("◀")).size(16))
             .on_press(Message::CollectionSkipPrev(skip_prev_tab_id))
             .padding([2, 6]);
 
-        let skip_next = Button::new(Text::new("▶").size(16))
+        let skip_next = Button::new(Text::new(tr("▶")).size(16))
             .on_press(Message::CollectionSkipNext(skip_next_tab_id))
             .padding([2, 6]);
 
@@ -2478,7 +2498,7 @@ impl CollectionTab {
             .push(connection_label)
             .push(database_label)
             .push(collection_label)
-            .push(Text::new(format!("Время: {}", duration_text)).size(14));
+            .push(Text::new(format!("{} {}", tr("Duration:"), duration_text)).size(14));
 
         let info_row = Row::new()
             .spacing(16)
@@ -2557,7 +2577,7 @@ impl CollectionTab {
             .height(Length::Fill);
 
         let send_content =
-            Container::new(Text::new("Send")).center_x(Length::Shrink).center_y(Length::Fill);
+            Container::new(Text::new(tr("Send"))).center_x(Length::Shrink).center_y(Length::Fill);
 
         let send_button = Button::new(send_content)
             .on_press(Message::CollectionSend(tab_id))
@@ -2656,9 +2676,9 @@ impl CollectionTab {
     fn parse_query(&self, text: &str) -> Result<QueryOperation, String> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
-            return Err(String::from(
-                "Запрос должен начинаться с db.<collection>, db.getCollection('<collection>') или поддерживаемого метода базы.",
-            ));
+            return Err(String::from(tr(
+                "Query must start with db.<collection>, db.getCollection('<collection>'), or a supported database method.",
+            )));
         }
 
         let cleaned = trimmed.trim_end_matches(';').trim();
@@ -2673,13 +2693,13 @@ impl CollectionTab {
         if !remainder.trim().is_empty() {
             let extra = remainder.trim_start();
             if method_name == "find" && extra.starts_with(".countDocuments(") {
-                return Err(String::from(
-                    "countDocuments() нужно вызывать непосредственно на коллекции. Цепочки вида db.collection.find(...).countDocuments(...) не поддерживаются.",
-                ));
+                return Err(String::from(tr(
+                    "countDocuments() must be called directly on a collection. Chains like db.collection.find(...).countDocuments(...) are not supported.",
+                )));
             }
-            return Err(String::from(
-                "Поддерживается только один вызов метода после указания коллекции.",
-            ));
+            return Err(String::from(tr(
+                "Only a single method call is supported after specifying the collection.",
+            )));
         }
 
         let args_trimmed = args.trim();
@@ -2692,18 +2712,18 @@ impl CollectionTab {
                 };
 
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "createIndex ожидает документ ключей и необязательный объект опций.",
-                    ));
+                    return Err(String::from(tr(
+                        "createIndex expects a key document and an optional options object.",
+                    )));
                 }
 
                 let keys_bson = Self::parse_shell_bson_value(&parts[0])?;
                 let keys_doc = match keys_bson {
                     Bson::Document(doc) => doc,
                     _ => {
-                        return Err(String::from(
-                            "Первый аргумент createIndex должен быть документом с ключами.",
-                        ));
+                        return Err(String::from(tr(
+                            "The first argument to createIndex must be a document with keys.",
+                        )));
                     }
                 };
 
@@ -2715,9 +2735,9 @@ impl CollectionTab {
                     let options_doc = match options_bson {
                         Bson::Document(doc) => doc,
                         _ => {
-                            return Err(String::from(
-                                "Опции createIndex должны быть JSON-объектом.",
-                            ));
+                            return Err(String::from(tr(
+                                "createIndex options must be a JSON object.",
+                            )));
                         }
                     };
                     for (key, value) in options_doc {
@@ -2739,9 +2759,9 @@ impl CollectionTab {
                 };
 
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "createIndexes ожидает массив описаний индексов и необязательные опции.",
-                    ));
+                    return Err(String::from(tr(
+                        "createIndexes expects an array of index definitions and optional options.",
+                    )));
                 }
 
                 let indexes_bson = Self::parse_shell_bson_value(&parts[0])?;
@@ -2749,17 +2769,17 @@ impl CollectionTab {
                 match indexes_bson {
                     Bson::Array(items) => {
                         if items.is_empty() {
-                            return Err(String::from(
-                                "Массив индексов для createIndexes не может быть пустым.",
-                            ));
+                            return Err(String::from(tr(
+                                "The index array for createIndexes cannot be empty.",
+                            )));
                         }
                         for item in items {
                             match item {
                                 Bson::Document(doc) => index_entries.push(Bson::Document(doc)),
                                 _ => {
-                                    return Err(String::from(
-                                        "Каждый индекс в createIndexes должен быть объектом.",
-                                    ));
+                                    return Err(String::from(tr(
+                                        "Each index in createIndexes must be an object.",
+                                    )));
                                 }
                             }
                         }
@@ -2768,9 +2788,9 @@ impl CollectionTab {
                         index_entries.push(Bson::Document(doc));
                     }
                     _ => {
-                        return Err(String::from(
-                            "Первый аргумент createIndexes должен быть массивом или объектом.",
-                        ));
+                        return Err(String::from(tr(
+                            "The first argument to createIndexes must be an array or an object.",
+                        )));
                     }
                 }
 
@@ -2783,9 +2803,9 @@ impl CollectionTab {
                     let options_doc = match options_bson {
                         Bson::Document(doc) => doc,
                         _ => {
-                            return Err(String::from(
-                                "Опции createIndexes должны быть JSON-объектом.",
-                            ));
+                            return Err(String::from(tr(
+                                "createIndexes options must be a JSON object.",
+                            )));
                         }
                     };
                     for (key, value) in options_doc {
@@ -2802,9 +2822,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "dropIndex ожидает имя индекса или объект ключей и необязательные опции.",
-                    ));
+                    return Err(String::from(tr(
+                        "dropIndex expects an index name or key document and optional options.",
+                    )));
                 }
 
                 let index_value = Self::parse_index_argument(&parts[0])?;
@@ -2819,7 +2839,9 @@ impl CollectionTab {
                     let options_doc = match options_bson {
                         Bson::Document(doc) => doc,
                         _ => {
-                            return Err(String::from("Опции dropIndex должны быть JSON-объектом."));
+                            return Err(String::from(tr(
+                                "dropIndex options must be a JSON object.",
+                            )));
                         }
                     };
                     for (key, value) in options_doc {
@@ -2837,9 +2859,9 @@ impl CollectionTab {
                 };
 
                 if parts.len() > 2 {
-                    return Err(String::from(
-                        "dropIndexes поддерживает не более двух аргументов: индекс и опции.",
-                    ));
+                    return Err(String::from(tr(
+                        "dropIndexes supports at most two arguments: index and options.",
+                    )));
                 }
 
                 let index_value = if let Some(first) = parts.get(0) {
@@ -2862,9 +2884,9 @@ impl CollectionTab {
                     let options_doc = match options_bson {
                         Bson::Document(doc) => doc,
                         _ => {
-                            return Err(String::from(
-                                "Опции dropIndexes должны быть JSON-объектом.",
-                            ));
+                            return Err(String::from(tr(
+                                "dropIndexes options must be a JSON object.",
+                            )));
                         }
                     };
                     for (key, value) in options_doc {
@@ -2876,7 +2898,7 @@ impl CollectionTab {
             }
             "getIndexes" => {
                 if !args_trimmed.is_empty() {
-                    return Err(String::from("getIndexes не принимает аргументы."));
+                    return Err(String::from(tr("getIndexes does not take any arguments.")));
                 }
 
                 Ok(QueryOperation::ListIndexes)
@@ -2889,9 +2911,9 @@ impl CollectionTab {
                 };
 
                 if parts.len() != 1 {
-                    return Err(String::from(
-                        "hideIndex/unhideIndex ожидают один аргумент с именем или ключами индекса.",
-                    ));
+                    return Err(String::from(tr(
+                        "hideIndex/unhideIndex expect a single argument with the index name or keys.",
+                    )));
                 }
 
                 let index_value = Self::parse_index_argument(&parts[0])?;
@@ -2912,9 +2934,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.len() > 2 {
-                    return Err(String::from(
-                        "countDocuments поддерживает не более двух аргументов: query и options.",
-                    ));
+                    return Err(String::from(tr(
+                        "countDocuments supports at most two arguments: query and options.",
+                    )));
                 }
 
                 let filter = if let Some(first) = parts.get(0) {
@@ -2937,9 +2959,9 @@ impl CollectionTab {
                 } else {
                     let parts = Self::split_arguments(args_trimmed);
                     if parts.len() > 1 {
-                        return Err(String::from(
-                            "estimatedDocumentCount принимает только один аргумент options.",
-                        ));
+                        return Err(String::from(tr(
+                            "estimatedDocumentCount accepts only the options argument.",
+                        )));
                     }
 
                     match parts.get(0) {
@@ -2974,19 +2996,23 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.is_empty() {
-                    return Err(String::from("distinct требует как минимум имя поля."));
+                    return Err(String::from(tr("distinct requires at least the field name.")));
                 }
 
                 let field_value: Value = Self::parse_shell_json_value(&parts[0])?;
                 let field = match field_value {
                     Value::String(s) => s,
-                    _ => return Err(String::from("Первый аргумент distinct должен быть строкой.")),
+                    _ => {
+                        return Err(String::from(tr(
+                            "The first argument to distinct must be a string.",
+                        )));
+                    }
                 };
 
                 let filter = if parts.len() > 1 {
                     let filter_value: Value = Self::parse_shell_json_value(&parts[1])?;
                     if !filter_value.is_object() {
-                        return Err(String::from("Фильтр distinct должен быть JSON-объектом."));
+                        return Err(String::from(tr("The distinct filter must be a JSON object.")));
                     }
                     bson::to_document(&filter_value)
                         .map_err(|error| format!("BSON conversion error: {error}"))?
@@ -2998,20 +3024,20 @@ impl CollectionTab {
             }
             "aggregate" => {
                 if args_trimmed.is_empty() {
-                    return Err(String::from(
-                        "aggregate требует массив стадий в качестве аргумента.",
-                    ));
+                    return Err(String::from(tr(
+                        "aggregate requires an array of stages as its argument.",
+                    )));
                 }
 
                 let value: Value = Self::parse_shell_json_value(args_trimmed)?;
                 let array = value
                     .as_array()
-                    .ok_or_else(|| String::from("Аргумент aggregate должен быть массивом."))?;
+                    .ok_or_else(|| String::from(tr("The aggregate argument must be an array.")))?;
                 let mut pipeline = Vec::new();
                 for item in array {
                     let doc = item
                         .as_object()
-                        .ok_or_else(|| String::from("Элементы pipeline должны быть объектами."))?;
+                        .ok_or_else(|| String::from(tr("Pipeline elements must be objects.")))?;
                     pipeline.push(
                         bson::to_document(doc)
                             .map_err(|error| format!("BSON conversion error: {error}"))?,
@@ -3021,16 +3047,16 @@ impl CollectionTab {
             }
             "insertOne" => {
                 if args_trimmed.is_empty() {
-                    return Err(String::from(
-                        "insertOne требует документ в качестве первого аргумента.",
-                    ));
+                    return Err(String::from(tr(
+                        "insertOne requires a document as the first argument.",
+                    )));
                 }
 
                 let parts = Self::split_arguments(args_trimmed);
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "insertOne принимает один документ и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "insertOne accepts a single document and an optional options object.",
+                    )));
                 }
 
                 let document = Self::parse_json_object(&parts[0])?;
@@ -3044,33 +3070,38 @@ impl CollectionTab {
             }
             "insertMany" => {
                 if args_trimmed.is_empty() {
-                    return Err(String::from(
-                        "insertMany требует массив документов в качестве первого аргумента.",
-                    ));
+                    return Err(String::from(tr(
+                        "insertMany requires an array of documents as the first argument.",
+                    )));
                 }
 
                 let parts = Self::split_arguments(args_trimmed);
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "insertMany принимает массив документов и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "insertMany accepts an array of documents and an optional options object.",
+                    )));
                 }
 
                 let docs_value: Value = Self::parse_shell_json_value(&parts[0])?;
                 let docs_array = docs_value.as_array().ok_or_else(|| {
-                    String::from("Первый аргумент insertMany должен быть массивом документов.")
+                    String::from(tr(
+                        "The first argument to insertMany must be an array of documents.",
+                    ))
                 })?;
                 if docs_array.is_empty() {
-                    return Err(String::from(
-                        "insertMany требует как минимум один документ в массиве.",
-                    ));
+                    return Err(String::from(tr(
+                        "insertMany requires at least one document in the array.",
+                    )));
                 }
 
                 let mut documents = Vec::with_capacity(docs_array.len());
                 for (index, entry) in docs_array.iter().enumerate() {
                     let object = entry.as_object().ok_or_else(|| {
                         format!(
-                            "Элемент с индексом {index} в insertMany должен быть JSON-объектом."
+                            "{} {} {}",
+                            tr("Element at index"),
+                            index,
+                            tr("in insertMany must be a JSON object."),
                         )
                     })?;
                     let doc = bson::to_document(object)
@@ -3093,9 +3124,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.len() < 2 || parts.len() > 3 {
-                    return Err(String::from(
-                        "updateOne принимает фильтр, обновление и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "updateOne expects a filter, an update, and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3115,9 +3146,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.len() < 2 || parts.len() > 3 {
-                    return Err(String::from(
-                        "updateMany принимает фильтр, обновление и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "updateMany expects a filter, an update, and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3137,9 +3168,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.len() < 2 || parts.len() > 3 {
-                    return Err(String::from(
-                        "replaceOne принимает фильтр, документ замену и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "replaceOne expects a filter, a replacement document, and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3159,9 +3190,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.len() < 2 || parts.len() > 3 {
-                    return Err(String::from(
-                        "findOneAndUpdate принимает фильтр, обновление и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "findOneAndUpdate expects a filter, an update, and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3181,9 +3212,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.len() < 2 || parts.len() > 3 {
-                    return Err(String::from(
-                        "findOneAndReplace принимает фильтр, документ замены и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "findOneAndReplace expects a filter, a replacement document, and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3203,9 +3234,9 @@ impl CollectionTab {
                     Self::split_arguments(args_trimmed)
                 };
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "findOneAndDelete принимает фильтр и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "findOneAndDelete expects a filter and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3220,16 +3251,16 @@ impl CollectionTab {
             "findOneAndModify" => self.parse_find_one_and_modify(args_trimmed),
             "deleteOne" => {
                 if args_trimmed.is_empty() {
-                    return Err(String::from(
-                        "deleteOne требует фильтр в качестве первого аргумента.",
-                    ));
+                    return Err(String::from(tr(
+                        "deleteOne requires a filter as the first argument.",
+                    )));
                 }
 
                 let parts = Self::split_arguments(args_trimmed);
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "deleteOne принимает фильтр и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "deleteOne accepts a filter and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3243,16 +3274,16 @@ impl CollectionTab {
             }
             "deleteMany" => {
                 if args_trimmed.is_empty() {
-                    return Err(String::from(
-                        "deleteMany требует фильтр в качестве первого аргумента.",
-                    ));
+                    return Err(String::from(tr(
+                        "deleteMany requires a filter as the first argument.",
+                    )));
                 }
 
                 let parts = Self::split_arguments(args_trimmed);
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(
-                        "deleteMany принимает фильтр и необязательный объект options.",
-                    ));
+                    return Err(String::from(tr(
+                        "deleteMany accepts a filter and an optional options object.",
+                    )));
                 }
 
                 let filter = Self::parse_json_object(&parts[0])?;
@@ -3271,8 +3302,9 @@ impl CollectionTab {
                 let filter = Self::parse_json_object(args_trimmed)?;
                 Ok(QueryOperation::Find { filter })
             }
-            other => Err(format!(
-                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
+            other => Err(tr_format(
+                "Method {} is not supported. Available methods: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
+                &[other],
             )),
         }
     }
@@ -3283,16 +3315,18 @@ impl CollectionTab {
             let (_, after_literal) = Self::parse_collection_literal(rest)?;
             let after_literal = after_literal.trim_start();
             let after_paren = after_literal.strip_prefix(')').ok_or_else(|| {
-                String::from("После имени коллекции в getCollection ожидается ')'.")
+                String::from(tr("Expected ')' after collection name in getCollection."))
             })?;
             let after_paren = after_paren.trim_start();
             if !after_paren.starts_with('.') {
-                return Err(String::from("После указания коллекции ожидается вызов метода."));
+                return Err(String::from(tr(
+                    "Expected a method call after specifying the collection.",
+                )));
             }
             Ok(after_paren)
         } else if let Some(rest) = text.strip_prefix("db.") {
             if rest.is_empty() {
-                return Err(String::from("После db. ожидается имя коллекции."));
+                return Err(String::from(tr("Expected collection name after db.")));
             }
 
             let bytes = rest.as_bytes();
@@ -3306,38 +3340,42 @@ impl CollectionTab {
 
                 if byte == b'.' {
                     if index == 0 {
-                        return Err(String::from("После db. ожидается имя коллекции."));
+                        return Err(String::from(tr("Expected collection name after db.")));
                     }
                     return Ok(&rest[index..]);
                 }
 
-                return Err(format!("Недопустимый символ '{}' в имени коллекции.", byte as char));
+                return Err(format!(
+                    "{} '{}'",
+                    tr("Invalid character in the collection name:"),
+                    byte as char
+                ));
             }
 
-            Err(String::from("После указания коллекции ожидается вызов метода."))
+            Err(String::from(tr("Expected a method call after specifying the collection.")))
         } else {
-            Err(String::from(
-                "Запрос должен начинаться с db.<collection>, db.getCollection('<collection>') или поддерживаемого метода базы.",
-            ))
+            Err(String::from(tr(
+                "Query must start with db.<collection>, db.getCollection('<collection>'), or a supported method.",
+            )))
         }
     }
 
     fn parse_collection_literal(text: &str) -> Result<(&str, &str), String> {
         if text.trim().is_empty() {
-            return Err(String::from("Имя коллекции в getCollection не задано."));
+            return Err(String::from(tr("Collection name in getCollection is not provided.")));
         }
 
         let trimmed = text.trim_start();
         if trimmed.is_empty() {
-            return Err(String::from("Имя коллекции в getCollection не задано."));
+            return Err(String::from(tr("Collection name in getCollection is not provided.")));
         }
 
         let bytes = trimmed.as_bytes();
         let quote = bytes[0];
         if quote != b'\'' && quote != b'"' {
-            return Err(String::from(
-                "Имя коллекции в getCollection должно быть строкой в кавычках.",
-            ));
+            return Err(String::from(tr(
+                "Collection name in getCollection must be a quoted string.",
+            )));
         }
 
         let mut index = 1usize;
@@ -3353,17 +3391,19 @@ impl CollectionTab {
             }
         }
 
-        Err(String::from("Строка коллекции в getCollection не закрыта."))
+        Err(String::from(tr("Collection string in getCollection is not closed.")))
     }
 
     fn extract_primary_method(text: &str) -> Result<(String, String, &str), String> {
         if !text.starts_with('.') {
-            return Err(String::from("После указания коллекции ожидается вызов метода."));
+            return Err(String::from(tr(
+                "Expected a method call after specifying the collection.",
+            )));
         }
 
         let rest = &text[1..];
         if rest.is_empty() {
-            return Err(String::from("После точки ожидается имя метода."));
+            return Err(String::from(tr("Expected method name after the dot.")));
         }
 
         let bytes = rest.as_bytes();
@@ -3377,7 +3417,7 @@ impl CollectionTab {
 
             if byte == b'(' {
                 if index == 0 {
-                    return Err(String::from("После точки ожидается имя метода."));
+                    return Err(String::from(tr("Expected method name after the dot.")));
                 }
 
                 let method_name = &rest[..index];
@@ -3399,19 +3439,20 @@ impl CollectionTab {
                     cursor += 1;
                 }
 
-                return Err(String::from("Скобка метода не закрыта."));
+                return Err(String::from(tr("Method call parenthesis is not closed.")));
             }
 
             if byte == b'.' {
-                return Err(String::from(
-                    "Поддерживается только один вызов метода после указания коллекции.",
-                ));
+                return Err(String::from(tr(
+                    "Only one method call is supported after specifying the collection.",
+                )));
             }
 
-            return Err(format!("Недопустимый символ '{}' в имени метода.", byte as char));
+            let character = (byte as char).to_string();
+            return Err(tr_format("Invalid character '{}' in the method name.", &[&character]));
         }
 
-        Err(String::from("Ожидается '(' после названия метода."))
+        Err(String::from(tr("Expected '(' after the method name.")))
     }
 
     fn parse_count_documents_options(
@@ -3420,7 +3461,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции countDocuments должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("countDocuments options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3451,16 +3492,17 @@ impl CollectionTab {
                             Hint::Keys(doc)
                         }
                         _ => {
-                            return Err(String::from(
-                                "Параметр 'hint' должен быть строкой или JSON-объектом.",
-                            ));
+                            return Err(String::from(tr(
+                                "Parameter 'hint' must be a string or a JSON object.",
+                            )));
                         }
                     };
                     options.hint = Some(hint);
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options countDocuments. Доступны: limit, skip, hint, maxTimeMS.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in countDocuments options. Allowed: limit, skip, hint, maxTimeMS.",
+                        &[other],
                     ));
                 }
             }
@@ -3474,7 +3516,7 @@ impl CollectionTab {
     ) -> Result<Option<EstimatedDocumentCountParsedOptions>, String> {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value.as_object().ok_or_else(|| {
-            String::from("Опции estimatedDocumentCount должны быть JSON-объектом.")
+            String::from(tr("estimatedDocumentCount options must be a JSON object."))
         })?;
 
         if object.is_empty() {
@@ -3490,8 +3532,9 @@ impl CollectionTab {
                     options.max_time = Some(Duration::from_millis(millis));
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options estimatedDocumentCount. Доступен только maxTimeMS.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in estimatedDocumentCount options. Only maxTimeMS is allowed.",
+                        &[other],
                     ));
                 }
             }
@@ -3513,9 +3556,9 @@ impl CollectionTab {
                     let synthetic = format!(".{rest}");
                     let (method_name, args, remainder) = Self::extract_primary_method(&synthetic)?;
                     if !remainder.trim().is_empty() {
-                        return Err(String::from(
-                            "Поддерживается только один вызов метода после указания базы данных.",
-                        ));
+                        return Err(String::from(tr(
+                            "Only one method call is supported after specifying the database.",
+                        )));
                     }
                     return self.parse_database_method(&method_name, &args).map(Some);
                 }
@@ -3552,9 +3595,9 @@ impl CollectionTab {
                                 command.insert("scale", Bson::String(number.to_string()));
                             }
                         } else {
-                            return Err(String::from(
-                                "Аргумент db.stats ожидается числом или объектом с параметрами.",
-                            ));
+                            return Err(String::from(tr(
+                                "db.stats expects a number or an options object.",
+                            )));
                         }
                     }
                 }
@@ -3569,31 +3612,32 @@ impl CollectionTab {
                 };
 
                 if parts.is_empty() {
-                    return Err(String::from(
-                        "db.runCommand ожидает документ с описанием команды.",
-                    ));
+                    return Err(String::from(tr(
+                        "db.runCommand expects a document describing the command.",
+                    )));
                 }
                 if parts.len() > 1 {
-                    return Err(String::from(
-                        "db.runCommand поддерживает только один аргумент (документ команды).",
-                    ));
+                    return Err(String::from(tr(
+                        "db.runCommand supports only one argument (the command document).",
+                    )));
                 }
 
                 let command_bson = Self::parse_shell_bson_value(&parts[0])?;
                 let command = match command_bson {
                     Bson::Document(doc) => doc,
                     _ => {
-                        return Err(String::from(
-                            "Первый аргумент db.runCommand должен быть документом.",
-                        ));
+                        return Err(String::from(tr(
+                            "The first argument to db.runCommand must be a document.",
+                        )));
                     }
                 };
 
                 Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
             }
-            other => {
-                Err(format!("Метод db.{other} не поддерживается. Доступны: stats, runCommand.",))
-            }
+            other => Err(tr_format(
+                "Method db.{} is not supported. Available methods: stats, runCommand.",
+                &[other],
+            )),
         }
     }
 
@@ -3601,7 +3645,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции insertOne должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("insertOne options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3615,8 +3659,9 @@ impl CollectionTab {
                     options.write_concern = Self::parse_write_concern_value(value)?;
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options insertOne. Доступно: writeConcern.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in insertOne options. Allowed: writeConcern.",
+                        &[other],
                     ));
                 }
             }
@@ -3629,7 +3674,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции insertMany должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("insertMany options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3644,15 +3689,16 @@ impl CollectionTab {
                 }
                 "ordered" => {
                     let ordered = value.as_bool().ok_or_else(|| {
-                        String::from(
-                            "Параметр 'ordered' в options insertMany должен быть логическим значением.",
-                        )
+                        String::from(tr(
+                            "Parameter 'ordered' in insertMany options must be a boolean.",
+                        ))
                     })?;
                     options.ordered = Some(ordered);
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options insertMany. Доступны: writeConcern, ordered.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in insertMany options. Allowed: writeConcern, ordered.",
+                        &[other],
                     ));
                 }
             }
@@ -3663,9 +3709,9 @@ impl CollectionTab {
 
     fn parse_delete_options(source: &str) -> Result<Option<DeleteParsedOptions>, String> {
         let value: Value = Self::parse_shell_json_value(source)?;
-        let object = value
-            .as_object()
-            .ok_or_else(|| String::from("Опции deleteOne/deleteMany должны быть JSON-объектом."))?;
+        let object = value.as_object().ok_or_else(|| {
+            String::from(tr("deleteOne/deleteMany options must be a JSON object."))
+        })?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3685,8 +3731,9 @@ impl CollectionTab {
                     options.hint = Some(Self::parse_hint_value(value)?);
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options deleteOne/deleteMany. Доступны: writeConcern, collation, hint.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in deleteOne/deleteMany options. Allowed: writeConcern, collation, hint.",
+                        &[other],
                     ));
                 }
             }
@@ -3706,22 +3753,25 @@ impl CollectionTab {
             let mut pipeline = Vec::with_capacity(array.len());
             for (index, entry) in array.iter().enumerate() {
                 let object = entry.as_object().ok_or_else(|| {
-                    format!("Элемент pipeline под индексом {index} должен быть JSON-объектом.",)
+                    tr_format(
+                        "Pipeline element at index {} must be a JSON object.",
+                        &[&index.to_string()],
+                    )
                 })?;
                 let document = bson::to_document(object)
                     .map_err(|error| format!("BSON conversion error: {error}"))?;
                 pipeline.push(document);
             }
             if pipeline.is_empty() {
-                return Err(String::from(
-                    "Пустой массив обновления не поддерживается. Добавьте хотя бы один этап.",
-                ));
+                return Err(String::from(tr(
+                    "An empty update array is not supported. Add at least one stage.",
+                )));
             }
             Ok(UpdateModificationsSpec::Pipeline(pipeline))
         } else {
-            Err(String::from(
-                "Аргумент обновления должен быть объектом с операторами или массивом стадий.",
-            ))
+            Err(String::from(tr(
+                "Update argument must be an object with operators or an array of stages.",
+            )))
         }
     }
 
@@ -3729,7 +3779,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции update должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("update options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3762,8 +3812,9 @@ impl CollectionTab {
                     options.sort = Some(Self::parse_document_field(value, "sort")?);
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options updateOne/updateMany. Доступны: writeConcern, upsert, arrayFilters, collation, hint, bypassDocumentValidation, let, comment, sort.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in updateOne/updateMany options. Allowed: writeConcern, upsert, arrayFilters, collation, hint, bypassDocumentValidation, let, comment, sort.",
+                        &[other],
                     ));
                 }
             }
@@ -3776,7 +3827,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции replace должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("replace options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3798,8 +3849,9 @@ impl CollectionTab {
                 "comment" => options.comment = Some(Self::parse_bson_value(value)?),
                 "sort" => options.sort = Some(Self::parse_document_field(value, "sort")?),
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options replaceOne. Доступны: writeConcern, upsert, collation, hint, bypassDocumentValidation, let, comment, sort.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in replaceOne options. Allowed: writeConcern, upsert, collation, hint, bypassDocumentValidation, let, comment, sort.",
+                        &[other],
                     ));
                 }
             }
@@ -3810,29 +3862,32 @@ impl CollectionTab {
 
     fn parse_bool_field(value: &Value, field: &str) -> Result<bool, String> {
         value.as_bool().ok_or_else(|| {
-            format!("Параметр '{field}' должен быть булевым значением (true/false).")
+            tr_format("Parameter '{}' must be a boolean value (true/false).", &[field])
         })
     }
 
     fn parse_document_field(value: &Value, field: &str) -> Result<Document, String> {
         let object = value
             .as_object()
-            .ok_or_else(|| format!("Параметр '{field}' должен быть JSON-объектом."))?;
+            .ok_or_else(|| tr_format("Parameter '{}' must be a JSON object.", &[field]))?;
         bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
     }
 
     fn parse_array_filters(value: &Value) -> Result<Vec<Document>, String> {
         let array = value
             .as_array()
-            .ok_or_else(|| String::from("arrayFilters должен быть массивом объектов."))?;
+            .ok_or_else(|| String::from(tr("arrayFilters must be an array of objects.")))?;
         if array.is_empty() {
-            return Err(String::from("arrayFilters должен содержать хотя бы один объект фильтра."));
+            return Err(String::from(tr("arrayFilters must contain at least one filter object.")));
         }
 
         let mut filters = Vec::with_capacity(array.len());
         for (index, entry) in array.iter().enumerate() {
             let object = entry.as_object().ok_or_else(|| {
-                format!("Элемент arrayFilters с индексом {index} должен быть JSON-объектом.",)
+                tr_format(
+                    "arrayFilters element at index {} must be a JSON object.",
+                    &[&index.to_string()],
+                )
             })?;
             let filter = bson::to_document(object)
                 .map_err(|error| format!("BSON conversion error: {error}"))?;
@@ -3860,7 +3915,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции findOneAndUpdate должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("findOneAndUpdate options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3893,8 +3948,9 @@ impl CollectionTab {
                 "let" => options.let_vars = Some(Self::parse_document_field(value, "let")?),
                 "comment" => options.comment = Some(Self::parse_bson_value(value)?),
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options findOneAndUpdate. Доступны: writeConcern, upsert, arrayFilters, bypassDocumentValidation, maxTimeMS, projection, returnDocument, sort, collation, hint, let, comment.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in findOneAndUpdate options. Allowed: writeConcern, upsert, arrayFilters, bypassDocumentValidation, maxTimeMS, projection, returnDocument, sort, collation, hint, let, comment.",
+                        &[other],
                     ));
                 }
             }
@@ -3909,7 +3965,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции findOneAndReplace должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("findOneAndReplace options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3941,8 +3997,9 @@ impl CollectionTab {
                 "let" => options.let_vars = Some(Self::parse_document_field(value, "let")?),
                 "comment" => options.comment = Some(Self::parse_bson_value(value)?),
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options findOneAndReplace. Доступны: writeConcern, upsert, bypassDocumentValidation, maxTimeMS, projection, returnDocument, sort, collation, hint, let, comment.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in findOneAndReplace options. Allowed: writeConcern, upsert, bypassDocumentValidation, maxTimeMS, projection, returnDocument, sort, collation, hint, let, comment.",
+                        &[other],
                     ));
                 }
             }
@@ -3957,7 +4014,7 @@ impl CollectionTab {
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("Опции findOneAndDelete должны быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("findOneAndDelete options must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -3981,8 +4038,9 @@ impl CollectionTab {
                 "let" => options.let_vars = Some(Self::parse_document_field(value, "let")?),
                 "comment" => options.comment = Some(Self::parse_bson_value(value)?),
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в options findOneAndDelete. Доступны: writeConcern, maxTimeMS, projection, sort, collation, hint, let, comment.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in findOneAndDelete options. Allowed: writeConcern, maxTimeMS, projection, sort, collation, hint, let, comment.",
+                        &[other],
                     ));
                 }
             }
@@ -3993,13 +4051,15 @@ impl CollectionTab {
 
     fn parse_find_one_and_modify(&self, source: &str) -> Result<QueryOperation, String> {
         if source.trim().is_empty() {
-            return Err(String::from("findOneAndModify требует JSON-объект с параметрами."));
+            return Err(String::from(tr(
+                "findOneAndModify requires a JSON object with parameters.",
+            )));
         }
 
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("findOneAndModify ожидает JSON-объект."))?;
+            .ok_or_else(|| String::from(tr("findOneAndModify expects a JSON object.")))?;
 
         let mut filter = Document::new();
         let mut update_spec: Option<UpdateModificationsSpec> = None;
@@ -4035,19 +4095,19 @@ impl CollectionTab {
                     update_spec = Some(Self::parse_update_spec(&json)?);
                 }
                 "remove" => {
-                    remove = value.as_bool().ok_or_else(|| {
-                        String::from("Параметр 'remove' должен быть булевым значением.")
-                    })?;
+                    remove = value
+                        .as_bool()
+                        .ok_or_else(|| String::from(tr("Parameter 'remove' must be a boolean.")))?;
                 }
                 "new" | "returnNewDocument" => {
-                    let flag = value.as_bool().ok_or_else(|| {
-                        String::from("Параметр 'new' должен быть булевым значением.")
-                    })?;
+                    let flag = value
+                        .as_bool()
+                        .ok_or_else(|| String::from(tr("Parameter 'new' must be a boolean.")))?;
                     if let Some(current) = return_after {
                         if current != flag {
-                            return Err(String::from(
-                                "Параметры 'new' и 'returnOriginal' конфликтуют.",
-                            ));
+                            return Err(String::from(tr(
+                                "Parameters 'new' and 'returnOriginal' conflict.",
+                            )));
                         }
                     } else {
                         return_after = Some(flag);
@@ -4055,14 +4115,14 @@ impl CollectionTab {
                 }
                 "returnOriginal" => {
                     let flag = value.as_bool().ok_or_else(|| {
-                        String::from("Параметр 'returnOriginal' должен быть булевым значением.")
+                        String::from(tr("Parameter 'returnOriginal' must be a boolean."))
                     })?;
                     let desired_after = !flag;
                     if let Some(current) = return_after {
                         if current != desired_after {
-                            return Err(String::from(
-                                "Параметры 'new' и 'returnOriginal' конфликтуют.",
-                            ));
+                            return Err(String::from(tr(
+                                "Parameters 'new' and 'returnOriginal' conflict.",
+                            )));
                         }
                     } else {
                         return_after = Some(desired_after);
@@ -4073,9 +4133,9 @@ impl CollectionTab {
                         .map_err(|error| format!("JSON serialize error: {error}"))?;
                     let document = Self::parse_json_object(&json)?;
                     if projection.is_some() {
-                        return Err(String::from(
-                            "Параметры 'fields' и 'projection' нельзя задавать одновременно.",
-                        ));
+                        return Err(String::from(tr(
+                            "Parameters 'fields' and 'projection' cannot be set at the same time.",
+                        )));
                     }
                     projection = Some(document);
                 }
@@ -4111,8 +4171,9 @@ impl CollectionTab {
                     comment = Some(Self::parse_bson_value(value)?);
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается в findOneAndModify.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in findOneAndModify.",
+                        &[other],
                     ));
                 }
             }
@@ -4120,27 +4181,29 @@ impl CollectionTab {
 
         if remove {
             if update_spec.is_some() {
-                return Err(String::from(
-                    "Параметр 'update' не должен задаваться вместе с remove=true.",
-                ));
+                return Err(String::from(tr(
+                    "Parameter 'update' must not be set together with remove=true.",
+                )));
             }
             if upsert.is_some() {
-                return Err(String::from("Параметр 'upsert' не поддерживается при remove=true."));
+                return Err(String::from(tr(
+                    "Parameter 'upsert' is not supported when remove=true.",
+                )));
             }
             if bypass_document_validation.is_some() {
-                return Err(String::from(
-                    "Параметр 'bypassDocumentValidation' не поддерживается при remove=true.",
-                ));
+                return Err(String::from(tr(
+                    "Parameter 'bypassDocumentValidation' is not supported when remove=true.",
+                )));
             }
             if array_filters.is_some() {
-                return Err(String::from(
-                    "Параметр 'arrayFilters' не поддерживается при remove=true.",
-                ));
+                return Err(String::from(tr(
+                    "Parameter 'arrayFilters' is not supported when remove=true.",
+                )));
             }
             if return_after.is_some() {
-                return Err(String::from(
-                    "Параметры возврата документа не поддерживаются при remove=true.",
-                ));
+                return Err(String::from(tr(
+                    "Document return options are not supported when remove=true.",
+                )));
             }
 
             let mut options = FindOneAndDeleteParsedOptions::default();
@@ -4158,7 +4221,7 @@ impl CollectionTab {
         }
 
         let update_spec = update_spec.ok_or_else(|| {
-            String::from("findOneAndModify требует параметр 'update', когда remove=false.")
+            String::from(tr("findOneAndModify requires an 'update' parameter when remove=false."))
         })?;
 
         let mut options = FindOneAndUpdateParsedOptions::default();
@@ -4184,7 +4247,7 @@ impl CollectionTab {
         let text = value
             .as_str()
             .ok_or_else(|| {
-                String::from("returnDocument должен быть строкой 'before' или 'after'.")
+                String::from(tr("returnDocument must be the string 'before' or 'after'."))
             })?
             .trim()
             .to_lowercase();
@@ -4192,14 +4255,14 @@ impl CollectionTab {
         match text.as_str() {
             "before" => Ok(ReturnDocument::Before),
             "after" => Ok(ReturnDocument::After),
-            _ => Err(String::from("returnDocument должен быть строкой 'before' или 'after'.")),
+            _ => Err(String::from(tr("returnDocument must be the string 'before' or 'after'."))),
         }
     }
 
     fn parse_write_concern_value(value: &Value) -> Result<Option<WriteConcern>, String> {
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("writeConcern должен быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("writeConcern must be a JSON object.")))?;
 
         if object.is_empty() {
             return Ok(None);
@@ -4215,21 +4278,19 @@ impl CollectionTab {
                         Value::String(s) => Acknowledgment::from(s.as_str()),
                         Value::Number(number) => {
                             let raw = number.as_u64().ok_or_else(|| {
-                                String::from(
-                                    "writeConcern.w должен быть неотрицательным целым числом.",
-                                )
+                                String::from(tr("writeConcern.w must be a non-negative integer."))
                             })?;
                             let nodes = u32::try_from(raw).map_err(|_| {
-                                String::from(
-                                    "writeConcern.w не должен превышать максимально допустимое значение.",
-                                )
+                                String::from(tr(
+                                    "writeConcern.w must not exceed the maximum allowed value.",
+                                ))
                             })?;
                             Acknowledgment::Nodes(nodes)
                         }
                         _ => {
-                            return Err(String::from(
-                                "writeConcern.w должен быть строкой или числом.",
-                            ));
+                            return Err(String::from(tr(
+                                "writeConcern.w must be a string or a number.",
+                            )));
                         }
                     };
                     write_concern.w = Some(ack);
@@ -4237,23 +4298,22 @@ impl CollectionTab {
                 }
                 "j" => {
                     let journal = value.as_bool().ok_or_else(|| {
-                        String::from("writeConcern.j должен быть логическим значением.")
+                        String::from(tr("writeConcern.j must be a boolean value."))
                     })?;
                     write_concern.journal = Some(journal);
                     has_values = true;
                 }
                 "wtimeout" | "wtimeoutMS" => {
                     let millis = value.as_u64().ok_or_else(|| {
-                        String::from(
-                            "writeConcern.wtimeout должен быть неотрицательным целым числом.",
-                        )
+                        String::from(tr("writeConcern.wtimeout must be a non-negative integer."))
                     })?;
                     write_concern.w_timeout = Some(Duration::from_millis(millis));
                     has_values = true;
                 }
                 other => {
-                    return Err(format!(
-                        "Параметр '{other}' не поддерживается внутри writeConcern. Доступны: w, j, wtimeout.",
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported inside writeConcern. Allowed: w, j, wtimeout.",
+                        &[other],
                     ));
                 }
             }
@@ -4265,7 +4325,7 @@ impl CollectionTab {
     fn parse_collation_value(value: &Value) -> Result<Collation, String> {
         let object = value
             .as_object()
-            .ok_or_else(|| String::from("collation должен быть JSON-объектом."))?;
+            .ok_or_else(|| String::from(tr("collation must be a JSON object.")))?;
         let document =
             bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))?;
         bson::from_document::<Collation>(document)
@@ -4280,18 +4340,18 @@ impl CollectionTab {
                     .map_err(|error| format!("BSON conversion error: {error}"))?;
                 Ok(Hint::Keys(document))
             }
-            _ => Err(String::from(
-                "hint должен быть строкой или JSON-объектом со спецификацией индекса.",
-            )),
+            _ => Err(String::from(tr(
+                "hint must be a string or a JSON object with index specification.",
+            ))),
         }
     }
 
     fn parse_non_negative_u64(value: &Value, field: &str) -> Result<u64, String> {
         match value {
             Value::Number(number) => number.as_u64().ok_or_else(|| {
-                format!("Параметр '{field}' должен быть неотрицательным целым числом.",)
+                tr_format("Parameter '{}' must be a non-negative integer.", &[field])
             }),
-            _ => Err(format!("Параметр '{field}' должен быть неотрицательным целым числом.",)),
+            _ => Err(tr_format("Parameter '{}' must be a non-negative integer.", &[field])),
         }
     }
 
@@ -4554,7 +4614,7 @@ impl CollectionTab {
         }
 
         if cursor >= len || chars[cursor] != '/' {
-            return Err(String::from("Регулярное выражение не закрыто символом '/'."));
+            return Err(String::from(tr("Regular expression is not terminated with '/'.")));
         }
 
         cursor += 1;
@@ -4626,7 +4686,7 @@ impl CollectionTab {
         }
 
         if brace_depth != 0 {
-            return Err(String::from("Функция не содержит закрывающую фигурную скобку."));
+            return Err(String::from(tr("Function is missing a closing brace.")));
         }
 
         Ok((buffer.trim().to_string(), index))
@@ -4650,9 +4710,9 @@ impl CollectionTab {
                 '\\' => {
                     index += 1;
                     if index >= len {
-                        return Err(String::from(
-                            "Строка в одинарных кавычках содержит незавершённую escape-последовательность.",
-                        ));
+                        return Err(String::from(tr(
+                            "Single-quoted string contains an unfinished escape sequence.",
+                        )));
                     }
 
                     let (ch, consumed) = match chars[index] {
@@ -4668,9 +4728,9 @@ impl CollectionTab {
                         '0' => ('\u{0000}', 1),
                         'x' => {
                             if index + 2 >= len {
-                                return Err(String::from(
-                                    "Последовательность \\x должна содержать две hex-цифры.",
-                                ));
+                                return Err(String::from(tr(
+                                    "The \\x sequence must contain two hex digits.",
+                                )));
                             }
                             let high = Self::hex_value(chars[index + 1])?;
                             let low = Self::hex_value(chars[index + 2])?;
@@ -4679,9 +4739,9 @@ impl CollectionTab {
                         }
                         'u' => {
                             if index + 4 >= len {
-                                return Err(String::from(
-                                    "Последовательность \\u должна содержать четыре hex-цифры.",
-                                ));
+                                return Err(String::from(tr(
+                                    "The \\u sequence must contain four hex digits.",
+                                )));
                             }
                             let mut value = 0u32;
                             for offset in 1..=4 {
@@ -4703,7 +4763,7 @@ impl CollectionTab {
             }
         }
 
-        Err(String::from("Строка в одинарных кавычках не закрыта."))
+        Err(String::from(tr("Single-quoted string is not closed.")))
     }
 
     fn skip_single_quoted(chars: &[char], start: usize) -> Result<usize, String> {
@@ -4725,17 +4785,19 @@ impl CollectionTab {
             }
         }
 
-        Err(String::from("Строка в двойных кавычках не закрыта."))
+        Err(String::from(tr("Double-quoted string is not closed.")))
     }
 
     fn hex_value(ch: char) -> Result<u32, String> {
-        ch.to_digit(16)
-            .ok_or_else(|| format!("Некорректный hex-символ '{ch}' в escape-последовательности."))
+        ch.to_digit(16).ok_or_else(|| {
+            tr_format("Invalid hex character '{}' in escape sequence.", &[&ch.to_string()])
+        })
     }
 
     fn codepoint_to_char(value: u32) -> Result<char, String> {
-        char::from_u32(value)
-            .ok_or_else(|| format!("Кодовая точка 0x{value:04X} не является допустимым символом."))
+        char::from_u32(value).ok_or_else(|| {
+            tr_format("Code point 0x{} is not a valid character.", &[&format!("{value:04X}")])
+        })
     }
 
     fn is_identifier_start(ch: char) -> bool {
@@ -4820,7 +4882,7 @@ impl CollectionTab {
             }
         }
 
-        Err(format!("Скобка вызова {identifier} не закрыта."))
+        Err(tr_format("Call parenthesis for {} is not closed.", &[identifier]))
     }
 
     fn build_extended_json(identifier: &str, args: &str) -> Result<String, String> {
@@ -4838,20 +4900,22 @@ impl CollectionTab {
                         let value = Self::parse_shell_json_value(&parts[0])?;
                         let hex = Self::value_as_string(&value)?;
                         ObjectId::from_str(&hex).map_err(|_| {
-                            String::from("ObjectId требует 24-символьную hex-строку либо вызывается без аргументов.")
+                            String::from(tr(
+                                "ObjectId requires a 24-character hex string or no arguments.",
+                            ))
                         })?
                     }
                     _ => {
-                        return Err(String::from(
-                            "ObjectId поддерживает либо ноль, либо один строковый аргумент.",
-                        ));
+                        return Err(String::from(tr(
+                            "ObjectId accepts either zero or one string argument.",
+                        )));
                     }
                 };
                 Ok(Bson::ObjectId(object_id))
             }
             "ObjectId.fromDate" => {
                 if parts.len() != 1 {
-                    return Err(String::from("ObjectId.fromDate ожидает один аргумент."));
+                    return Err(String::from(tr("ObjectId.fromDate expects a single argument.")));
                 }
                 let date = Self::parse_date_constructor(&[parts[0].clone()])?;
                 let seconds = (date.timestamp_millis() / 1000) as u32;
@@ -4862,43 +4926,42 @@ impl CollectionTab {
                 Ok(Bson::DateTime(datetime))
             }
             "NumberDecimal" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
                 let value = Self::parse_shell_json_value(&literal)?;
                 let text = Self::value_as_string(&value)?;
                 let decimal = Decimal128::from_str(&text).map_err(|_| {
-                    String::from("NumberDecimal ожидает корректное десятичное значение.")
+                    String::from(tr("NumberDecimal expects a valid decimal value."))
                 })?;
                 Ok(Bson::Decimal128(decimal))
             }
             "NumberLong" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
                 let value = Self::parse_shell_json_value(&literal)?;
                 let text = Self::value_as_string(&value)?;
                 let parsed = i128::from_str(&text)
-                    .map_err(|_| String::from("NumberLong ожидает целое число."))?;
-                let value = i64::try_from(parsed).map_err(|_| {
-                    String::from("Значение NumberLong выходит за пределы диапазона i64.")
-                })?;
+                    .map_err(|_| String::from(tr("NumberLong expects an integer.")))?;
+                let value = i64::try_from(parsed)
+                    .map_err(|_| String::from(tr("NumberLong value exceeds the i64 range.")))?;
                 Ok(Bson::Int64(value))
             }
             "NumberInt" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
                 let value = Self::parse_shell_json_value(&literal)?;
                 let text = Self::value_as_string(&value)?;
                 let parsed = i64::from_str(&text)
-                    .map_err(|_| String::from("NumberInt ожидает целое число."))?;
+                    .map_err(|_| String::from(tr("NumberInt expects an integer.")))?;
                 let value = i32::try_from(parsed)
-                    .map_err(|_| String::from("Значение NumberInt выходит за диапазон Int32."))?;
+                    .map_err(|_| String::from(tr("NumberInt value is out of the Int32 range.")))?;
                 Ok(Bson::Int32(value))
             }
             "NumberDouble" | "Number" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("0"));
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
                 let value = Self::parse_shell_json_value(&literal)?;
                 let number = Self::value_as_f64(&value)?;
                 Ok(Bson::Double(number))
             }
             "Boolean" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from("false"));
+                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("false")));
                 let value = Self::parse_shell_json_value(&literal)?;
                 let flag = Self::value_as_bool(&value)?;
                 Ok(Bson::Boolean(flag))
@@ -4916,11 +4979,8 @@ impl CollectionTab {
                 let uuid = if let Some(arg) = parts.get(0) {
                     let value = Self::parse_shell_json_value(arg)?;
                     let text = Self::value_as_string(&value)?;
-                    Uuid::parse_str(&text).map_err(|_| {
-                        String::from(
-                            "UUID ожидает строку формата xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.",
-                        )
-                    })?
+                    Uuid::parse_str(&text)
+                        .map_err(|_| String::from(tr("UUID expects a string in the format xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.")))?
                 } else {
                     Uuid::new_v4()
                 };
@@ -4931,33 +4991,33 @@ impl CollectionTab {
             }
             "BinData" => {
                 if parts.len() != 2 {
-                    return Err(String::from(
-                        "BinData ожидает два аргумента: подтип и base64-строку.",
-                    ));
+                    return Err(String::from(tr(
+                        "BinData expects two arguments: a subtype and a base64 string.",
+                    )));
                 }
                 let subtype_value = Self::parse_shell_json_value(&parts[0])?;
                 let subtype = Self::value_as_u8(&subtype_value)?;
                 let data_value = Self::parse_shell_json_value(&parts[1])?;
                 let encoded = data_value.as_str().ok_or_else(|| {
-                    String::from("BinData ожидает base64-строку вторым аргументом.")
+                    String::from(tr("BinData expects a base64 string as the second argument."))
                 })?;
                 let bytes = BASE64_STANDARD
                     .decode(encoded)
-                    .map_err(|_| String::from("Невозможно декодировать base64-строку BinData."))?;
+                    .map_err(|_| String::from(tr("Unable to decode the BinData base64 string.")))?;
                 Ok(Bson::Binary(Binary { subtype: BinarySubtype::from(subtype), bytes }))
             }
             "HexData" => {
                 if parts.len() != 2 {
-                    return Err(String::from(
-                        "HexData ожидает два аргумента: подтип и hex-строку.",
-                    ));
+                    return Err(String::from(tr(
+                        "HexData expects two arguments: a subtype and a hex string.",
+                    )));
                 }
                 let subtype_value = Self::parse_shell_json_value(&parts[0])?;
                 let subtype = Self::value_as_u8(&subtype_value)?;
                 let hex_value = Self::parse_shell_json_value(&parts[1])?;
-                let hex_string = hex_value
-                    .as_str()
-                    .ok_or_else(|| String::from("HexData ожидает строку во втором аргументе."))?;
+                let hex_string = hex_value.as_str().ok_or_else(|| {
+                    String::from(tr("HexData expects a string as the second argument."))
+                })?;
                 let bytes = Self::decode_hex(hex_string)?;
                 Ok(Bson::Binary(Binary { subtype: BinarySubtype::from(subtype), bytes }))
             }
@@ -4976,16 +5036,17 @@ impl CollectionTab {
                 let value = Self::parse_shell_bson_value(&parts[0])?;
                 match value {
                     Bson::Document(doc) => Ok(Bson::Document(doc)),
-                    other => Err(format!(
-                        "Object ожидает JSON-объект, получено значение типа {other:?}."
+                    other => Err(tr_format(
+                        "Object expects a JSON object, but received a value of type {}.",
+                        &[&format!("{other:?}")],
                     )),
                 }
             }
             "Timestamp" => {
                 if parts.len() != 2 {
-                    return Err(String::from(
-                        "Timestamp ожидает два аргумента: время и инкремент.",
-                    ));
+                    return Err(String::from(tr(
+                        "Timestamp expects two arguments: time and increment.",
+                    )));
                 }
                 let time = Self::parse_timestamp_seconds(&parts[0])?;
                 let increment = Self::parse_u32_argument(&parts[1], "Timestamp", "i")?;
@@ -4993,18 +5054,18 @@ impl CollectionTab {
             }
             "RegExp" => {
                 if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from("RegExp ожидает шаблон и необязательные опции."));
+                    return Err(String::from(tr("RegExp expects a pattern and optional options.")));
                 }
                 let pattern_value = Self::parse_shell_json_value(&parts[0])?;
                 let pattern = pattern_value
                     .as_str()
-                    .ok_or_else(|| String::from("RegExp ожидает строковый шаблон."))?
+                    .ok_or_else(|| String::from(tr("RegExp expects a string pattern.")))?
                     .to_string();
                 let options = if let Some(arg) = parts.get(1) {
                     let options_value = Self::parse_shell_json_value(arg)?;
                     options_value
                         .as_str()
-                        .ok_or_else(|| String::from("Опции RegExp должны быть строкой."))?
+                        .ok_or_else(|| String::from(tr("RegExp options must be a string.")))?
                         .to_string()
                 } else {
                     String::new()
@@ -5020,7 +5081,9 @@ impl CollectionTab {
                     let scope = match scope_bson {
                         Bson::Document(doc) => doc,
                         _ => {
-                            return Err(String::from("Второй аргумент Code должен быть объектом."));
+                            return Err(String::from(tr(
+                                "The second argument to Code must be an object.",
+                            )));
                         }
                     };
                     Ok(Bson::JavaScriptCodeWithScope(JavaScriptCodeWithScope { code, scope }))
@@ -5030,9 +5093,9 @@ impl CollectionTab {
             }
             "DBRef" => {
                 if parts.len() < 2 || parts.len() > 3 {
-                    return Err(String::from(
-                        "DBRef ожидает два или три аргумента: коллекция, _id и опционально имя базы данных.",
-                    ));
+                    return Err(String::from(tr(
+                        "DBRef expects two or three arguments: collection, _id, and an optional database name.",
+                    )));
                 }
                 let collection_value = Self::parse_shell_json_value(&parts[0])?;
                 let collection = Self::value_as_string(&collection_value)?;
@@ -5040,9 +5103,9 @@ impl CollectionTab {
                 let id = match id_bson {
                     Bson::ObjectId(oid) => oid,
                     _ => {
-                        return Err(String::from(
-                            "DBRef ожидает ObjectId в качестве второго аргумента.",
-                        ));
+                        return Err(String::from(tr(
+                            "DBRef expects an ObjectId as the second argument.",
+                        )));
                     }
                 };
                 let db_name = if let Some(db_part) = parts.get(2) {
@@ -5062,7 +5125,7 @@ impl CollectionTab {
             "MinKey" => Ok(Bson::MinKey),
             "MaxKey" => Ok(Bson::MaxKey),
             "Undefined" => Ok(Bson::Undefined),
-            _ => Err(format!("Конструктор '{identifier}' не поддерживается.")),
+            _ => Err(tr_format("Constructor '{}' is not supported.", &[identifier])),
         }
     }
 
@@ -5086,12 +5149,12 @@ impl CollectionTab {
             match text.trim().to_lowercase().as_str() {
                 "true" | "1" => Ok(true),
                 "false" | "0" => Ok(false),
-                _ => Err(String::from("Строка должна быть true или false.")),
+                _ => Err(String::from(tr("String must be true or false."))),
             }
         } else {
-            Err(String::from(
-                "Значение должно быть логическим, числовым или строкой со значениями true/false.",
-            ))
+            Err(String::from(tr(
+                "Value must be boolean, numeric, or a string equal to true/false.",
+            )))
         }
     }
 
@@ -5107,12 +5170,12 @@ impl CollectionTab {
                 "infinity" => Ok(f64::INFINITY),
                 "-infinity" => Ok(f64::NEG_INFINITY),
                 "nan" => Ok(f64::NAN),
-                other => other.parse::<f64>().map_err(|_| {
-                    String::from("Строковое значение не удалось преобразовать в число.")
-                }),
+                other => other
+                    .parse::<f64>()
+                    .map_err(|_| String::from(tr("Failed to convert string value to number."))),
             }
         } else {
-            Err(String::from("Значение должно быть числом или строкой."))
+            Err(String::from(tr("Value must be a number or a string.")))
         }
     }
 
@@ -5133,18 +5196,21 @@ impl CollectionTab {
                             Err(())
                         }
                     })
-                    .map_err(|_| String::from("Не удалось преобразовать строку в дату.")),
+                    .map_err(|_| String::from(tr("Failed to convert string to date."))),
                 Bson::Int32(value) => Ok(DateTime::from_millis(value as i64)),
                 Bson::Int64(value) => Ok(DateTime::from_millis(value)),
                 Bson::Double(value) => Ok(DateTime::from_millis(value as i64)),
                 Bson::Decimal128(value) => {
                     let millis = value.to_string().parse::<f64>().map_err(|_| {
-                        String::from("Не удалось преобразовать Decimal128 в число.")
+                        String::from(tr("Failed to convert Decimal128 to a number."))
                     })?;
                     Ok(DateTime::from_millis(millis as i64))
                 }
                 Bson::Null => Ok(DateTime::now()),
-                other => Err(format!("Невозможно преобразовать значение типа {other:?} в дату.")),
+                other => Err(tr_format(
+                    "Cannot convert value of type {} to a date.",
+                    &[&format!("{other:?}")],
+                )),
             };
         }
 
@@ -5168,10 +5234,10 @@ impl CollectionTab {
         let second = components.get(5).copied().unwrap_or(0).clamp(0, 59) as u32;
         let millis = components.get(6).copied().unwrap_or(0);
 
-        let base = Utc
-            .with_ymd_and_hms(year, month, day, hour, minute, second)
-            .single()
-            .ok_or_else(|| String::from("Невозможно построить дату с указанными компонентами."))?;
+        let base =
+            Utc.with_ymd_and_hms(year, month, day, hour, minute, second).single().ok_or_else(
+                || String::from(tr("Unable to construct a date with the specified components.")),
+            )?;
 
         let chrono_dt = base + ChronoDuration::milliseconds(millis);
         Ok(DateTime::from_millis(chrono_dt.timestamp_millis()))
@@ -5194,22 +5260,23 @@ impl CollectionTab {
             Bson::DateTime(dt) => Ok((dt.timestamp_millis() / 1000) as u32),
             Bson::Int32(value) => Ok(value as u32),
             Bson::Int64(value) => u32::try_from(value)
-                .map_err(|_| String::from("Значение времени Timestamp должно помещаться в u32.")),
+                .map_err(|_| String::from(tr("Timestamp time value must fit into u32."))),
             Bson::Double(value) => Ok(value as u32),
             Bson::String(text) => {
                 if let Ok(dt) = DateTime::parse_rfc3339_str(&text) {
                     Ok((dt.timestamp_millis() / 1000) as u32)
                 } else {
                     let number = text.parse::<f64>().map_err(|_| {
-                        String::from(
-                            "Строковое значение в Timestamp должно быть числом или ISO-датой.",
-                        )
+                        String::from(tr(
+                            "String value in Timestamp must be a number or an ISO date.",
+                        ))
                     })?;
                     Ok(number as u32)
                 }
             }
-            other => Err(format!(
-                "Первый аргумент Timestamp должен быть числом или датой, получено {other:?}."
+            other => Err(tr_format(
+                "The first argument to Timestamp must be a number or a date; received {}.",
+                &[&format!("{other:?}")],
             )),
         }
     }
@@ -5219,21 +5286,22 @@ impl CollectionTab {
         match bson {
             Bson::Int32(v) => Ok(v as u32),
             Bson::Int64(v) => u32::try_from(v)
-                .map_err(|_| format!("Аргумент {context}::{field} должен помещаться в u32.")),
+                .map_err(|_| tr_format("{}::{} must fit into u32.", &[context, field])),
             Bson::Double(v) => Ok(v as u32),
-            Bson::String(text) => text.parse::<u32>().map_err(|_| {
-                format!("Аргумент {context}::{field} должен быть положительным целым числом.")
-            }),
-            other => {
-                Err(format!("Аргумент {context}::{field} должен быть числом, получено {other:?}."))
-            }
+            Bson::String(text) => text
+                .parse::<u32>()
+                .map_err(|_| tr_format("{}::{} must be a positive integer.", &[context, field])),
+            other => Err(tr_format(
+                "{}::{} must be a number, received {}.",
+                &[context, field, &format!("{other:?}")],
+            )),
         }
     }
 
     fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
         let cleaned: String = value.chars().filter(|ch| !ch.is_whitespace()).collect();
         if cleaned.len() % 2 != 0 {
-            return Err(String::from("Hex-строка должна содержать чётное количество символов."));
+            return Err(String::from(tr("Hex string must contain an even number of characters.")));
         }
         let mut bytes = Vec::with_capacity(cleaned.len() / 2);
         let chars: Vec<char> = cleaned.chars().collect();
@@ -5251,32 +5319,32 @@ impl CollectionTab {
         } else if value.is_number() {
             Ok(value.to_string())
         } else {
-            Err(String::from("Аргумент должен быть строкой или числом."))
+            Err(String::from(tr("Argument must be a string or a number.")))
         }
     }
 
     fn value_as_u8(value: &Value) -> Result<u8, String> {
         if let Some(number) = value.as_u64() {
             u8::try_from(number)
-                .map_err(|_| String::from("Подтип BinData должен быть числом от 0 до 255."))
+                .map_err(|_| String::from(tr("BinData subtype must be a number from 0 to 255.")))
         } else if let Some(number) = value.as_i64() {
             if (0..=255).contains(&number) {
                 Ok(number as u8)
             } else {
-                Err(String::from("Подтип BinData должен быть числом от 0 до 255."))
+                Err(String::from(tr("BinData subtype must be a number from 0 to 255.")))
             }
         } else if let Some(text) = value.as_str() {
             u8::from_str_radix(text, 16)
-                .map_err(|_| String::from("Подтип BinData должен быть числом или hex-строкой."))
+                .map_err(|_| String::from(tr("BinData subtype must be a number or a hex string.")))
         } else {
-            Err(String::from("Подтип BinData должен быть числом."))
+            Err(String::from(tr("BinData subtype must be a number.")))
         }
     }
 
     fn parse_json_object(source: &str) -> Result<Document, String> {
         let value = Self::parse_shell_json_value(source)?;
         let object =
-            value.as_object().ok_or_else(|| String::from("Аргумент должен быть JSON-объектом"))?;
+            value.as_object().ok_or_else(|| String::from(tr("Argument must be a JSON object.")))?;
         bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
     }
 
@@ -5285,16 +5353,16 @@ impl CollectionTab {
         match value {
             Bson::String(name) => Ok(Bson::String(name)),
             Bson::Document(doc) => Ok(Bson::Document(doc)),
-            _ => Err(String::from(
-                "Аргумент индекса должен быть строкой с именем индекса или объектом с ключами.",
-            )),
+            _ => Err(String::from(tr(
+                "Index argument must be a string with the index name or an object with keys.",
+            ))),
         }
     }
 
     fn sanitize_numeric<S: AsRef<str>>(value: S) -> String {
         let filtered: String = value.as_ref().chars().filter(|ch| ch.is_ascii_digit()).collect();
         let trimmed = filtered.trim_start_matches('0');
-        if trimmed.is_empty() { String::from("0") } else { trimmed.to_string() }
+        if trimmed.is_empty() { String::from(tr("0")) } else { trimmed.to_string() }
     }
 
     fn parse_skip_u64(&self) -> u64 {
@@ -5400,7 +5468,7 @@ impl App {
             Message::MenuItemSelected(menu, entry) => {
                 match entry {
                     MenuEntry::Action(label) => {
-                        if menu == TopMenu::File && label == "Соединения" {
+                        if menu == TopMenu::File && label == "Connections" {
                             self.open_connections_window();
                         } else {
                             println!("Menu '{menu:?}' entry '{label}' clicked");
@@ -5472,9 +5540,9 @@ impl App {
                                     if let Some(handle) = client.handle.clone() {
                                         request = Some((handle, database.name.clone()));
                                     } else {
-                                        database.state = DatabaseState::Error(
-                                            "Нет активного соединения".to_owned(),
-                                        );
+                                        database.state = DatabaseState::Error(String::from(tr(
+                                            "No active connection",
+                                        )));
                                     }
                                 }
                                 DatabaseState::Loading | DatabaseState::Loaded => {}
@@ -5683,30 +5751,30 @@ impl App {
                     CollectionModalKind::DeleteAllDocuments
                     | CollectionModalKind::DeleteCollection => {
                         if trimmed_input != modal.collection {
-                            modal.error = Some(String::from(
-                                "Для подтверждения введите точное имя коллекции.",
-                            ));
+                            modal.error = Some(String::from(tr(
+                                "Enter the exact collection name to confirm.",
+                            )));
                             return Task::none();
                         }
                     }
                     CollectionModalKind::RenameCollection => {
                         if trimmed_input.is_empty() {
                             modal.error =
-                                Some(String::from("Новое имя коллекции не может быть пустым."));
+                                Some(String::from(tr("New collection name cannot be empty.")));
                             return Task::none();
                         }
 
                         if trimmed_input == modal.collection {
-                            modal.error = Some(String::from(
-                                "Новое имя коллекции должно отличаться от текущего.",
-                            ));
+                            modal.error = Some(String::from(tr(
+                                "New collection name must differ from the current one.",
+                            )));
                             return Task::none();
                         }
                     }
                     CollectionModalKind::DropIndex { ref index_name } => {
                         if trimmed_input != *index_name {
                             modal.error =
-                                Some(String::from("Для подтверждения введите точное имя индекса."));
+                                Some(String::from(tr("Enter the exact index name to confirm.")));
                             return Task::none();
                         }
                     }
@@ -5726,7 +5794,7 @@ impl App {
                 {
                     Some(handle) => handle,
                     None => {
-                        modal.error = Some(String::from("Нет активного соединения."));
+                        modal.error = Some(String::from(tr("No active connection.")));
                         return Task::none();
                     }
                 };
@@ -5813,9 +5881,9 @@ impl App {
                     CollectionModalKind::DropIndex { index_name } => {
                         let Some(tab_id_value) = origin_tab else {
                             modal.processing = false;
-                            modal.error = Some(String::from(
-                                "Не удалось определить вкладку для обновления индексов.",
-                            ));
+                            modal.error = Some(String::from(tr(
+                                "Failed to determine the tab to refresh indexes.",
+                            )));
                             return Task::none();
                         };
 
@@ -5956,8 +6024,10 @@ impl App {
                             Err(error) => {
                                 modal.processing = false;
                                 modal.error = Some(format!(
-                                    "Ошибка удаления индекса \"{}\": {}",
-                                    index_name, error
+                                    "{} \"{}\": {}",
+                                    tr("Failed to delete index"),
+                                    index_name,
+                                    error
                                 ));
                             }
                         }
@@ -6035,9 +6105,8 @@ impl App {
                 match &modal.mode {
                     DatabaseModalMode::Drop { db_name } => {
                         if modal.input.trim() != db_name {
-                            modal.error = Some(String::from(
-                                "Для подтверждения введите точное имя базы данных.",
-                            ));
+                            modal.error =
+                                Some(String::from(tr("Enter the exact database name to confirm.")));
                             return Task::none();
                         }
 
@@ -6049,7 +6118,7 @@ impl App {
                         {
                             Some(handle) => handle,
                             None => {
-                                modal.error = Some(String::from("Нет активного соединения."));
+                                modal.error = Some(String::from(tr("No active connection.")));
                                 return Task::none();
                             }
                         };
@@ -6078,14 +6147,14 @@ impl App {
                         let collection_name_input = modal.collection_input.trim();
 
                         if db_name_input.is_empty() {
-                            modal.error = Some(String::from("Укажите имя базы данных."));
+                            modal.error = Some(String::from(tr("Provide a database name.")));
                             return Task::none();
                         }
 
                         if collection_name_input.is_empty() {
-                            modal.error = Some(String::from(
-                                "Укажите имя первой коллекции для создаваемой базы.",
-                            ));
+                            modal.error = Some(String::from(tr(
+                                "Enter the name of the first collection for the new database.",
+                            )));
                             return Task::none();
                         }
 
@@ -6102,12 +6171,12 @@ impl App {
 
                         if exists {
                             modal.error =
-                                Some(String::from("База данных с таким именем уже существует."));
+                                Some(String::from(tr("A database with this name already exists.")));
                             return Task::none();
                         }
 
                         let Some(handle) = handle else {
-                            modal.error = Some(String::from("Нет активного соединения."));
+                            modal.error = Some(String::from(tr("No active connection.")));
                             return Task::none();
                         };
 
@@ -6206,7 +6275,7 @@ impl App {
                             Some(obj) => obj,
                             None => {
                                 modal.error =
-                                    Some(String::from("Документ должен быть JSON-объектом."));
+                                    Some(String::from(tr("Document must be a JSON object.")));
                                 return Task::none();
                             }
                         };
@@ -6231,7 +6300,7 @@ impl App {
                     .and_then(|client| client.handle.clone());
 
                 let Some(handle) = client_handle else {
-                    modal.error = Some(String::from("Нет активного соединения."));
+                    modal.error = Some(String::from(tr("No active connection.")));
                     return Task::none();
                 };
 
@@ -6267,9 +6336,9 @@ impl App {
                                     .run()
                                     .map_err(|error| error.to_string())?;
                                 result.ok_or_else(|| {
-                                    String::from(
-                                        "Документ не найден. Возможно, он был удалён или изменение не применено.",
-                                    )
+                                    String::from(tr(
+                                        "Document not found. It may have been deleted or the change was not applied.",
+                                    ))
                                 })
                             },
                             move |result| Message::DocumentModalCompleted { tab_id, result },
@@ -6283,17 +6352,16 @@ impl App {
                             .map(|value| value.to_string())
                         else {
                             modal.processing = false;
-                            modal.error = Some(String::from(
-                                "Документ индекса должен содержать строковое поле name.",
-                            ));
+                            modal.error = Some(String::from(tr(
+                                "Index document must contain a string field named name.",
+                            )));
                             return Task::none();
                         };
 
                         if name_value != name {
                             modal.processing = false;
-                            modal.error = Some(String::from(
-                                "Имя индекса не может быть изменено через collMod.",
-                            ));
+                            modal.error =
+                                Some(String::from(tr("Index name cannot be changed via collMod.")));
                             return Task::none();
                         }
 
@@ -6367,7 +6435,7 @@ impl App {
                     .find(|client| client.id == modal.client_id)
                     .and_then(|client| client.handle.clone())
                 else {
-                    modal.error = Some(String::from("Нет активного соединения."));
+                    modal.error = Some(String::from(tr("No active connection.")));
                     return Task::none();
                 };
 
@@ -6397,9 +6465,9 @@ impl App {
                             .run()
                             .map_err(|error| error.to_string())?;
                         result.ok_or_else(|| {
-                            String::from(
-                                "Документ не найден. Возможно, он был удалён или изменение не применено.",
-                            )
+                            String::from(tr(
+                                "Document not found. It may have been deleted or the change was not applied.",
+                            ))
                         })
                     },
                     move |result| Message::ValueEditModalCompleted { tab_id, result },
@@ -6427,7 +6495,10 @@ impl App {
                             client.databases = names.into_iter().map(DatabaseNode::new).collect();
                         }
                         Err(error) => {
-                            eprintln!("Не удалось обновить список баз данных: {error}");
+                            eprintln!(
+                                "{}",
+                                format!("{} {}", tr("Failed to refresh database list:"), error)
+                            );
                             for database in &mut client.databases {
                                 database.state = DatabaseState::Error(error.clone());
                             }
@@ -6720,9 +6791,10 @@ impl App {
                         if index < self.connections.len() {
                             self.connections.remove(index);
                             match save_connections_to_disk(&self.connections) {
-                                Ok(()) => state.feedback = Some(String::from("Удалено")),
+                                Ok(()) => state.feedback = Some(String::from(tr("Deleted"))),
                                 Err(error) => {
-                                    state.feedback = Some(format!("Ошибка сохранения: {error}"));
+                                    state.feedback =
+                                        Some(format!("{}{}", tr("Save error: "), error));
                                 }
                             }
                             if self.connections.is_empty() {
@@ -6820,7 +6892,7 @@ impl App {
                 if let Some(form) = self.connection_form.as_mut() {
                     form.testing = false;
                     form.test_feedback = Some(match result {
-                        Ok(()) => TestFeedback::Success(String::from("Соединение установлено")),
+                        Ok(()) => TestFeedback::Success(String::from(tr("Connection established"))),
                         Err(error) => TestFeedback::Failure(error),
                     });
                 }
@@ -6840,7 +6912,7 @@ impl App {
                                         *slot = entry;
                                         Ok(index)
                                     } else {
-                                        Err(String::from("Выбранное соединение не найдено"))
+                                        Err(String::from(tr("Selected connection not found")))
                                     }
                                 }
                             };
@@ -6851,14 +6923,14 @@ impl App {
                                     {
                                         if let Some(window) = self.connections_window.as_mut() {
                                             window.feedback =
-                                                Some(format!("Ошибка сохранения: {error}"));
+                                                Some(format!("{}{}", tr("Save error: "), error));
                                         }
                                     }
 
                                     self.open_connections_window();
                                     if let Some(window) = self.connections_window.as_mut() {
                                         window.selected = Some(selected_index);
-                                        window.feedback = Some(String::from("Сохранено"));
+                                        window.feedback = Some(String::from(tr("Saved")));
                                     }
                                 }
                                 Err(error) => {
@@ -7001,7 +7073,7 @@ impl App {
 
         if self.connections.is_empty() {
             entries = entries.push(
-                Container::new(Text::new("Сохранённых соединений нет").size(16))
+                Container::new(Text::new(tr("No saved connections")).size(16))
                     .width(Length::Fill)
                     .padding([12, 8]),
             );
@@ -7030,11 +7102,11 @@ impl App {
                 let filters_text = if entry.include_filter.trim().is_empty()
                     && entry.exclude_filter.trim().is_empty()
                 {
-                    Text::new("Фильтры не заданы")
+                    Text::new(tr("No filters configured"))
                         .size(12)
                         .color(Color::from_rgb8(0x8a, 0x95, 0xa5))
                 } else {
-                    Text::new("Настроены фильтры коллекций")
+                    Text::new(tr("Collection filters configured"))
                         .size(12)
                         .color(Color::from_rgb8(0x36, 0x71, 0xc9))
                 };
@@ -7094,22 +7166,24 @@ impl App {
         let list = Scrollable::new(entries).width(Length::Fill).height(Length::Fixed(280.0));
 
         let mut left_controls = Row::new().spacing(8).push(
-            Button::new(Text::new("Создать")).padding([6, 16]).on_press(Message::ConnectionsCreate),
+            Button::new(Text::new(tr("Create")))
+                .padding([6, 16])
+                .on_press(Message::ConnectionsCreate),
         );
 
-        let mut edit_button = Button::new(Text::new("Редактировать")).padding([6, 16]);
+        let mut edit_button = Button::new(Text::new(tr("Edit"))).padding([6, 16]);
         if state.selected.is_some() {
             edit_button = edit_button.on_press(Message::ConnectionsEdit);
         }
         left_controls = left_controls.push(edit_button);
 
-        let mut delete_button = Button::new(Text::new("Удалить")).padding([6, 16]);
+        let mut delete_button = Button::new(Text::new(tr("Delete"))).padding([6, 16]);
         if state.selected.is_some() {
             delete_button = delete_button.on_press(Message::ConnectionsDelete);
         }
         left_controls = left_controls.push(delete_button);
 
-        let mut connect_button = Button::new(Text::new("Соединить")).padding([6, 16]);
+        let mut connect_button = Button::new(Text::new(tr("Connect"))).padding([6, 16]);
         if state.selected.is_some() {
             connect_button = connect_button.on_press(Message::ConnectionsConnect);
         }
@@ -7117,17 +7191,17 @@ impl App {
         let right_controls = Row::new()
             .spacing(8)
             .push(
-                Button::new(Text::new("Отменить"))
+                Button::new(Text::new(tr("Cancel")))
                     .padding([6, 16])
                     .on_press(Message::ConnectionsCancel),
             )
             .push(connect_button);
 
         let mut content =
-            Column::new().spacing(16).push(Text::new("Соединения").size(24)).push(list);
+            Column::new().spacing(16).push(Text::new(tr("Connections")).size(24)).push(list);
 
         if let Some(feedback) = &state.feedback {
-            let color = if feedback.starts_with("Ошибка") {
+            let color = if feedback.starts_with(tr("Save error: ")) {
                 Color::from_rgb8(0xd9, 0x53, 0x4f)
             } else {
                 Color::from_rgb8(0x1e, 0x88, 0x3a)
@@ -7140,18 +7214,18 @@ impl App {
                 .selected
                 .and_then(|index| self.connections.get(index))
                 .map(|entry| entry.name.clone())
-                .unwrap_or_else(|| String::from("соединение"));
+                .unwrap_or_else(|| String::from(tr("connection")));
             let confirm_row = Row::new()
                 .spacing(12)
                 .align_y(Vertical::Center)
-                .push(Text::new(format!("Удалить \"{}\"?", name)).size(14))
+                .push(Text::new(format!("{} \"{}\"?", tr("Delete"), name)).size(14))
                 .push(
-                    Button::new(Text::new("Да"))
+                    Button::new(Text::new(tr("Yes")))
                         .padding([4, 12])
                         .on_press(Message::ConnectionsDeleteConfirmed),
                 )
                 .push(
-                    Button::new(Text::new("Нет"))
+                    Button::new(Text::new(tr("No")))
                         .padding([4, 12])
                         .on_press(Message::ConnectionsDeleteCancelled),
                 );
@@ -7181,50 +7255,53 @@ impl App {
     fn collection_modal_view(&self, state: &CollectionModalState) -> Element<Message> {
         let (title, warning, prompt, placeholder, confirm_label) = match state.kind {
             CollectionModalKind::DeleteAllDocuments => (
-                "Удаление всех документов",
-                format!(
-                    "Будут удалены все документы из коллекции \"{}\" базы \"{}\". Это действие нельзя отменить.",
-                    state.collection, state.db_name
+                tr("Delete All Documents"),
+                tr_format(
+                    "All documents from collection \"{}\" in database \"{}\" will be deleted. This action cannot be undone.",
+                    &[state.collection.as_str(), state.db_name.as_str()],
                 ),
-                Some(format!(
-                    "Подтвердите удаление всех документов введя название коллекции \"{}\".",
-                    state.collection
+                Some(tr_format(
+                    "Confirm deletion of all documents by entering the collection name \"{}\".",
+                    &[state.collection.as_str()],
                 )),
                 state.collection.as_str(),
-                "Подтвердить удаление",
+                tr("Confirm Deletion"),
             ),
             CollectionModalKind::DeleteCollection => (
-                "Удаление коллекции",
-                format!(
-                    "Коллекция \"{}\" в базе \"{}\" будет удалена вместе со всеми документами. Это действие нельзя отменить.",
-                    state.collection, state.db_name
+                tr("Delete Collection"),
+                tr_format(
+                    "Collection \"{}\" in database \"{}\" will be deleted along with all documents. This action cannot be undone.",
+                    &[state.collection.as_str(), state.db_name.as_str()],
                 ),
-                Some(format!(
-                    "Подтвердите удаление коллекции введя её название \"{}\".",
-                    state.collection
+                Some(tr_format(
+                    "Confirm deletion of the collection by entering its name \"{}\".",
+                    &[state.collection.as_str()],
                 )),
                 state.collection.as_str(),
-                "Подтвердить удаление",
+                tr("Confirm Deletion"),
             ),
             CollectionModalKind::RenameCollection => (
-                "Переименовать коллекцию",
-                format!(
-                    "Введите новое имя для коллекции \"{}\" в базе \"{}\".",
-                    state.collection, state.db_name
+                tr("Rename Collection"),
+                tr_format(
+                    "Enter a new name for collection \"{}\" in database \"{}\".",
+                    &[state.collection.as_str(), state.db_name.as_str()],
                 ),
                 None,
-                "Новое имя коллекции",
-                "Переименовать",
+                tr("New Collection Name"),
+                tr("Rename"),
             ),
             CollectionModalKind::DropIndex { ref index_name } => (
-                "Удаление индекса",
-                format!(
-                    "Индекс \"{}\" коллекции \"{}\" базы \"{}\" будет удалён. Это действие нельзя отменить.",
-                    index_name, state.collection, state.db_name
+                tr("Delete Index"),
+                tr_format(
+                    "Index \"{}\" of collection \"{}\" in database \"{}\" will be deleted. This action cannot be undone.",
+                    &[index_name.as_str(), state.collection.as_str(), state.db_name.as_str()],
                 ),
-                Some(format!("Подтвердите удаление индекса введя его имя \"{}\".", index_name)),
+                Some(tr_format(
+                    "Confirm index deletion by entering its name \"{}\".",
+                    &[index_name.as_str()],
+                )),
                 index_name.as_str(),
-                "Удалить индекс",
+                tr("Delete Index"),
             ),
         };
 
@@ -7265,13 +7342,11 @@ impl App {
 
         if state.processing {
             column = column.push(
-                Text::new("Выполнение операции...")
-                    .size(13)
-                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+                Text::new(tr("Processing...")).size(13).color(Color::from_rgb8(0x36, 0x71, 0xc9)),
             );
         }
 
-        let cancel_button = Button::new(Text::new("Отмена").size(14))
+        let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
             .padding([6, 16])
             .on_press(Message::CollectionModalCancel);
 
@@ -7319,13 +7394,13 @@ impl App {
     fn database_modal_view(&self, state: &DatabaseModalState) -> Element<Message> {
         let base = match &state.mode {
             DatabaseModalMode::Drop { db_name } => {
-                let warning = format!(
-                    "База данных \"{}\" будет полностью удалена вместе со всеми коллекциями и документами. Это действие нельзя отменить.",
-                    db_name
+                let warning = tr_format(
+                    "Database \"{}\" will be deleted along with all collections and documents. This action cannot be undone.",
+                    &[db_name.as_str()],
                 );
-                let prompt = format!(
-                    "Подтвердите удаление всех данных, введя название базы \"{}\".",
-                    db_name
+                let prompt = tr_format(
+                    "Confirm deletion of all data by entering the database name \"{}\".",
+                    &[db_name.as_str()],
                 );
 
                 let confirm_ready = !state.processing && state.input.trim() == db_name;
@@ -7333,14 +7408,14 @@ impl App {
                 let mut column = Column::new()
                     .spacing(16)
                     .push(
-                        Text::new("Удаление базы данных")
+                        Text::new(tr("Delete Database"))
                             .size(22)
                             .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
                     )
                     .push(Text::new(warning).size(14).color(Color::from_rgb8(0x31, 0x38, 0x4a)))
                     .push(Text::new(prompt).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
 
-                let input_field = text_input("Название базы данных", &state.input)
+                let input_field = text_input(tr("Database name"), &state.input)
                     .padding([6, 10])
                     .width(Length::Fill)
                     .on_input(Message::DatabaseModalInputChanged);
@@ -7355,18 +7430,18 @@ impl App {
 
                 if state.processing {
                     column = column.push(
-                        Text::new("Выполнение операции...")
+                        Text::new(tr("Processing..."))
                             .size(13)
                             .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
                     );
                 }
 
-                let cancel_button = Button::new(Text::new("Отмена").size(14))
+                let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
                     .padding([6, 16])
                     .on_press(Message::DatabaseModalCancel);
 
                 let mut confirm_button =
-                    Button::new(Text::new("Подтвердить удаление").size(14)).padding([6, 16]);
+                    Button::new(Text::new(tr("Confirm Deletion")).size(14)).padding([6, 16]);
 
                 if confirm_ready {
                     confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
@@ -7394,27 +7469,28 @@ impl App {
                 let mut column = Column::new()
                     .spacing(16)
                     .push(
-                        Text::new("Создать базу данных")
+                        Text::new(tr("Create Database"))
                             .size(22)
                             .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
                     )
                     .push(
-                        Text::new(
-                            "MongoDB создаёт базу данных только при создании первой коллекции. Укажите имя базы и первой коллекции, которая будет создана сразу.",
-                        )
+                        Text::new(tr(
+                            "MongoDB creates a database only when the first collection is created. Provide the database name and the first collection to create immediately."
+                        ))
                         .size(13)
                         .color(Color::from_rgb8(0x55, 0x5f, 0x73)),
                     );
 
-                let input_field = text_input("Имя базы данных", &state.input)
+                let input_field = text_input(tr("Database name"), &state.input)
                     .padding([6, 10])
                     .width(Length::Fill)
                     .on_input(Message::DatabaseModalInputChanged);
 
-                let collection_field = text_input("Имя первой коллекции", &state.collection_input)
-                    .padding([6, 10])
-                    .width(Length::Fill)
-                    .on_input(Message::DatabaseModalCollectionInputChanged);
+                let collection_field =
+                    text_input(tr("First collection name"), &state.collection_input)
+                        .padding([6, 10])
+                        .width(Length::Fill)
+                        .on_input(Message::DatabaseModalCollectionInputChanged);
 
                 column = column.push(input_field).push(collection_field);
 
@@ -7426,18 +7502,18 @@ impl App {
 
                 if state.processing {
                     column = column.push(
-                        Text::new("Создание базы данных...")
+                        Text::new(tr("Creating database..."))
                             .size(13)
                             .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
                     );
                 }
 
-                let cancel_button = Button::new(Text::new("Отмена").size(14))
+                let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
                     .padding([6, 16])
                     .on_press(Message::DatabaseModalCancel);
 
                 let mut confirm_button =
-                    Button::new(Text::new("Создать").size(14)).padding([6, 16]);
+                    Button::new(Text::new(tr("Create")).size(14)).padding([6, 16]);
 
                 if confirm_ready {
                     confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
@@ -7487,14 +7563,18 @@ impl App {
     fn document_modal_view<'a>(&self, state: &'a DocumentModalState) -> Element<'a, Message> {
         let (title_text, hint_text, saving_text) = match &state.kind {
             DocumentModalKind::CollectionDocument { .. } => (
-                "Изменение документа",
-                "Отредактируйте JSON-представление документа. При сохранении документ будет полностью заменён.",
-                "Сохранение документа...",
+                tr("Edit Document"),
+                tr(
+                    "Edit the JSON representation of the document. The document will be fully replaced on save.",
+                ),
+                tr("Saving document..."),
             ),
             DocumentModalKind::Index { .. } => (
-                "Изменение TTL индекса",
-                "Можно менять только значение поля \"expireAfterSeconds\". Остальные параметры будут проигнорированы.",
-                "Сохранение индекса...",
+                tr("Edit TTL Index"),
+                tr(
+                    "Only the \"expireAfterSeconds\" field value can be changed. Other parameters will be ignored.",
+                ),
+                tr("Saving index..."),
             ),
         };
 
@@ -7531,7 +7611,7 @@ impl App {
                 .push(Text::new(saving_text).size(13).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
         }
 
-        let cancel_button = Button::new(Text::new("Отмена").size(14))
+        let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
             .padding([6, 16])
             .on_press(Message::DocumentModalCancel)
             .style(|_, _| button::Style {
@@ -7540,7 +7620,7 @@ impl App {
                 ..Default::default()
             });
 
-        let mut save_button = Button::new(Text::new("Сохранить").size(14)).padding([6, 16]);
+        let mut save_button = Button::new(Text::new(tr("Save")).size(14)).padding([6, 16]);
         if state.processing {
             save_button = save_button.style(|_, _| button::Style {
                 background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
@@ -7585,7 +7665,7 @@ impl App {
         let description = Column::new()
             .spacing(4)
             .push(
-                Text::new("Будет изменено значение поля")
+                Text::new(tr("Field value will be modified"))
                     .size(14)
                     .wrapping(Wrapping::Word)
                     .width(Length::Fill),
@@ -7636,7 +7716,7 @@ impl App {
         let type_label = Column::new()
             .spacing(4)
             .push(
-                Text::new("Тип значения")
+                Text::new(tr("Value Type"))
                     .size(14)
                     .color(Color::from_rgb8(0x55, 0x5f, 0x73))
                     .wrapping(Wrapping::Word)
@@ -7656,13 +7736,11 @@ impl App {
 
         if state.processing {
             column = column.push(
-                Text::new("Сохранение значения...")
-                    .size(13)
-                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+                Text::new(tr("Saving value...")).size(13).color(Color::from_rgb8(0x36, 0x71, 0xc9)),
             );
         }
 
-        let cancel_button = Button::new(Text::new("Отмена").size(14))
+        let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
             .padding([6, 16])
             .on_press(Message::ValueEditModalCancel)
             .style(|_, _| button::Style {
@@ -7671,7 +7749,7 @@ impl App {
                 ..Default::default()
             });
 
-        let mut save_button = Button::new(Text::new("Сохранить").size(14)).padding([6, 16]);
+        let mut save_button = Button::new(Text::new(tr("Save")).size(14)).padding([6, 16]);
         if state.processing {
             save_button = save_button.style(|_, _| button::Style {
                 background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
@@ -7717,8 +7795,8 @@ impl App {
 
     fn connection_form_view<'a>(&'a self, state: &'a ConnectionFormState) -> Element<'a, Message> {
         let title = match state.mode {
-            ConnectionFormMode::Create => "Новое соединение",
-            ConnectionFormMode::Edit(_) => "Редактирование соединения",
+            ConnectionFormMode::Create => tr("New connection"),
+            ConnectionFormMode::Edit(_) => tr("Edit connection"),
         };
 
         let bg_active = Color::from_rgb8(0xd6, 0xe8, 0xff);
@@ -7726,14 +7804,13 @@ impl App {
         let border_color = Color::from_rgb8(0xc2, 0xc8, 0xd3);
 
         let general_active = state.active_tab == ConnectionFormTab::General;
-        let mut general_button =
-            Button::new(Text::new("Общее").size(14)).padding([6, 16]).style(move |_, _| {
-                button::Style {
-                    background: Some((if general_active { bg_active } else { bg_inactive }).into()),
-                    text_color: Color::BLACK,
-                    border: border::rounded(6).width(1).color(border_color),
-                    shadow: Shadow::default(),
-                }
+        let mut general_button = Button::new(Text::new(tr("General")).size(14))
+            .padding([6, 16])
+            .style(move |_, _| button::Style {
+                background: Some((if general_active { bg_active } else { bg_inactive }).into()),
+                text_color: Color::BLACK,
+                border: border::rounded(6).width(1).color(border_color),
+                shadow: Shadow::default(),
             });
         if !general_active {
             general_button = general_button
@@ -7741,7 +7818,7 @@ impl App {
         }
 
         let filter_active = state.active_tab == ConnectionFormTab::Filter;
-        let mut filter_button = Button::new(Text::new("Фильтр баз данных").size(14))
+        let mut filter_button = Button::new(Text::new(tr("Database filter")).size(14))
             .padding([6, 16])
             .style(move |_, _| button::Style {
                 background: Some((if filter_active { bg_active } else { bg_inactive }).into()),
@@ -7758,17 +7835,17 @@ impl App {
 
         let tab_content: Element<_> = match state.active_tab {
             ConnectionFormTab::General => {
-                let name_input = text_input("Название", &state.name)
+                let name_input = text_input(tr("Name"), &state.name)
                     .on_input(Message::ConnectionFormNameChanged)
                     .padding([6, 12])
                     .width(Length::Fill);
 
-                let host_input = text_input("Адрес/Хост/IP", &state.host)
+                let host_input = text_input(tr("Address/Host/IP"), &state.host)
                     .on_input(Message::ConnectionFormHostChanged)
                     .padding([6, 12])
                     .width(Length::Fill);
 
-                let port_input = text_input("Порт", &state.port)
+                let port_input = text_input(tr("Port"), &state.port)
                     .on_input(Message::ConnectionFormPortChanged)
                     .padding([6, 12])
                     .align_x(Horizontal::Center)
@@ -7776,11 +7853,11 @@ impl App {
 
                 Column::new()
                     .spacing(12)
-                    .push(Text::new("Название").size(14))
+                    .push(Text::new(tr("Name")).size(14))
                     .push(name_input)
-                    .push(Text::new("Адрес/Хост/IP").size(14))
+                    .push(Text::new(tr("Address/Host/IP")).size(14))
                     .push(host_input)
-                    .push(Text::new("Порт").size(14))
+                    .push(Text::new(tr("Port")).size(14))
                     .push(port_input)
                     .into()
             }
@@ -7794,15 +7871,15 @@ impl App {
                     .height(Length::Fixed(130.0));
 
                 let add_system_filters =
-                    Button::new(Text::new("Добавить фильтр системные базы данных").size(14))
+                    Button::new(Text::new(tr("Add filter for system databases")).size(14))
                         .padding([6, 16])
                         .on_press(Message::ConnectionFormAddSystemFilters);
 
                 Column::new()
                     .spacing(12)
-                    .push(Text::new("Включить").size(14))
+                    .push(Text::new(tr("Include")).size(14))
                     .push(include_editor)
-                    .push(Text::new("Исключить").size(14))
+                    .push(Text::new(tr("Exclude")).size(14))
                     .push(exclude_editor)
                     .push(add_system_filters)
                     .into()
@@ -7831,11 +7908,11 @@ impl App {
 
         if state.testing {
             content = content.push(
-                Text::new("Тестирование...").size(14).color(Color::from_rgb8(0x1e, 0x88, 0x3a)),
+                Text::new(tr("Testing...")).size(14).color(Color::from_rgb8(0x1e, 0x88, 0x3a)),
             );
         }
 
-        let mut test_button = Button::new(Text::new("Тестировать")).padding([6, 16]);
+        let mut test_button = Button::new(Text::new(tr("Test"))).padding([6, 16]);
         if !state.testing {
             test_button = test_button.on_press(Message::ConnectionFormTest);
         }
@@ -7845,12 +7922,12 @@ impl App {
         let right_controls = Row::new()
             .spacing(8)
             .push(
-                Button::new(Text::new("Отменить"))
+                Button::new(Text::new(tr("Cancel")))
                     .padding([6, 16])
                     .on_press(Message::ConnectionFormCancel),
             )
             .push(
-                Button::new(Text::new("Сохранить"))
+                Button::new(Text::new(tr("Save")))
                     .padding([6, 16])
                     .on_press(Message::ConnectionFormSave),
             );
@@ -7883,7 +7960,7 @@ impl App {
         let mut list = Column::new().spacing(4);
 
         if self.clients.is_empty() {
-            list = list.push(text("Соединений нет").size(16));
+            list = list.push(text(tr("No connections")).size(16));
         } else {
             for client in &self.clients {
                 list = list.push(self.render_client(client));
@@ -7903,9 +7980,9 @@ impl App {
     fn render_client<'a>(&'a self, client: &'a OMDBClient) -> Element<'a, Message> {
         let indicator = if client.expanded { "v" } else { ">" };
         let status_label = match &client.status {
-            ConnectionStatus::Connecting => "Подключение...".to_owned(),
-            ConnectionStatus::Ready => "Готово".to_owned(),
-            ConnectionStatus::Failed(err) => format!("Ошибка: {err}"),
+            ConnectionStatus::Connecting => tr("Connecting...").to_owned(),
+            ConnectionStatus::Ready => tr("Ready").to_owned(),
+            ConnectionStatus::Failed(err) => format!("{} {}", tr("Error:"), err),
         };
 
         let header_row = Row::new()
@@ -7951,17 +8028,18 @@ impl App {
                 };
 
             menu = menu.push(make_button(
-                "Создать базу данных",
+                tr("Create Database"),
                 ConnectionContextAction::CreateDatabase,
                 is_ready,
             ));
-            menu = menu.push(make_button("Обновить", ConnectionContextAction::Refresh, is_ready));
+            menu =
+                menu.push(make_button(tr("Refresh"), ConnectionContextAction::Refresh, is_ready));
             menu = menu.push(make_button(
-                "Статус сервера",
+                tr("Server Status"),
                 ConnectionContextAction::ServerStatus,
                 is_ready,
             ));
-            menu = menu.push(make_button("Закрыть", ConnectionContextAction::Close, true));
+            menu = menu.push(make_button(tr("Close"), ConnectionContextAction::Close, true));
 
             menu.into()
         });
@@ -7983,7 +8061,7 @@ impl App {
                     Row::new()
                         .spacing(8)
                         .push(Space::with_width(Length::Fixed(16.0)))
-                        .push(text("Нет баз данных").size(12)),
+                        .push(text(tr("No databases")).size(12)),
                 );
             } else {
                 for database in &client.databases {
@@ -8037,7 +8115,7 @@ impl App {
             };
 
             menu = menu.push(make_button(
-                "Обновить",
+                tr("Refresh"),
                 Message::DatabaseContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8046,7 +8124,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Статистика",
+                tr("Statistics"),
                 Message::DatabaseContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8055,7 +8133,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Удалить БД",
+                tr("Drop Database"),
                 Message::DatabaseContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8076,7 +8154,7 @@ impl App {
                         Row::new()
                             .spacing(8)
                             .push(Space::with_width(Length::Fixed(32.0)))
-                            .push(text("Загрузка коллекций...").size(12)),
+                            .push(text(tr("Loading collections...")).size(12)),
                     );
                 }
                 DatabaseState::Error(error) => {
@@ -8084,7 +8162,7 @@ impl App {
                         Row::new()
                             .spacing(8)
                             .push(Space::with_width(Length::Fixed(32.0)))
-                            .push(text(format!("Ошибка: {error}")).size(12)),
+                            .push(text(format!("{} {}", tr("Error:"), error)).size(12)),
                     );
                 }
                 DatabaseState::Loaded => {
@@ -8093,7 +8171,7 @@ impl App {
                             Row::new()
                                 .spacing(8)
                                 .push(Space::with_width(Length::Fixed(32.0)))
-                                .push(text("Нет коллекций").size(12)),
+                                .push(text(tr("No collections")).size(12)),
                         );
                     } else {
                         for collection in &database.collections {
@@ -8153,7 +8231,7 @@ impl App {
             };
 
             menu = menu.push(make_button(
-                "Открыть пустую вкладку",
+                tr("Open Empty Tab"),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8163,7 +8241,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Посмотреть документы",
+                tr("View Documents"),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8173,7 +8251,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Удалить документы...",
+                tr("Delete Documents..."),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8183,7 +8261,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Удалить все документы...",
+                tr("Delete All Documents..."),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8193,7 +8271,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Переименовать коллекцию...",
+                tr("Rename Collection..."),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8203,7 +8281,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Удалить коллекцию...",
+                tr("Drop Collection..."),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8213,7 +8291,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Статистика",
+                tr("Statistics"),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8223,7 +8301,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Создать индекс",
+                tr("Create Index"),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8233,7 +8311,7 @@ impl App {
             ));
 
             menu = menu.push(make_button(
-                "Индексы",
+                tr("Indexes"),
                 Message::CollectionContextMenu {
                     client_id,
                     db_name: db_name_owned.clone(),
@@ -8291,7 +8369,7 @@ impl App {
 
     fn main_panel(&self) -> Element<Message> {
         if self.tabs.is_empty() {
-            Container::new(text("Вкладки не открыты"))
+            Container::new(text(tr("No tabs opened")))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
@@ -8315,7 +8393,7 @@ impl App {
                     .padding([4, 12])
                     .on_press(Message::TabSelected(tab.id));
 
-                let close_button = Button::new(Text::new("×").size(14))
+                let close_button = Button::new(Text::new(tr("×")).size(14))
                     .padding([4, 8])
                     .on_press(Message::TabClosed(tab.id));
 
@@ -8358,7 +8436,7 @@ impl App {
                 .and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
                 .map(|tab| tab.view())
                 .unwrap_or_else(|| {
-                    Container::new(text("Нет активной вкладки"))
+                    Container::new(text(tr("No active tab")))
                         .center_x(Length::Fill)
                         .center_y(Length::Fill)
                         .into()
@@ -8381,9 +8459,9 @@ impl App {
     }
 
     fn build_menu_bar(&self) -> MenuBar<'_, Message, Theme, Renderer> {
-        let connections_button = button(text("Соединения").size(16))
+        let connections_button = button(text(tr("Connections")).size(16))
             .padding([6, 12])
-            .on_press(Message::MenuItemSelected(TopMenu::File, MenuEntry::Action("Соединения")));
+            .on_press(Message::MenuItemSelected(TopMenu::File, MenuEntry::Action("Connections")));
 
         let mut roots = Vec::new();
         roots.push(MenuItemWidget::new(connections_button));
@@ -8412,7 +8490,7 @@ impl App {
         menu: TopMenu,
         entries: &[MenuEntry],
     ) -> MenuItemWidget<'_, Message, Theme, Renderer> {
-        let label = text(menu.label()).size(16);
+        let label = text(tr(menu.label())).size(16);
         let root_button = button(label).padding([6, 12]);
 
         let menu_widget = Menu::new(
@@ -8450,18 +8528,18 @@ impl App {
         db_name: String,
         collection: String,
     ) -> TabId {
-        let mut client_name = String::from("Неизвестный клиент");
-        let mut values = vec![Bson::String(String::from(
-            "Запрос пока не выполнен. Сформируйте запрос и нажмите Send.",
-        ))];
+        let mut client_name = String::from(tr("Unknown client"));
+        let mut values = vec![Bson::String(String::from(tr(
+            "Query not yet executed. Compose a query and press Send.",
+        )))];
 
         if let Some(client) = self.clients.iter().find(|c| c.id == client_id) {
             client_name = client.name.clone();
 
             if client.handle.is_none() {
-                values = vec![Bson::String(String::from(
-                    "Соединение не активно. Повторите подключение, затем выполните запрос.",
-                ))];
+                values = vec![Bson::String(String::from(tr(
+                    "Connection inactive. Reconnect and run the query again.",
+                )))];
             }
         }
 
@@ -8481,11 +8559,11 @@ impl App {
 
     fn open_database_stats_tab(&mut self, client_id: ClientId, db_name: String) -> TabId {
         let tab_id =
-            self.open_collection_tab(client_id, db_name.clone(), String::from("(database)"));
+            self.open_collection_tab(client_id, db_name.clone(), String::from(tr("(database)")));
 
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.collection.editor = TextEditorContent::with_text("db.stats()");
-            tab.title = String::from("stats");
+            tab.collection.editor = TextEditorContent::with_text(tr("db.stats()"));
+            tab.title = String::from(tr("stats"));
         }
 
         tab_id
@@ -8506,7 +8584,7 @@ impl App {
                 collection = collection
             );
             tab.collection.editor = TextEditorContent::with_text(&command);
-            tab.title = String::from("collStats");
+            tab.title = String::from(tr("collStats"));
         }
 
         tab_id
@@ -8526,7 +8604,7 @@ impl App {
                 collection_name = collection
             );
             tab.collection.editor = TextEditorContent::with_text(&command);
-            tab.title = String::from("indexes");
+            tab.title = String::from(tr("indexes"));
         }
 
         tab_id
@@ -8561,9 +8639,9 @@ impl App {
 
         let handle = handle?;
 
-        let db_name = String::from("admin");
-        let collection_label = String::from("serverStatus");
-        let placeholder = vec![Bson::String(String::from("Загрузка serverStatus..."))];
+        let db_name = String::from(tr("admin"));
+        let collection_label = String::from(tr("serverStatus"));
+        let placeholder = vec![Bson::String(String::from(tr("Loading serverStatus...")))];
 
         let id = self.next_tab_id;
         self.next_tab_id += 1;
@@ -8577,8 +8655,9 @@ impl App {
             placeholder,
         );
 
-        tab.title = String::from("serverStatus");
-        tab.collection.editor = TextEditorContent::with_text("db.runCommand({ serverStatus: 1 })");
+        tab.title = String::from(tr("serverStatus"));
+        tab.collection.editor =
+            TextEditorContent::with_text(tr("db.runCommand({ serverStatus: 1 })"));
 
         self.tabs.push(tab);
         self.active_tab = Some(id);
@@ -8799,7 +8878,7 @@ impl App {
             .and_then(|client| client.handle.clone())
         else {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                tab.collection.set_tree_error(String::from("Нет активного соединения"));
+                tab.collection.set_tree_error(String::from(tr("No active connection")));
             }
             return Task::none();
         };
@@ -8899,7 +8978,7 @@ impl TabData {
 impl TopMenu {
     fn label(self) -> &'static str {
         match self {
-            TopMenu::File => "Соединения",
+            TopMenu::File => "Connections",
             TopMenu::View => "View",
             TopMenu::Options => "Options",
             TopMenu::Windows => "Windows",
@@ -9141,7 +9220,7 @@ fn run_collection_query(
             let result = action.run().map_err(|err| err.to_string())?;
 
             let mut response = Document::new();
-            response.insert("operation", Bson::String(String::from("insertOne")));
+            response.insert("operation", Bson::String(String::from(tr("insertOne"))));
             response.insert("insertedId", result.inserted_id);
 
             Ok(QueryResult::SingleDocument { document: response })
@@ -9167,7 +9246,7 @@ fn run_collection_query(
             }
 
             let mut response = Document::new();
-            response.insert("operation", Bson::String(String::from("insertMany")));
+            response.insert("operation", Bson::String(String::from(tr("insertMany"))));
             response.insert("insertedCount", Bson::Int64(ids_document.len() as i64));
             response.insert("insertedIds", Bson::Document(ids_document));
 
@@ -9216,7 +9295,7 @@ fn run_collection_query(
             let result = action.run().map_err(|err| err.to_string())?;
 
             let mut response = Document::new();
-            response.insert("operation", Bson::String(String::from("updateOne")));
+            response.insert("operation", Bson::String(String::from(tr("updateOne"))));
             response.insert("matchedCount", CollectionTab::u64_to_bson(result.matched_count));
             response.insert("modifiedCount", CollectionTab::u64_to_bson(result.modified_count));
             if let Some(id) = result.upserted_id {
@@ -9268,7 +9347,7 @@ fn run_collection_query(
             let result = action.run().map_err(|err| err.to_string())?;
 
             let mut response = Document::new();
-            response.insert("operation", Bson::String(String::from("updateMany")));
+            response.insert("operation", Bson::String(String::from(tr("updateMany"))));
             response.insert("matchedCount", CollectionTab::u64_to_bson(result.matched_count));
             response.insert("modifiedCount", CollectionTab::u64_to_bson(result.modified_count));
             if let Some(id) = result.upserted_id {
@@ -9296,7 +9375,7 @@ fn run_collection_query(
             let deleted_bson = CollectionTab::u64_to_bson(deleted_count);
 
             let mut response = Document::new();
-            response.insert("operation", Bson::String(String::from("deleteOne")));
+            response.insert("operation", Bson::String(String::from(tr("deleteOne"))));
             response.insert("deletedCount", deleted_bson);
 
             Ok(QueryResult::SingleDocument { document: response })
@@ -9320,7 +9399,7 @@ fn run_collection_query(
             let deleted_bson = CollectionTab::u64_to_bson(deleted_count);
 
             let mut response = Document::new();
-            response.insert("operation", Bson::String(String::from("deleteMany")));
+            response.insert("operation", Bson::String(String::from(tr("deleteMany"))));
             response.insert("deletedCount", deleted_bson);
 
             Ok(QueryResult::SingleDocument { document: response })
@@ -9357,7 +9436,7 @@ fn run_collection_query(
             let result = action.run().map_err(|err| err.to_string())?;
 
             let mut response = Document::new();
-            response.insert("operation", Bson::String(String::from("replaceOne")));
+            response.insert("operation", Bson::String(String::from(tr("replaceOne"))));
             response.insert("matchedCount", CollectionTab::u64_to_bson(result.matched_count));
             response.insert("modifiedCount", CollectionTab::u64_to_bson(result.modified_count));
             if let Some(id) = result.upserted_id {
