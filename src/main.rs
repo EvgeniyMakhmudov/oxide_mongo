@@ -235,6 +235,30 @@ enum Message {
         new_name: String,
         result: Result<(), String>,
     },
+    CollectionDropIndexCompleted {
+        tab_id: TabId,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        index_name: String,
+        result: Result<(), String>,
+    },
+    CollectionHideIndexCompleted {
+        tab_id: TabId,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        index_name: String,
+        result: Result<(), String>,
+    },
+    CollectionUnhideIndexCompleted {
+        tab_id: TabId,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        index_name: String,
+        result: Result<(), String>,
+    },
     DatabaseModalInputChanged(String),
     DatabaseModalCollectionInputChanged(String),
     DatabaseModalConfirm,
@@ -283,6 +307,9 @@ enum TableContextAction {
     CopyValue,
     CopyPath,
     EditValue,
+    DeleteIndex,
+    HideIndex,
+    UnhideIndex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +329,8 @@ enum CollectionContextAction {
     DeleteCollection,
     RenameCollection,
     Stats,
+    Indexes,
+    CreateIndex,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,6 +509,7 @@ impl CollectionModalState {
             input: String::new(),
             error: None,
             processing: false,
+            origin_tab: None,
         }
     }
 
@@ -492,6 +522,7 @@ impl CollectionModalState {
             input: String::new(),
             error: None,
             processing: false,
+            origin_tab: None,
         }
     }
 
@@ -504,6 +535,26 @@ impl CollectionModalState {
             input: collection,
             error: None,
             processing: false,
+            origin_tab: None,
+        }
+    }
+
+    fn new_drop_index(
+        tab_id: TabId,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        index_name: String,
+    ) -> Self {
+        Self {
+            client_id,
+            db_name,
+            collection,
+            kind: CollectionModalKind::DropIndex { index_name },
+            input: String::new(),
+            error: None,
+            processing: false,
+            origin_tab: Some(tab_id),
         }
     }
 }
@@ -533,24 +584,52 @@ impl DatabaseModalState {
 }
 
 impl DocumentModalState {
-    fn new(
+    fn new_collection_document(
         tab_id: TabId,
         client_id: ClientId,
         db_name: String,
         collection: String,
         document: Document,
-    ) -> Self {
+    ) -> Option<Self> {
+        let original_id = document.get("_id")?.clone();
+        let filter = doc! { "_id": original_id.clone() };
         let text = format_bson_shell(&Bson::Document(document.clone()));
-        Self {
+
+        Some(Self {
             tab_id,
             client_id,
             db_name,
             collection,
-            original_document: document,
+            kind: DocumentModalKind::CollectionDocument { filter, original_id },
             editor: TextEditorContent::with_text(&text),
             error: None,
             processing: false,
+        })
+    }
+
+    fn new_index(
+        tab_id: TabId,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        document: Document,
+    ) -> Option<Self> {
+        if !document.contains_key("expireAfterSeconds") {
+            return None;
         }
+        let name = document.get("name")?.as_str()?.to_string();
+        let text = format_bson_shell(&Bson::Document(document.clone()));
+
+        Some(Self {
+            tab_id,
+            client_id,
+            db_name,
+            collection,
+            kind: DocumentModalKind::Index { name },
+            editor: TextEditorContent::with_text(&text),
+            error: None,
+            processing: false,
+        })
     }
 }
 
@@ -631,11 +710,12 @@ struct ConnectionFormState {
     testing: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum CollectionModalKind {
     DeleteAllDocuments,
     DeleteCollection,
     RenameCollection,
+    DropIndex { index_name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -647,6 +727,7 @@ struct CollectionModalState {
     input: String,
     error: Option<String>,
     processing: bool,
+    origin_tab: Option<TabId>,
 }
 
 #[derive(Debug, Clone)]
@@ -671,10 +752,16 @@ struct DocumentModalState {
     client_id: ClientId,
     db_name: String,
     collection: String,
-    original_document: Document,
+    kind: DocumentModalKind,
     editor: TextEditorContent,
     error: Option<String>,
     processing: bool,
+}
+
+#[derive(Debug, Clone)]
+enum DocumentModalKind {
+    CollectionDocument { filter: Document, original_id: Bson },
+    Index { name: String },
 }
 
 #[derive(Debug, Clone)]
@@ -1163,6 +1250,13 @@ enum CollectionPane {
 struct BsonTree {
     roots: Vec<BsonNode>,
     expanded: HashSet<usize>,
+    context: BsonTreeContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BsonTreeContext {
+    Default,
+    Indexes,
 }
 
 struct TableContextMenu;
@@ -1543,7 +1637,7 @@ impl BsonTree {
 
         let expanded = HashSet::new();
 
-        Self { roots, expanded }
+        Self { roots, expanded, context: BsonTreeContext::Default }
     }
 
     fn from_error(message: String) -> Self {
@@ -1559,7 +1653,7 @@ impl BsonTree {
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
 
-        Self { roots: vec![node], expanded }
+        Self { roots: vec![node], expanded, context: BsonTreeContext::Default }
     }
 
     fn from_count(value: Bson) -> Self {
@@ -1572,7 +1666,7 @@ impl BsonTree {
         );
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
-        Self { roots: vec![node], expanded }
+        Self { roots: vec![node], expanded, context: BsonTreeContext::Default }
     }
 
     fn from_document(document: Document) -> Self {
@@ -1592,7 +1686,72 @@ impl BsonTree {
         expanded.insert(node.id);
         roots.push(node);
 
-        Self { roots, expanded }
+        Self { roots, expanded, context: BsonTreeContext::Default }
+    }
+
+    fn from_indexes(values: &[Bson]) -> Self {
+        let mut id_gen = IdGenerator::default();
+        let mut roots = Vec::new();
+
+        for (index, value) in values.iter().enumerate() {
+            let base_label = format!("[{}]", index + 1);
+            match value {
+                Bson::Document(doc) => {
+                    let name = doc.get("name").and_then(|name| name.as_str());
+                    let display = match name {
+                        Some(name) if !name.is_empty() => format!("{base_label} {name}"),
+                        _ => base_label.clone(),
+                    };
+                    roots.push(BsonNode::from_bson(Some(display), None, value, &mut id_gen));
+                }
+                other => {
+                    roots.push(BsonNode::from_bson(
+                        Some(base_label.clone()),
+                        None,
+                        other,
+                        &mut id_gen,
+                    ));
+                }
+            }
+        }
+
+        let expanded = HashSet::new();
+
+        Self { roots, expanded, context: BsonTreeContext::Indexes }
+    }
+
+    fn is_indexes_view(&self) -> bool {
+        matches!(self.context, BsonTreeContext::Indexes)
+    }
+
+    fn node_index_name(&self, node_id: usize) -> Option<String> {
+        if !self.is_indexes_view() {
+            return None;
+        }
+        let node = Self::find_node(&self.roots, node_id)?;
+        if !self.is_root_node(node_id) {
+            return None;
+        }
+        match &node.bson {
+            Bson::Document(doc) => {
+                doc.get("name").and_then(|name| name.as_str()).map(|name| name.to_string())
+            }
+            _ => None,
+        }
+    }
+
+    fn node_index_hidden(&self, node_id: usize) -> Option<bool> {
+        if !self.is_indexes_view() {
+            return None;
+        }
+        let node = Self::find_node(&self.roots, node_id)?;
+        if !self.is_root_node(node_id) {
+            return None;
+        }
+        match &node.bson {
+            Bson::Document(doc) => doc.get("hidden").and_then(|value| value.as_bool()),
+            _ => None,
+        }
     }
 
     fn view(&self, tab_id: TabId) -> Element<Message> {
@@ -1743,6 +1902,27 @@ impl BsonTree {
             let path_enabled = self.node_path(menu_node_id).is_some();
             let is_root_document = depth == 0 && matches!(node.kind, BsonKind::Document(_));
             let value_edit_enabled = self.can_edit_value(menu_node_id);
+            let index_context = if self.is_indexes_view() && is_root_document {
+                let maybe_name = self.node_index_name(menu_node_id);
+                let maybe_hidden =
+                    maybe_name.as_ref().and_then(|_| self.node_index_hidden(menu_node_id));
+                let ttl_enabled = self
+                    .node_bson(menu_node_id)
+                    .and_then(|bson| match bson {
+                        Bson::Document(doc) => {
+                            if doc.contains_key("expireAfterSeconds") {
+                                Some(true)
+                            } else {
+                                None
+                            }
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(false);
+                maybe_name.map(|name| (name, maybe_hidden, ttl_enabled))
+            } else {
+                None
+            };
 
             let row_container = Container::new(row_content).width(Length::Fill).style(move |_| {
                 iced::widget::container::Style {
@@ -1809,7 +1989,70 @@ impl BsonTree {
                 }
                 menu = menu.push(copy_path);
 
-                if is_root_document {
+                if let Some((index_name, hidden_state, _ttl_enabled)) = index_context.clone() {
+                    let mut delete_button = Button::new(Text::new("Удалить индекс").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink);
+                    if index_name != "_id_" {
+                        delete_button = delete_button.on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::DeleteIndex,
+                        });
+                    }
+                    menu = menu.push(delete_button);
+
+                    let hidden = hidden_state.unwrap_or(false);
+
+                    let mut hide_button = Button::new(Text::new("Спрятать индекс").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink);
+                    if !hidden {
+                        hide_button = hide_button.on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::HideIndex,
+                        });
+                    }
+                    menu = menu.push(hide_button);
+
+                    let mut unhide_button = Button::new(Text::new("Не прятать индекс").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink);
+                    if hidden {
+                        unhide_button = unhide_button.on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::UnhideIndex,
+                        });
+                    }
+                    menu = menu.push(unhide_button);
+                }
+
+                if self.is_indexes_view() {
+                    let mut edit_button = Button::new(Text::new("Изменить индекс...").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink);
+
+                    let enable_edit = matches!(index_context, Some((_, _, ttl)) if ttl);
+                    if enable_edit {
+                        edit_button = edit_button.on_press(Message::DocumentEditRequested {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                        });
+                    } else {
+                        edit_button = edit_button.style(|_, _| button::Style {
+                            background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
+                            text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
+                            border: border::rounded(6)
+                                .width(1)
+                                .color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
+                            shadow: Shadow::default(),
+                        });
+                    }
+
+                    menu = menu.push(edit_button);
+                } else if is_root_document {
                     let edit_button = Button::new(Text::new("Изменить документ...").size(14))
                         .padding([4, 12])
                         .width(Length::Shrink)
@@ -2232,6 +2475,9 @@ impl CollectionTab {
             TableContextAction::CopyValue => self.bson_tree.node_value_display(node_id),
             TableContextAction::CopyPath => self.bson_tree.node_path(node_id),
             TableContextAction::EditValue => None,
+            TableContextAction::DeleteIndex
+            | TableContextAction::HideIndex
+            | TableContextAction::UnhideIndex => None,
         }
     }
 
@@ -2381,6 +2627,227 @@ impl CollectionTab {
 
         let args_trimmed = args.trim();
         match method_name.as_str() {
+            "createIndex" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "createIndex ожидает документ ключей и необязательный объект опций.",
+                    ));
+                }
+
+                let keys_bson = Self::parse_shell_bson_value(&parts[0])?;
+                let keys_doc = match keys_bson {
+                    Bson::Document(doc) => doc,
+                    _ => {
+                        return Err(String::from(
+                            "Первый аргумент createIndex должен быть документом с ключами.",
+                        ));
+                    }
+                };
+
+                let mut index_spec = Document::new();
+                index_spec.insert("key", Bson::Document(keys_doc));
+
+                if let Some(options_source) = parts.get(1) {
+                    let options_bson = Self::parse_shell_bson_value(options_source)?;
+                    let options_doc = match options_bson {
+                        Bson::Document(doc) => doc,
+                        _ => {
+                            return Err(String::from(
+                                "Опции createIndex должны быть JSON-объектом.",
+                            ));
+                        }
+                    };
+                    for (key, value) in options_doc {
+                        index_spec.insert(key, value);
+                    }
+                }
+
+                let mut command = Document::new();
+                command.insert("createIndexes", Bson::String(self.collection.clone()));
+                command.insert("indexes", Bson::Array(vec![Bson::Document(index_spec)]));
+
+                Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
+            }
+            "createIndexes" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "createIndexes ожидает массив описаний индексов и необязательные опции.",
+                    ));
+                }
+
+                let indexes_bson = Self::parse_shell_bson_value(&parts[0])?;
+                let mut index_entries = Vec::new();
+                match indexes_bson {
+                    Bson::Array(items) => {
+                        if items.is_empty() {
+                            return Err(String::from(
+                                "Массив индексов для createIndexes не может быть пустым.",
+                            ));
+                        }
+                        for item in items {
+                            match item {
+                                Bson::Document(doc) => index_entries.push(Bson::Document(doc)),
+                                _ => {
+                                    return Err(String::from(
+                                        "Каждый индекс в createIndexes должен быть объектом.",
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    Bson::Document(doc) => {
+                        index_entries.push(Bson::Document(doc));
+                    }
+                    _ => {
+                        return Err(String::from(
+                            "Первый аргумент createIndexes должен быть массивом или объектом.",
+                        ));
+                    }
+                }
+
+                let mut command = Document::new();
+                command.insert("createIndexes", Bson::String(self.collection.clone()));
+                command.insert("indexes", Bson::Array(index_entries));
+
+                if let Some(options_source) = parts.get(1) {
+                    let options_bson = Self::parse_shell_bson_value(options_source)?;
+                    let options_doc = match options_bson {
+                        Bson::Document(doc) => doc,
+                        _ => {
+                            return Err(String::from(
+                                "Опции createIndexes должны быть JSON-объектом.",
+                            ));
+                        }
+                    };
+                    for (key, value) in options_doc {
+                        command.insert(key, value);
+                    }
+                }
+
+                Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
+            }
+            "dropIndex" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(
+                        "dropIndex ожидает имя индекса или объект ключей и необязательные опции.",
+                    ));
+                }
+
+                let index_value = Self::parse_index_argument(&parts[0])?;
+
+                let mut command = doc! {
+                    "dropIndexes": self.collection.clone(),
+                    "index": index_value,
+                };
+
+                if let Some(options_source) = parts.get(1) {
+                    let options_bson = Self::parse_shell_bson_value(options_source)?;
+                    let options_doc = match options_bson {
+                        Bson::Document(doc) => doc,
+                        _ => {
+                            return Err(String::from("Опции dropIndex должны быть JSON-объектом."));
+                        }
+                    };
+                    for (key, value) in options_doc {
+                        command.insert(key, value);
+                    }
+                }
+
+                Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
+            }
+            "dropIndexes" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+
+                if parts.len() > 2 {
+                    return Err(String::from(
+                        "dropIndexes поддерживает не более двух аргументов: индекс и опции.",
+                    ));
+                }
+
+                let index_value = if let Some(first) = parts.get(0) {
+                    if first.trim().is_empty() {
+                        Bson::String("*".into())
+                    } else {
+                        Self::parse_index_argument(first)?
+                    }
+                } else {
+                    Bson::String("*".into())
+                };
+
+                let mut command = doc! {
+                    "dropIndexes": self.collection.clone(),
+                    "index": index_value,
+                };
+
+                if let Some(options_source) = parts.get(1) {
+                    let options_bson = Self::parse_shell_bson_value(options_source)?;
+                    let options_doc = match options_bson {
+                        Bson::Document(doc) => doc,
+                        _ => {
+                            return Err(String::from(
+                                "Опции dropIndexes должны быть JSON-объектом.",
+                            ));
+                        }
+                    };
+                    for (key, value) in options_doc {
+                        command.insert(key, value);
+                    }
+                }
+
+                Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
+            }
+            "getIndexes" => {
+                if !args_trimmed.is_empty() {
+                    return Err(String::from("getIndexes не принимает аргументы."));
+                }
+
+                Ok(QueryOperation::ListIndexes)
+            }
+            "hideIndex" | "unhideIndex" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+
+                if parts.len() != 1 {
+                    return Err(String::from(
+                        "hideIndex/unhideIndex ожидают один аргумент с именем или ключами индекса.",
+                    ));
+                }
+
+                let index_value = Self::parse_index_argument(&parts[0])?;
+
+                let command_name =
+                    if method_name == "hideIndex" { "hideIndex" } else { "unhideIndex" };
+
+                let mut command = Document::new();
+                command.insert(command_name, Bson::String(self.collection.clone()));
+                command.insert("index", index_value);
+
+                Ok(QueryOperation::DatabaseCommand { db: self.db_name.clone(), command })
+            }
             "countDocuments" => {
                 let parts = if args_trimmed.is_empty() {
                     Vec::new()
@@ -2748,7 +3215,7 @@ impl CollectionTab {
                 Ok(QueryOperation::Find { filter })
             }
             other => Err(format!(
-                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany.",
+                "Метод {other} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
             )),
         }
     }
@@ -4756,6 +5223,17 @@ impl CollectionTab {
         bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
     }
 
+    fn parse_index_argument(source: &str) -> Result<Bson, String> {
+        let value = Self::parse_shell_bson_value(source)?;
+        match value {
+            Bson::String(name) => Ok(Bson::String(name)),
+            Bson::Document(doc) => Ok(Bson::Document(doc)),
+            _ => Err(String::from(
+                "Аргумент индекса должен быть строкой с именем индекса или объектом с ключами.",
+            )),
+        }
+    }
+
     fn sanitize_numeric<S: AsRef<str>>(value: S) -> String {
         let filtered: String = value.as_ref().chars().filter(|ch| ch.is_ascii_digit()).collect();
         let trimmed = filtered.trim_start_matches('0');
@@ -4793,6 +5271,10 @@ impl CollectionTab {
             QueryResult::Documents(values) => {
                 let count = values.len();
                 (BsonTree::from_values(&values), count)
+            }
+            QueryResult::Indexes(values) => {
+                let count = values.len();
+                (BsonTree::from_indexes(&values), count)
             }
             QueryResult::SingleDocument { document } => (BsonTree::from_document(document), 1),
             QueryResult::Distinct { field, values } => {
@@ -5099,6 +5581,22 @@ impl App {
                         );
                         self.collection_query_task(tab_id)
                     }
+                    CollectionContextAction::CreateIndex => {
+                        let _ = self.open_collection_create_index_tab(
+                            client_id,
+                            db_name.clone(),
+                            collection.clone(),
+                        );
+                        Task::none()
+                    }
+                    CollectionContextAction::Indexes => {
+                        let tab_id = self.open_collection_indexes_tab(
+                            client_id,
+                            db_name.clone(),
+                            collection.clone(),
+                        );
+                        self.collection_query_task(tab_id)
+                    }
                 }
             }
             Message::CollectionSend(tab_id) => self.collection_query_task(tab_id),
@@ -5148,12 +5646,20 @@ impl App {
                             return Task::none();
                         }
                     }
+                    CollectionModalKind::DropIndex { ref index_name } => {
+                        if trimmed_input != *index_name {
+                            modal.error =
+                                Some(String::from("Для подтверждения введите точное имя индекса."));
+                            return Task::none();
+                        }
+                    }
                 }
 
                 let client_id = modal.client_id;
                 let db_name = modal.db_name.clone();
                 let collection = modal.collection.clone();
-                let kind = modal.kind;
+                let kind = modal.kind.clone();
+                let origin_tab = modal.origin_tab;
 
                 let handle = match self
                     .clients
@@ -5247,11 +5753,51 @@ impl App {
                             },
                         )
                     }
+                    CollectionModalKind::DropIndex { index_name } => {
+                        let Some(tab_id_value) = origin_tab else {
+                            modal.processing = false;
+                            modal.error = Some(String::from(
+                                "Не удалось определить вкладку для обновления индексов.",
+                            ));
+                            return Task::none();
+                        };
+
+                        let future_db = db_name.clone();
+                        let future_collection = collection.clone();
+                        let future_index = index_name.clone();
+                        let message_db = db_name.clone();
+                        let message_collection = collection.clone();
+                        let message_index = index_name.clone();
+                        let handle_task = handle.clone();
+
+                        Task::perform(
+                            async move {
+                                let command = doc! {
+                                    "dropIndexes": future_collection,
+                                    "index": future_index,
+                                };
+                                handle_task
+                                    .database(&future_db)
+                                    .run_command(command)
+                                    .run()
+                                    .map(|_| ())
+                                    .map_err(|error| error.to_string())
+                            },
+                            move |result| Message::CollectionDropIndexCompleted {
+                                tab_id: tab_id_value,
+                                client_id,
+                                db_name: message_db.clone(),
+                                collection: message_collection.clone(),
+                                index_name: message_index.clone(),
+                                result,
+                            },
+                        )
+                    }
                 }
             }
             Message::CollectionDeleteAllCompleted { client_id, db_name, collection, result } => {
                 if let Some(modal) = self.collection_modal.as_mut() {
-                    if modal.kind == CollectionModalKind::DeleteAllDocuments
+                    if matches!(modal.kind, CollectionModalKind::DeleteAllDocuments)
                         && modal.client_id == client_id
                         && modal.db_name == db_name
                         && modal.collection == collection
@@ -5277,7 +5823,7 @@ impl App {
                 result,
             } => {
                 if let Some(modal) = self.collection_modal.as_mut() {
-                    if modal.kind == CollectionModalKind::DeleteCollection
+                    if matches!(modal.kind, CollectionModalKind::DeleteCollection)
                         && modal.client_id == client_id
                         && modal.db_name == db_name
                         && modal.collection == collection
@@ -5305,7 +5851,7 @@ impl App {
                 result,
             } => {
                 if let Some(modal) = self.collection_modal.as_mut() {
-                    if modal.kind == CollectionModalKind::RenameCollection
+                    if matches!(modal.kind, CollectionModalKind::RenameCollection)
                         && modal.client_id == client_id
                         && modal.db_name == db_name
                         && modal.collection == old_collection
@@ -5326,6 +5872,76 @@ impl App {
                                 modal.error = Some(error);
                             }
                         }
+                    }
+                }
+                Task::none()
+            }
+            Message::CollectionDropIndexCompleted {
+                tab_id,
+                client_id,
+                db_name,
+                collection,
+                index_name,
+                result,
+            } => {
+                if let Some(modal) = self.collection_modal.as_mut() {
+                    if matches!(modal.kind, CollectionModalKind::DropIndex { .. })
+                        && modal.client_id == client_id
+                        && modal.db_name == db_name
+                        && modal.collection == collection
+                    {
+                        match result {
+                            Ok(()) => {
+                                self.collection_modal = None;
+                                self.mode = AppMode::Main;
+                                return self.collection_query_task(tab_id);
+                            }
+                            Err(error) => {
+                                modal.processing = false;
+                                modal.error = Some(format!(
+                                    "Ошибка удаления индекса \"{}\": {}",
+                                    index_name, error
+                                ));
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::CollectionHideIndexCompleted {
+                tab_id,
+                client_id,
+                db_name,
+                collection,
+                index_name,
+                result,
+            } => {
+                match result {
+                    Ok(()) => return self.collection_query_task(tab_id),
+                    Err(error) => {
+                        eprintln!(
+                            "hideIndex failed: client_id={} db={} collection={} index={} error={}",
+                            client_id, db_name, collection, index_name, error
+                        );
+                    }
+                }
+                Task::none()
+            }
+            Message::CollectionUnhideIndexCompleted {
+                tab_id,
+                client_id,
+                db_name,
+                collection,
+                index_name,
+                result,
+            } => {
+                match result {
+                    Ok(()) => return self.collection_query_task(tab_id),
+                    Err(error) => {
+                        eprintln!(
+                            "unhideIndex failed: client_id={} db={} collection={} index={} error={}",
+                            client_id, db_name, collection, index_name, error
+                        );
                     }
                 }
                 Task::none()
@@ -5527,7 +6143,7 @@ impl App {
                 }
 
                 let editor_text = modal.editor.text().to_string();
-                let replacement = match CollectionTab::parse_shell_json_value(&editor_text) {
+                let document = match CollectionTab::parse_shell_json_value(&editor_text) {
                     Ok(value) => {
                         let object = match value.as_object() {
                             Some(obj) => obj,
@@ -5551,23 +6167,6 @@ impl App {
                     }
                 };
 
-                let original_id = match modal.original_document.get("_id") {
-                    Some(id) => id.clone(),
-                    None => {
-                        modal.error = Some(String::from(
-                            "Документ не содержит поле _id, редактирование невозможно.",
-                        ));
-                        return Task::none();
-                    }
-                };
-
-                let mut replacement = replacement;
-                if !replacement.contains_key("_id") {
-                    replacement.insert("_id", original_id.clone());
-                }
-
-                let filter = doc! { "_id": original_id };
-
                 let client_handle = self
                     .clients
                     .iter()
@@ -5585,27 +6184,83 @@ impl App {
                 let tab_id = modal.tab_id;
                 let db_name = modal.db_name.clone();
                 let collection_name = modal.collection.clone();
-                let handle_task = handle.clone();
-                let filter_clone = filter.clone();
-                let replacement_clone = replacement.clone();
+                let kind = modal.kind.clone();
 
-                Task::perform(
-                    async move {
-                        let collection =
-                            handle_task.database(&db_name).collection::<Document>(&collection_name);
-                        let result = collection
-                            .find_one_and_replace(filter_clone, replacement_clone)
-                            .return_document(ReturnDocument::After)
-                            .run()
-                            .map_err(|error| error.to_string())?;
-                        result.ok_or_else(|| {
-                            String::from(
-                                "Документ не найден. Возможно, он был удалён или изменение не применено.",
-                            )
-                        })
-                    },
-                    move |result| Message::DocumentModalCompleted { tab_id, result },
-                )
+                match kind {
+                    DocumentModalKind::CollectionDocument { filter, original_id } => {
+                        let mut replacement = document.clone();
+                        if !replacement.contains_key("_id") {
+                            replacement.insert("_id", original_id);
+                        }
+
+                        let filter_clone = filter;
+                        let replacement_clone = replacement.clone();
+                        let handle_task = handle.clone();
+                        let db_name_clone = db_name.clone();
+                        let collection_clone = collection_name.clone();
+
+                        Task::perform(
+                            async move {
+                                let collection = handle_task
+                                    .database(&db_name_clone)
+                                    .collection::<Document>(&collection_clone);
+                                let result = collection
+                                    .find_one_and_replace(filter_clone, replacement_clone)
+                                    .return_document(ReturnDocument::After)
+                                    .run()
+                                    .map_err(|error| error.to_string())?;
+                                result.ok_or_else(|| {
+                                    String::from(
+                                        "Документ не найден. Возможно, он был удалён или изменение не применено.",
+                                    )
+                                })
+                            },
+                            move |result| Message::DocumentModalCompleted { tab_id, result },
+                        )
+                    }
+                    DocumentModalKind::Index { name } => {
+                        let index_doc = document.clone();
+                        let Some(name_value) = index_doc
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string())
+                        else {
+                            modal.processing = false;
+                            modal.error = Some(String::from(
+                                "Документ индекса должен содержать строковое поле name.",
+                            ));
+                            return Task::none();
+                        };
+
+                        if name_value != name {
+                            modal.processing = false;
+                            modal.error = Some(String::from(
+                                "Имя индекса не может быть изменено через collMod.",
+                            ));
+                            return Task::none();
+                        }
+
+                        let handle_task = handle.clone();
+                        let db_name_clone = db_name.clone();
+                        let collection_clone = collection_name.clone();
+                        let command_index = index_doc.clone();
+
+                        Task::perform(
+                            async move {
+                                let command = doc! {
+                                    "collMod": collection_clone.clone(),
+                                    "index": Bson::Document(command_index),
+                                };
+                                handle_task
+                                    .database(&db_name_clone)
+                                    .run_command(command)
+                                    .run()
+                                    .map_err(|error| error.to_string())
+                            },
+                            move |result| Message::DocumentModalCompleted { tab_id, result },
+                        )
+                    }
+                }
             }
             Message::DocumentModalCompleted { tab_id, result } => match result {
                 Ok(_) => {
@@ -5754,6 +6409,153 @@ impl App {
                     if let Some(state) = modal_state {
                         self.value_edit_modal = Some(state);
                         self.mode = AppMode::ValueEditModal;
+                    }
+
+                    Task::none()
+                }
+                TableContextAction::DeleteIndex => {
+                    let context = self.tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| {
+                        if !tab.collection.bson_tree.is_indexes_view() {
+                            return None;
+                        }
+                        let index_name = tab.collection.bson_tree.node_index_name(node_id)?;
+                        Some((
+                            tab.collection.client_id,
+                            tab.collection.db_name.clone(),
+                            tab.collection.collection.clone(),
+                            index_name,
+                        ))
+                    });
+
+                    if let Some((client_id, db_name, collection, index_name)) = context {
+                        if index_name != "_id_" {
+                            self.collection_modal = Some(CollectionModalState::new_drop_index(
+                                tab_id, client_id, db_name, collection, index_name,
+                            ));
+                            self.mode = AppMode::CollectionModal;
+                        }
+                    }
+
+                    Task::none()
+                }
+                TableContextAction::HideIndex => {
+                    let context = self.tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| {
+                        if !tab.collection.bson_tree.is_indexes_view() {
+                            return None;
+                        }
+                        let index_name = tab.collection.bson_tree.node_index_name(node_id)?;
+                        let hidden = tab.collection.bson_tree.node_index_hidden(node_id);
+                        Some((
+                            tab.collection.client_id,
+                            tab.collection.db_name.clone(),
+                            tab.collection.collection.clone(),
+                            index_name,
+                            hidden.unwrap_or(false),
+                        ))
+                    });
+
+                    if let Some((client_id, db_name, collection, index_name, hidden)) = context {
+                        if hidden {
+                            return Task::none();
+                        }
+
+                        if let Some(handle) = self
+                            .clients
+                            .iter()
+                            .find(|client| client.id == client_id)
+                            .and_then(|client| client.handle.clone())
+                        {
+                            let future_db = db_name.clone();
+                            let future_collection = collection.clone();
+                            let future_index = index_name.clone();
+                            let message_db = db_name.clone();
+                            let message_collection = collection.clone();
+                            let message_index = index_name.clone();
+                            let handle_task = handle.clone();
+                            return Task::perform(
+                                async move {
+                                    let command = doc! {
+                                        "hideIndex": future_collection,
+                                        "index": future_index,
+                                    };
+                                    handle_task
+                                        .database(&future_db)
+                                        .run_command(command)
+                                        .run()
+                                        .map(|_| ())
+                                        .map_err(|error| error.to_string())
+                                },
+                                move |result| Message::CollectionHideIndexCompleted {
+                                    tab_id,
+                                    client_id,
+                                    db_name: message_db.clone(),
+                                    collection: message_collection.clone(),
+                                    index_name: message_index.clone(),
+                                    result,
+                                },
+                            );
+                        }
+                    }
+
+                    Task::none()
+                }
+                TableContextAction::UnhideIndex => {
+                    let context = self.tabs.iter().find(|tab| tab.id == tab_id).and_then(|tab| {
+                        if !tab.collection.bson_tree.is_indexes_view() {
+                            return None;
+                        }
+                        let index_name = tab.collection.bson_tree.node_index_name(node_id)?;
+                        let hidden = tab.collection.bson_tree.node_index_hidden(node_id);
+                        Some((
+                            tab.collection.client_id,
+                            tab.collection.db_name.clone(),
+                            tab.collection.collection.clone(),
+                            index_name,
+                            hidden.unwrap_or(false),
+                        ))
+                    });
+
+                    if let Some((client_id, db_name, collection, index_name, hidden)) = context {
+                        if !hidden {
+                            return Task::none();
+                        }
+
+                        if let Some(handle) = self
+                            .clients
+                            .iter()
+                            .find(|client| client.id == client_id)
+                            .and_then(|client| client.handle.clone())
+                        {
+                            let future_db = db_name.clone();
+                            let future_collection = collection.clone();
+                            let future_index = index_name.clone();
+                            let message_db = db_name.clone();
+                            let message_collection = collection.clone();
+                            let message_index = index_name.clone();
+                            let handle_task = handle.clone();
+                            return Task::perform(
+                                async move {
+                                    let command = doc! {
+                                        "unhideIndex": future_collection,
+                                        "index": future_index,
+                                    };
+                                    handle_task
+                                        .database(&future_db)
+                                        .run_command(command)
+                                        .run()
+                                        .map(|_| ())
+                                        .map_err(|error| error.to_string())
+                                },
+                                move |result| Message::CollectionUnhideIndexCompleted {
+                                    tab_id,
+                                    client_id,
+                                    db_name: message_db.clone(),
+                                    collection: message_collection.clone(),
+                                    index_name: message_index.clone(),
+                                    result,
+                                },
+                            );
+                        }
                     }
 
                     Task::none()
@@ -6024,13 +6826,23 @@ impl App {
                         _ => return None,
                     };
 
-                    Some(DocumentModalState::new(
-                        tab_id,
-                        tab.collection.client_id,
-                        tab.collection.db_name.clone(),
-                        tab.collection.collection.clone(),
-                        document,
-                    ))
+                    if tab.collection.bson_tree.is_indexes_view() {
+                        DocumentModalState::new_index(
+                            tab_id,
+                            tab.collection.client_id,
+                            tab.collection.db_name.clone(),
+                            tab.collection.collection.clone(),
+                            document,
+                        )
+                    } else {
+                        DocumentModalState::new_collection_document(
+                            tab_id,
+                            tab.collection.client_id,
+                            tab.collection.db_name.clone(),
+                            tab.collection.collection.clone(),
+                            document,
+                        )
+                    }
                 });
 
                 if let Some(state) = doc_state {
@@ -6335,6 +7147,16 @@ impl App {
                 "Новое имя коллекции",
                 "Переименовать",
             ),
+            CollectionModalKind::DropIndex { ref index_name } => (
+                "Удаление индекса",
+                format!(
+                    "Индекс \"{}\" коллекции \"{}\" базы \"{}\" будет удалён. Это действие нельзя отменить.",
+                    index_name, state.collection, state.db_name
+                ),
+                Some(format!("Подтвердите удаление индекса введя его имя \"{}\".", index_name)),
+                index_name.as_str(),
+                "Удалить индекс",
+            ),
         };
 
         let confirm_ready = match state.kind {
@@ -6344,6 +7166,9 @@ impl App {
             CollectionModalKind::RenameCollection => {
                 let trimmed = state.input.trim();
                 !trimmed.is_empty() && trimmed != state.collection && !state.processing
+            }
+            CollectionModalKind::DropIndex { ref index_name } => {
+                state.input.trim() == index_name && !state.processing
             }
         };
 
@@ -6591,14 +7416,22 @@ impl App {
     }
 
     fn document_modal_view<'a>(&self, state: &'a DocumentModalState) -> Element<'a, Message> {
-        let title =
-            Text::new("Изменение документа").size(22).color(Color::from_rgb8(0x17, 0x1a, 0x20));
+        let (title_text, hint_text, saving_text) = match &state.kind {
+            DocumentModalKind::CollectionDocument { .. } => (
+                "Изменение документа",
+                "Отредактируйте JSON-представление документа. При сохранении документ будет полностью заменён.",
+                "Сохранение документа...",
+            ),
+            DocumentModalKind::Index { .. } => (
+                "Изменение TTL индекса",
+                "Можно менять только значение поля \"expireAfterSeconds\". Остальные параметры будут проигнорированы.",
+                "Сохранение индекса...",
+            ),
+        };
 
-        let hint = Text::new(
-            "Отредактируйте JSON-представление документа. При сохранении документ будет полностью заменён.",
-        )
-        .size(13)
-        .color(Color::from_rgb8(0x55, 0x5f, 0x73));
+        let title = Text::new(title_text).size(22).color(Color::from_rgb8(0x17, 0x1a, 0x20));
+
+        let hint = Text::new(hint_text).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73));
 
         let editor = text_editor::TextEditor::new(&state.editor)
             .font(MONO_FONT)
@@ -6625,11 +7458,8 @@ impl App {
         }
 
         if state.processing {
-            column = column.push(
-                Text::new("Сохранение документа...")
-                    .size(13)
-                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-            );
+            column = column
+                .push(Text::new(saving_text).size(13).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
         }
 
         let cancel_button = Button::new(Text::new("Отмена").size(14))
@@ -7323,6 +8153,26 @@ impl App {
                 },
             ));
 
+            menu = menu.push(make_button(
+                "Создать индекс",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::CreateIndex,
+                },
+            ));
+
+            menu = menu.push(make_button(
+                "Индексы",
+                Message::CollectionContextMenu {
+                    client_id,
+                    db_name: db_name_owned.clone(),
+                    collection: collection_name.clone(),
+                    action: CollectionContextAction::Indexes,
+                },
+            ));
+
             menu.into()
         })
         .into()
@@ -7588,6 +8438,46 @@ impl App {
             );
             tab.collection.editor = TextEditorContent::with_text(&command);
             tab.title = String::from("collStats");
+        }
+
+        tab_id
+    }
+
+    fn open_collection_indexes_tab(
+        &mut self,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+    ) -> TabId {
+        let tab_id = self.open_collection_tab(client_id, db_name, collection.clone());
+
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            let command = format!(
+                "db.getCollection('{collection_name}').getIndexes()",
+                collection_name = collection
+            );
+            tab.collection.editor = TextEditorContent::with_text(&command);
+            tab.title = String::from("indexes");
+        }
+
+        tab_id
+    }
+
+    fn open_collection_create_index_tab(
+        &mut self,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+    ) -> TabId {
+        let tab_id = self.open_collection_tab(client_id, db_name, collection.clone());
+
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            let template = format!(
+                "db.getCollection('{collection_name}').createIndex(\n    {{ \"field\": 1 }},\n    {{ \"name\": \"field_1\" }}\n)",
+                collection_name = collection
+            );
+            tab.collection.editor = TextEditorContent::with_text(&template);
+            tab.title = format!("{} createIndex", collection);
         }
 
         tab_id
@@ -8543,6 +9433,17 @@ fn run_collection_query(
                 None => Ok(QueryResult::Documents(Vec::new())),
             }
         }
+        QueryOperation::ListIndexes => {
+            let cursor = collection.list_indexes().run().map_err(|err| err.to_string())?;
+            let mut documents = Vec::new();
+            for result in cursor {
+                let model = result.map_err(|err| err.to_string())?;
+                let document = bson::to_document(&model)
+                    .map_err(|error| format!("BSON conversion error: {error}"))?;
+                documents.push(Bson::Document(document));
+            }
+            Ok(QueryResult::Indexes(documents))
+        }
         QueryOperation::DatabaseCommand { db, command } => {
             let database = client.database(&db);
             let document = database.run_command(command).run().map_err(|err| err.to_string())?;
@@ -8861,6 +9762,7 @@ enum QueryOperation {
         filter: Document,
         options: Option<FindOneAndDeleteParsedOptions>,
     },
+    ListIndexes,
     DatabaseCommand {
         db: String,
         command: Document,
@@ -8870,6 +9772,7 @@ enum QueryOperation {
 #[derive(Debug, Clone)]
 enum QueryResult {
     Documents(Vec<Bson>),
+    Indexes(Vec<Bson>),
     SingleDocument { document: Document },
     Distinct { field: String, values: Vec<Bson> },
     Count { value: Bson },

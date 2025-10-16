@@ -51,7 +51,7 @@
 - Дублировать коллекцию
 - [DONE] Удалить коллекцию
 - [DONE] Статистика
-- Индексы
+- [DONE] Индексы
 - Watch (change stream)
 
 ## Таблица с данными
@@ -75,7 +75,7 @@
 - bulkWrite — пакетное выполнение разных операций (insert/update/delete)
 - watch (change streams) — подписка на изменения
 - [DONE] runCommand - служебные команды коллекции
-- listIndexes / createIndex / dropIndex и т.п. — основные операции с индексами
+- [DONE] listIndexes / createIndex / dropIndex и т.п. — основные операции с индексами
 
 # Интернационализация
 - русский язык
