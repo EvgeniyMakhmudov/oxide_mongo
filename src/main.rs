@@ -310,6 +310,8 @@ enum TableContextAction {
     DeleteIndex,
     HideIndex,
     UnhideIndex,
+    ExpandHierarchy,
+    CollapseHierarchy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1934,6 +1936,29 @@ impl BsonTree {
             let row_with_menu = TableContextMenu::new(row_container, move || {
                 let mut menu = Column::new().spacing(4).padding([4, 6]);
 
+                if node.is_container() {
+                    let expand_button = Button::new(Text::new("Развернуть иерархично").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::ExpandHierarchy,
+                        });
+
+                    let collapse_button = Button::new(Text::new("Свернуть иерархично").size(14))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::CollapseHierarchy,
+                        });
+
+                    menu = menu.push(expand_button);
+                    menu = menu.push(collapse_button);
+                }
+
                 let copy_json = Button::new(Text::new("Копировать JSON").size(14))
                     .padding([4, 12])
                     .width(Length::Shrink)
@@ -1976,6 +2001,7 @@ impl BsonTree {
                 menu = menu.push(copy_json);
                 menu = menu.push(copy_key);
                 menu = menu.push(copy_value);
+                menu = menu.push(copy_path);
                 if value_edit_enabled {
                     let edit_value = Button::new(Text::new("Изменить только значение...").size(14))
                         .padding([4, 12])
@@ -1987,7 +2013,6 @@ impl BsonTree {
                         });
                     menu = menu.push(edit_value);
                 }
-                menu = menu.push(copy_path);
 
                 if let Some((index_name, hidden_state, _ttl_enabled)) = index_context.clone() {
                     let mut delete_button = Button::new(Text::new("Удалить индекс").size(14))
@@ -2104,6 +2129,36 @@ impl BsonTree {
         } else if self.is_container(node_id) {
             self.expanded.insert(node_id);
         }
+    }
+
+    fn expand_recursive(&mut self, node_id: usize) {
+        if !self.is_container(node_id) {
+            return;
+        }
+        self.expanded.insert(node_id);
+        if let Some(child_ids) = Self::find_node(&self.roots, node_id)
+            .and_then(BsonNode::children)
+            .map(|children| children.iter().map(|child| child.id).collect::<Vec<_>>())
+        {
+            for child_id in child_ids {
+                self.expand_recursive(child_id);
+            }
+        }
+    }
+
+    fn collapse_recursive(&mut self, node_id: usize) {
+        if !self.is_container(node_id) {
+            return;
+        }
+        if let Some(child_ids) = Self::find_node(&self.roots, node_id)
+            .and_then(BsonNode::children)
+            .map(|children| children.iter().map(|child| child.id).collect::<Vec<_>>())
+        {
+            for child_id in child_ids {
+                self.collapse_recursive(child_id);
+            }
+        }
+        self.expanded.remove(&node_id);
     }
 
     fn summarize_id(value: &Bson) -> String {
@@ -2477,7 +2532,9 @@ impl CollectionTab {
             TableContextAction::EditValue => None,
             TableContextAction::DeleteIndex
             | TableContextAction::HideIndex
-            | TableContextAction::UnhideIndex => None,
+            | TableContextAction::UnhideIndex
+            | TableContextAction::ExpandHierarchy
+            | TableContextAction::CollapseHierarchy => None,
         }
     }
 
@@ -6558,6 +6615,18 @@ impl App {
                         }
                     }
 
+                    Task::none()
+                }
+                TableContextAction::ExpandHierarchy => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                        tab.collection.bson_tree.expand_recursive(node_id);
+                    }
+                    Task::none()
+                }
+                TableContextAction::CollapseHierarchy => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                        tab.collection.bson_tree.collapse_recursive(node_id);
+                    }
                     Task::none()
                 }
                 _ => {
