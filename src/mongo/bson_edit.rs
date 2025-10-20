@@ -143,9 +143,7 @@ impl ValueEditKind {
 
         match self {
             Self::String => Ok(Bson::String(Self::parse_string_literal(input))),
-            Self::Boolean => Ok(Bson::Boolean(
-                Self::parse_boolean_literal(input).unwrap_or(false),
-            )),
+            Self::Boolean => Ok(Bson::Boolean(Self::parse_boolean_literal(input).unwrap_or(false))),
             Self::Int32 => Self::parse_int32_value(input),
             Self::Int64 => Self::parse_int64_value(input),
             Self::Double => Ok(Bson::Double(Self::parse_double_literal(input)?)),
@@ -158,9 +156,7 @@ impl ValueEditKind {
             Self::Binary => Err(String::from(tr("Binary parsing not implemented."))),
             Self::Regex => Err(String::from(tr("Regex parsing not implemented."))),
             Self::Code => Err(String::from(tr("Code parsing not implemented."))),
-            Self::CodeWithScope => Err(String::from(tr(
-                "CodeWithScope parsing not implemented.",
-            ))),
+            Self::CodeWithScope => Err(String::from(tr("CodeWithScope parsing not implemented."))),
             Self::Timestamp => Err(String::from(tr("Timestamp parsing not implemented."))),
             Self::DbPointer => Err(String::from(tr("DbPointer parsing not implemented."))),
             Self::MinKey => Ok(Bson::MinKey),
@@ -235,8 +231,7 @@ impl ValueEditKind {
             input.trim().to_string()
         };
 
-        ObjectId::parse_str(literal)
-            .map_err(|_| String::from(tr("Value must be an ObjectId.")))
+        ObjectId::parse_str(literal).map_err(|_| String::from(tr("Value must be an ObjectId.")))
     }
 
     fn parse_int_literal(input: &str) -> Result<i128, String> {
@@ -263,8 +258,7 @@ impl ValueEditKind {
     }
 
     fn extract_numeric_literal(input: &str, names: &[&str]) -> Option<String> {
-        Self::strip_call(input, names)
-            .map(|s| s.trim().to_string())
+        Self::strip_call(input, names).map(|s| s.trim().to_string())
     }
 
     fn strip_call<'a>(input: &'a str, names: &[&str]) -> Option<&'a str> {
