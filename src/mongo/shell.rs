@@ -285,6 +285,22 @@ pub fn split_arguments(args: &str) -> Vec<String> {
     result
 }
 
+pub fn parse_shell_document(source: &str) -> Result<Bson, String> {
+    let value = parse_shell_bson_value(source)?;
+    match value {
+        Bson::Document(_) => Ok(value),
+        other => Err(format!("{} {:?}", tr("Expected a document, got"), other)),
+    }
+}
+
+pub fn parse_shell_array(source: &str) -> Result<Bson, String> {
+    let value = parse_shell_bson_value(source)?;
+    match value {
+        Bson::Array(_) => Ok(value),
+        other => Err(format!("{} {:?}", tr("Expected an array, got"), other)),
+    }
+}
+
 pub fn parse_shell_json_value(source: &str) -> Result<Value, String> {
     let normalized = preprocess_shell_json(source)?;
     serde_json::from_str(&normalized).map_err(|error| format!("JSON parse error: {error}"))
