@@ -47,6 +47,7 @@ use ui::connections::{
     ConnectionsWindowState, ListClick, TestFeedback, connection_form_view, connections_view,
     load_connections_from_disk, save_connections_to_disk,
 };
+use ui::settings::{FontChoice, SettingsTab, SettingsWindowState, ThemeChoice, settings_view};
 type TabId = u32;
 type ClientId = u32;
 
@@ -91,6 +92,7 @@ struct App {
     mode: AppMode,
     connections_window: Option<ConnectionsWindowState>,
     connection_form: Option<ConnectionFormState>,
+    settings_window: Option<SettingsWindowState>,
     collection_modal: Option<CollectionModalState>,
     database_modal: Option<DatabaseModalState>,
     document_modal: Option<DocumentModalState>,
@@ -210,6 +212,20 @@ enum Message {
     ConnectionFormTestResult(Result<(), String>),
     ConnectionFormSave,
     ConnectionFormCancel,
+    SettingsOpen,
+    SettingsTabChanged(SettingsTab),
+    SettingsToggleExpandFirstResult(bool),
+    SettingsQueryTimeoutChanged(String),
+    SettingsToggleSortFields(bool),
+    SettingsToggleSortIndexes(bool),
+    SettingsPrimaryFontChanged(FontChoice),
+    SettingsPrimaryFontSizeChanged(String),
+    SettingsResultFontChanged(FontChoice),
+    SettingsResultFontSizeChanged(String),
+    SettingsThemeChanged(ThemeChoice),
+    SettingsApply,
+    SettingsSave,
+    SettingsCancel,
     TableContextMenu {
         tab_id: TabId,
         node_id: usize,
@@ -292,7 +308,6 @@ enum Message {
 enum TopMenu {
     File,
     View,
-    Options,
     Windows,
     Help,
 }
@@ -521,6 +536,7 @@ enum AppMode {
     Main,
     Connections,
     ConnectionForm,
+    Settings,
     CollectionModal,
     DatabaseModal,
     DocumentModal,
@@ -1110,6 +1126,7 @@ impl Default for App {
             mode: AppMode::Main,
             connections_window: None,
             connection_form: None,
+            settings_window: None,
             collection_modal: None,
             database_modal: None,
             document_modal: None,
@@ -2610,6 +2627,76 @@ impl App {
                 self.open_connections_window();
                 Task::none()
             }
+            Message::SettingsOpen => {
+                self.open_settings_window();
+                Task::none()
+            }
+            Message::SettingsTabChanged(tab) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.active_tab = tab;
+                }
+                Task::none()
+            }
+            Message::SettingsToggleExpandFirstResult(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.expand_first_result = value;
+                }
+                Task::none()
+            }
+            Message::SettingsQueryTimeoutChanged(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.query_timeout_secs = value;
+                }
+                Task::none()
+            }
+            Message::SettingsToggleSortFields(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.sort_fields_alphabetically = value;
+                }
+                Task::none()
+            }
+            Message::SettingsToggleSortIndexes(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.sort_index_names_alphabetically = value;
+                }
+                Task::none()
+            }
+            Message::SettingsPrimaryFontChanged(choice) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.primary_font = choice;
+                }
+                Task::none()
+            }
+            Message::SettingsPrimaryFontSizeChanged(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.primary_font_size = value;
+                }
+                Task::none()
+            }
+            Message::SettingsResultFontChanged(choice) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.result_font = choice;
+                }
+                Task::none()
+            }
+            Message::SettingsResultFontSizeChanged(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.result_font_size = value;
+                }
+                Task::none()
+            }
+            Message::SettingsThemeChanged(choice) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.theme_choice = choice;
+                }
+                Task::none()
+            }
+            Message::SettingsApply => Task::none(),
+            Message::SettingsSave => Task::none(),
+            Message::SettingsCancel => {
+                self.close_settings_window();
+                Task::none()
+            }
             Message::CollectionTreeToggle { tab_id, node_id } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.toggle_node(node_id);
@@ -2688,6 +2775,13 @@ impl App {
             AppMode::ConnectionForm => {
                 if let Some(state) = &self.connection_form {
                     connection_form_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
+            AppMode::Settings => {
+                if let Some(state) = &self.settings_window {
+                    settings_view(state)
                 } else {
                     self.main_view()
                 }
@@ -3774,15 +3868,15 @@ impl App {
             .padding([6, 12])
             .on_press(Message::MenuItemSelected(TopMenu::File, MenuEntry::Action("Connections")));
 
+        let settings_button =
+            button(text(tr("Settings")).size(16)).padding([6, 12]).on_press(Message::SettingsOpen);
+
         let mut roots = Vec::new();
         roots.push(MenuItemWidget::new(connections_button));
+        roots.push(MenuItemWidget::new(settings_button));
         roots.push(self.menu_root(
             TopMenu::View,
             &[MenuEntry::Action("Explorer"), MenuEntry::Action("Refresh")],
-        ));
-        roots.push(self.menu_root(
-            TopMenu::Options,
-            &[MenuEntry::Action("Preferences"), MenuEntry::Action("Settings")],
         ));
         roots.push(self.menu_root(
             TopMenu::Windows,
@@ -4247,6 +4341,19 @@ impl App {
         self.mode = AppMode::ConnectionForm;
     }
 
+    fn open_settings_window(&mut self) {
+        let state = self.settings_window.take().unwrap_or_default();
+        self.settings_window = Some(state);
+        self.connections_window = None;
+        self.connection_form = None;
+        self.mode = AppMode::Settings;
+    }
+
+    fn close_settings_window(&mut self) {
+        self.settings_window = None;
+        self.mode = AppMode::Main;
+    }
+
     fn add_connection_from_entry(&mut self, entry: ConnectionEntry) -> Task<Message> {
         let uri = entry.uri();
         let connection =
@@ -4291,7 +4398,6 @@ impl TopMenu {
         match self {
             TopMenu::File => "Connections",
             TopMenu::View => "View",
-            TopMenu::Options => "Options",
             TopMenu::Windows => "Windows",
             TopMenu::Help => "Help",
         }

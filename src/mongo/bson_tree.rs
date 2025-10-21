@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
-use iced::widget::{self, Button, Column, Container, Row, Space, Text, button};
+use iced::widget::{self, Button, Column, Container, Row, Scrollable, Space, Text, button};
 use iced::{Color, Element, Length, Shadow, border};
 use iced_aw::ContextMenu;
 use mongodb::bson::{Bson, Document};
@@ -642,7 +642,14 @@ impl BsonTree {
             body = body.push(row_with_menu);
         }
 
-        let content = Column::new().spacing(0).push(header).push(body);
+        let body_scroll = Scrollable::new(body).width(Length::Fill).height(Length::Fill);
+
+        let content = Column::new()
+            .spacing(0)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .push(header)
+            .push(body_scroll);
         Container::new(content).width(Length::Fill).into()
     }
 
