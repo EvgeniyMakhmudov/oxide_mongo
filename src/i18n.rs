@@ -1,14 +1,59 @@
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Language {
     English,
     Russian,
 }
 
-pub const CURRENT_LANGUAGE: Language = Language::Russian;
+static CURRENT_LANGUAGE: OnceLock<RwLock<Language>> = OnceLock::new();
+
+pub const ALL_LANGUAGES: &[Language] = &[Language::English, Language::Russian];
+
+impl Language {
+    pub fn label(self) -> &'static str {
+        match self {
+            Language::English => "English",
+            Language::Russian => "Russian",
+        }
+    }
+}
+
+impl std::fmt::Display for Language {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(tr(self.label()))
+    }
+}
+
+fn language_lock() -> &'static RwLock<Language> {
+    CURRENT_LANGUAGE.get_or_init(|| RwLock::new(Language::Russian))
+}
+
+pub fn init_language(language: Language) {
+    if CURRENT_LANGUAGE
+        .set(RwLock::new(language))
+        .is_err()
+    {
+        set_language(language);
+    }
+}
+
+pub fn set_language(language: Language) {
+    let mut guard = language_lock()
+        .write()
+        .expect("language write lock poisoned");
+    *guard = language;
+}
+
+fn current_language() -> Language {
+    *language_lock()
+        .read()
+        .expect("language read lock poisoned")
+}
 
 fn russian_map() -> &'static HashMap<&'static str, &'static str> {
     static MAP: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
@@ -106,6 +151,19 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Database name", "Название базы данных"),
             ("First collection name", "Имя первой коллекции"),
             ("Settings", "Настройки"),
+            ("Settings Error", "Ошибка настроек"),
+            ("Failed to load settings:", "Не удалось загрузить настройки:"),
+            ("Failed to apply settings:", "Не удалось применить настройки:"),
+            (
+                "Invalid numeric value for \"{}\".",
+                "Некорректное числовое значение поля \"{}\".",
+            ),
+            ("Font size must be greater than zero", "Размер шрифта должен быть больше нуля"),
+            (
+                "Continue with default settings",
+                "Продолжить с настройками по умолчанию",
+            ),
+            ("Exit", "Выйти"),
             ("Behavior", "Поведение"),
             ("Appearance", "Внешний вид"),
             ("Expand first result item", "Раскрывать первый элемент результата"),
@@ -116,6 +174,9 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
                 "Sort index names alphabetically",
                 "Сортировать имена индексов по алфавиту",
             ),
+            ("Language", "Язык"),
+            ("English", "Английский"),
+            ("Russian", "Русский"),
             ("Primary Font", "Основной шрифт"),
             ("Query Result Font", "Шрифт результатов запросов"),
             ("Font Size", "Размер шрифта"),
@@ -457,7 +518,7 @@ fn english_fallback_map() -> &'static HashMap<&'static str, &'static str> {
 
 pub fn tr(text: &'static str) -> &'static str {
     let english = english_fallback_map().get(text).copied().unwrap_or(text);
-    match CURRENT_LANGUAGE {
+    match current_language() {
         Language::English => english,
         Language::Russian => russian_map().get(english).copied().unwrap_or(english),
     }

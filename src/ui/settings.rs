@@ -3,10 +3,10 @@ use iced::widget::checkbox::Checkbox;
 use iced::widget::pick_list::PickList;
 use iced::widget::{self, Button, Column, Container, Row, Space, Text, button, text_input};
 use iced::{Color, Element, Length, Shadow, Theme, border};
-use std::fmt;
 
+use crate::i18n::{tr, tr_format, Language, ALL_LANGUAGES};
+use crate::settings::{AppSettings, FontChoice, ThemeChoice, ALL_FONTS, ALL_THEMES};
 use crate::Message;
-use crate::i18n::tr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -23,64 +23,6 @@ impl SettingsTab {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FontChoice {
-    System,
-    Monospace,
-    Serif,
-}
-
-impl FontChoice {
-    pub fn label(self) -> &'static str {
-        match self {
-            FontChoice::System => "System Default",
-            FontChoice::Monospace => "Monospace",
-            FontChoice::Serif => "Serif",
-        }
-    }
-}
-
-impl fmt::Display for FontChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
-impl Default for FontChoice {
-    fn default() -> Self {
-        FontChoice::System
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ThemeChoice {
-    System,
-    Light,
-    Dark,
-}
-
-impl ThemeChoice {
-    pub fn label(self) -> &'static str {
-        match self {
-            ThemeChoice::System => "System",
-            ThemeChoice::Light => "Light",
-            ThemeChoice::Dark => "Dark",
-        }
-    }
-}
-
-impl fmt::Display for ThemeChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
-impl Default for ThemeChoice {
-    fn default() -> Self {
-        ThemeChoice::System
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct SettingsWindowState {
     pub active_tab: SettingsTab,
@@ -88,11 +30,13 @@ pub struct SettingsWindowState {
     pub query_timeout_secs: String,
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
+    pub language: Language,
     pub primary_font: FontChoice,
     pub primary_font_size: String,
     pub result_font: FontChoice,
     pub result_font_size: String,
     pub theme_choice: ThemeChoice,
+    pub validation_error: Option<String>,
 }
 
 impl Default for SettingsWindowState {
@@ -103,13 +47,68 @@ impl Default for SettingsWindowState {
             query_timeout_secs: "600".to_string(),
             sort_fields_alphabetically: false,
             sort_index_names_alphabetically: false,
+            language: Language::Russian,
             primary_font: FontChoice::System,
             primary_font_size: "16".to_string(),
             result_font: FontChoice::Monospace,
-            result_font_size: "15".to_string(),
+            result_font_size: "14".to_string(),
             theme_choice: ThemeChoice::System,
+            validation_error: None,
         }
     }
+}
+
+impl SettingsWindowState {
+    pub fn from_app_settings(settings: &AppSettings) -> Self {
+        Self {
+            active_tab: SettingsTab::Behavior,
+            expand_first_result: settings.expand_first_result,
+            query_timeout_secs: settings.query_timeout_secs.to_string(),
+            sort_fields_alphabetically: settings.sort_fields_alphabetically,
+            sort_index_names_alphabetically: settings.sort_index_names_alphabetically,
+            language: settings.language,
+            primary_font: settings.primary_font,
+            primary_font_size: settings.primary_font_size.to_string(),
+            result_font: settings.result_font,
+            result_font_size: settings.result_font_size.to_string(),
+            theme_choice: settings.theme_choice,
+            validation_error: None,
+        }
+    }
+
+    pub fn to_app_settings(&self) -> Result<AppSettings, String> {
+        let timeout = parse_integer::<u64>(&self.query_timeout_secs, tr("Query timeout (seconds)"))?;
+        let primary_size = parse_integer::<u16>(&self.primary_font_size, tr("Primary Font"))?;
+        let result_size = parse_integer::<u16>(&self.result_font_size, tr("Query Result Font"))?;
+
+        if primary_size == 0 || result_size == 0 {
+            return Err(tr("Font size must be greater than zero").to_owned());
+        }
+
+        Ok(AppSettings {
+            expand_first_result: self.expand_first_result,
+            query_timeout_secs: timeout,
+            sort_fields_alphabetically: self.sort_fields_alphabetically,
+            sort_index_names_alphabetically: self.sort_index_names_alphabetically,
+            language: self.language,
+            primary_font: self.primary_font,
+            primary_font_size: primary_size,
+            result_font: self.result_font,
+            result_font_size: result_size,
+            theme_choice: self.theme_choice,
+        })
+    }
+}
+
+fn parse_integer<T>(value: &str, label: &str) -> Result<T, String>
+where
+    T: std::str::FromStr,
+    <T as std::str::FromStr>::Err: std::fmt::Display,
+{
+    let trimmed = value.trim();
+    trimmed.parse::<T>().map_err(|_| {
+        tr_format("Invalid numeric value for \"{}\".", &[label]).to_string()
+    })
 }
 
 pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
@@ -124,8 +123,19 @@ pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
         .spacing(20)
         .push(Text::new(tr("Settings")).size(24).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
         .push(tab_row)
-        .push(tab_content)
-        .push(bottom_actions());
+        .push(tab_content);
+
+    let mut content = if let Some(error) = &state.validation_error {
+        content.push(
+            Text::new(error.clone())
+                .size(13)
+                .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
+        )
+    } else {
+        content
+    };
+
+    content = content.push(bottom_actions());
 
     let card = Container::new(content).padding(24).width(Length::Fixed(640.0)).style(pane_style);
 
@@ -198,6 +208,16 @@ fn appearance_row<'a>(
 }
 
 fn appearance_tab(state: &SettingsWindowState) -> Element<Message> {
+    let language_row = Row::new()
+        .spacing(12)
+        .align_y(Vertical::Center)
+        .push(Text::new(tr("Language")).size(14).width(Length::FillPortion(3)))
+        .push(
+            PickList::new(ALL_LANGUAGES, Some(state.language), Message::SettingsLanguageChanged)
+                .width(Length::FillPortion(4)),
+        )
+        .push(Space::with_width(Length::FillPortion(3)));
+
     let primary_row = appearance_row(
         "Primary Font",
         state.primary_font,
@@ -224,7 +244,13 @@ fn appearance_tab(state: &SettingsWindowState) -> Element<Message> {
         )
         .push(Space::with_width(Length::FillPortion(3)));
 
-    Column::new().spacing(16).push(primary_row).push(result_row).push(theme_row).into()
+    Column::new()
+        .spacing(16)
+        .push(language_row)
+        .push(primary_row)
+        .push(result_row)
+        .push(theme_row)
+        .into()
 }
 
 fn bottom_actions() -> Element<'static, Message> {
@@ -289,6 +315,3 @@ fn pane_style(theme: &Theme) -> widget::container::Style {
         ..Default::default()
     }
 }
-
-const ALL_FONTS: &[FontChoice] = &[FontChoice::System, FontChoice::Monospace, FontChoice::Serif];
-const ALL_THEMES: &[ThemeChoice] = &[ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];

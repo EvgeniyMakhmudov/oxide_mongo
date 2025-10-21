@@ -1,5 +1,6 @@
 mod i18n;
 mod mongo;
+mod settings;
 mod ui;
 
 use i18n::{tr, tr_format};
@@ -42,12 +43,13 @@ use mongo::connection::{
 };
 use mongo::query::{QueryOperation, QueryResult, parse_collection_query, run_collection_query};
 use mongo::shell;
+use crate::settings::{AppSettings, FontChoice, ThemeChoice};
 use ui::connections::{
     ConnectionEntry, ConnectionFormMode, ConnectionFormState, ConnectionFormTab,
     ConnectionsWindowState, ListClick, TestFeedback, connection_form_view, connections_view,
     load_connections_from_disk, save_connections_to_disk,
 };
-use ui::settings::{FontChoice, SettingsTab, SettingsWindowState, ThemeChoice, settings_view};
+use ui::settings::{SettingsTab, SettingsWindowState, settings_view};
 type TabId = u32;
 type ClientId = u32;
 
@@ -89,10 +91,12 @@ struct App {
     next_client_id: ClientId,
     last_collection_click: Option<CollectionClick>,
     connections: Vec<ConnectionEntry>,
+    settings: AppSettings,
     mode: AppMode,
     connections_window: Option<ConnectionsWindowState>,
     connection_form: Option<ConnectionFormState>,
     settings_window: Option<SettingsWindowState>,
+    settings_error_modal: Option<SettingsErrorModalState>,
     collection_modal: Option<CollectionModalState>,
     database_modal: Option<DatabaseModalState>,
     document_modal: Option<DocumentModalState>,
@@ -110,6 +114,17 @@ struct TabData {
     id: TabId,
     title: String,
     collection: CollectionTab,
+}
+
+#[derive(Debug, Clone)]
+struct SettingsErrorModalState {
+    message: String,
+}
+
+impl SettingsErrorModalState {
+    fn new(message: String) -> Self {
+        Self { message }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +233,7 @@ enum Message {
     SettingsQueryTimeoutChanged(String),
     SettingsToggleSortFields(bool),
     SettingsToggleSortIndexes(bool),
+    SettingsLanguageChanged(i18n::Language),
     SettingsPrimaryFontChanged(FontChoice),
     SettingsPrimaryFontSizeChanged(String),
     SettingsResultFontChanged(FontChoice),
@@ -226,6 +242,8 @@ enum Message {
     SettingsApply,
     SettingsSave,
     SettingsCancel,
+    SettingsLoadErrorExit,
+    SettingsLoadErrorUseDefaults,
     TableContextMenu {
         tab_id: TabId,
         node_id: usize,
@@ -537,6 +555,7 @@ enum AppMode {
     Connections,
     ConnectionForm,
     Settings,
+    SettingsLoadError,
     CollectionModal,
     DatabaseModal,
     DocumentModal,
@@ -1103,6 +1122,12 @@ impl CollectionTab {
 
 impl Default for App {
     fn default() -> Self {
+        Self::new(AppSettings::default())
+    }
+}
+
+impl App {
+    fn new(settings: AppSettings) -> Self {
         let (mut panes, sidebar) = pane_grid::State::new(PaneContent::Sidebar);
         let (_content_pane, split) = panes
             .split(pane_grid::Axis::Vertical, sidebar, PaneContent::Main)
@@ -1123,21 +1148,39 @@ impl Default for App {
             next_client_id: 1,
             last_collection_click: None,
             connections,
+            settings,
             mode: AppMode::Main,
             connections_window: None,
             connection_form: None,
             settings_window: None,
+            settings_error_modal: None,
             collection_modal: None,
             database_modal: None,
             document_modal: None,
             value_edit_modal: None,
         }
     }
-}
 
-impl App {
     fn init() -> (Self, Task<Message>) {
-        (Self::default(), Task::none())
+        let settings_result = settings::load_from_disk();
+
+        let (settings, load_error) = match settings_result {
+            Ok(settings) => (settings, None),
+            Err(error) => (AppSettings::default(), Some(error)),
+        };
+
+        settings::initialize(settings.clone());
+        i18n::init_language(settings.language);
+
+        let mut app = Self::new(settings);
+
+        if let Some(error) = load_error {
+            let message = format!("{} {}", tr("Failed to load settings:"), error);
+            app.settings_error_modal = Some(SettingsErrorModalState::new(message));
+            app.mode = AppMode::SettingsLoadError;
+        }
+
+        (app, Task::none())
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -2640,61 +2683,143 @@ impl App {
             Message::SettingsToggleExpandFirstResult(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.expand_first_result = value;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsQueryTimeoutChanged(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.query_timeout_secs = value;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsToggleSortFields(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.sort_fields_alphabetically = value;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsToggleSortIndexes(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.sort_index_names_alphabetically = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::SettingsLanguageChanged(language) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.language = language;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsPrimaryFontChanged(choice) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.primary_font = choice;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsPrimaryFontSizeChanged(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.primary_font_size = value;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsResultFontChanged(choice) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.result_font = choice;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsResultFontSizeChanged(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.result_font_size = value;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
             Message::SettingsThemeChanged(choice) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.theme_choice = choice;
+                    state.validation_error = None;
                 }
                 Task::none()
             }
-            Message::SettingsApply => Task::none(),
-            Message::SettingsSave => Task::none(),
+            Message::SettingsApply => {
+                if let Some(mut state) = self.settings_window.take() {
+                    if let Err(error) = self.apply_settings_from_state(&mut state) {
+                        state.validation_error = Some(error);
+                    }
+                    self.settings_window = Some(state);
+                }
+                Task::none()
+            }
+            Message::SettingsSave => {
+                let mut state = match self.settings_window.take() {
+                    Some(state) => state,
+                    None => return Task::none(),
+                };
+
+                if let Err(error) = self.apply_settings_from_state(&mut state) {
+                    state.validation_error = Some(error);
+                    self.settings_window = Some(state);
+                    return Task::none();
+                }
+
+                self.settings_window = Some(state);
+
+                match settings::save_to_disk(&self.settings) {
+                    Ok(()) => {
+                        self.close_settings_window();
+                    }
+                    Err(error) => {
+                        if let Some(mut state) = self.settings_window.take() {
+                            state.validation_error =
+                                Some(format!("{} {}", tr("Save error: "), error));
+                            self.settings_window = Some(state);
+                        }
+                    }
+                }
+
+                Task::none()
+            }
             Message::SettingsCancel => {
                 self.close_settings_window();
+                Task::none()
+            }
+            Message::SettingsLoadErrorExit => {
+                std::process::exit(1);
+            }
+            Message::SettingsLoadErrorUseDefaults => {
+                let defaults = AppSettings::default();
+
+                if let Err(error) = self.apply_settings_to_runtime(&defaults) {
+                    let message = format!("{} {}", tr("Failed to apply settings:"), error);
+                    self.settings_error_modal = Some(SettingsErrorModalState::new(message));
+                    self.mode = AppMode::SettingsLoadError;
+                    return Task::none();
+                }
+
+                settings::replace(defaults.clone());
+                self.settings = defaults;
+
+                match settings::save_to_disk(&self.settings) {
+                    Ok(()) => {
+                        self.settings_error_modal = None;
+                        self.mode = AppMode::Main;
+                    }
+                    Err(error) => {
+                        let message = format!("{} {}", tr("Save error: "), error);
+                        self.settings_error_modal = Some(SettingsErrorModalState::new(message));
+                        self.mode = AppMode::SettingsLoadError;
+                    }
+                }
+
                 Task::none()
             }
             Message::CollectionTreeToggle { tab_id, node_id } => {
@@ -2786,6 +2911,13 @@ impl App {
                     self.main_view()
                 }
             }
+            AppMode::SettingsLoadError => {
+                if let Some(state) = &self.settings_error_modal {
+                    self.settings_error_modal_view(state)
+                } else {
+                    self.main_view()
+                }
+            }
             AppMode::CollectionModal => {
                 if let Some(state) = &self.collection_modal {
                     self.collection_modal_view(state)
@@ -2815,6 +2947,59 @@ impl App {
                 }
             }
         }
+    }
+
+    fn settings_error_modal_view(&self, state: &SettingsErrorModalState) -> Element<Message> {
+        let title = Text::new(tr("Settings Error"))
+            .size(22)
+            .color(Color::from_rgb8(0x17, 0x1a, 0x20));
+
+        let message = Text::new(state.message.clone())
+            .size(14)
+            .color(Color::from_rgb8(0x31, 0x38, 0x4a));
+
+        let exit_button = Button::new(Text::new(tr("Exit")).size(14))
+            .padding([6, 16])
+            .on_press(Message::SettingsLoadErrorExit);
+
+        let continue_button = Button::new(Text::new(tr("Continue with default settings")).size(14))
+            .padding([6, 16])
+            .on_press(Message::SettingsLoadErrorUseDefaults);
+
+        let buttons = Row::new()
+            .spacing(12)
+            .push(exit_button)
+            .push(continue_button);
+
+        let column = Column::new()
+            .spacing(16)
+            .push(title)
+            .push(message)
+            .push(buttons);
+
+        let modal = Container::new(column).padding(24).width(Length::Fixed(520.0)).style(|_| {
+            container::Style {
+                background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
+                border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
+                shadow: Shadow {
+                    color: Color::from_rgba8(0, 0, 0, 0.18),
+                    offset: iced::Vector::new(0.0, 8.0),
+                    blur_radius: 24.0,
+                },
+                ..Default::default()
+            }
+        });
+
+        Container::new(modal)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill)
+            .style(|_| container::Style {
+                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
+                ..Default::default()
+            })
+            .into()
     }
 
     fn collection_modal_view(&self, state: &CollectionModalState) -> Element<Message> {
@@ -3358,7 +3543,11 @@ impl App {
     }
 
     fn theme(&self) -> Theme {
-        Theme::default()
+        match self.settings.theme_choice {
+            ThemeChoice::System => Theme::default(),
+            ThemeChoice::Light => Theme::Light,
+            ThemeChoice::Dark => Theme::Dark,
+        }
     }
 
     fn sidebar_panel(&self) -> Element<Message> {
@@ -4342,7 +4531,13 @@ impl App {
     }
 
     fn open_settings_window(&mut self) {
-        let state = self.settings_window.take().unwrap_or_default();
+        let previous_tab = self.settings_window.as_ref().map(|state| state.active_tab);
+
+        let mut state = SettingsWindowState::from_app_settings(&self.settings);
+        if let Some(tab) = previous_tab {
+            state.active_tab = tab;
+        }
+
         self.settings_window = Some(state);
         self.connections_window = None;
         self.connection_form = None;
@@ -4352,6 +4547,26 @@ impl App {
     fn close_settings_window(&mut self) {
         self.settings_window = None;
         self.mode = AppMode::Main;
+    }
+
+    fn apply_settings_to_runtime(&mut self, settings: &AppSettings) -> Result<(), String> {
+        i18n::set_language(settings.language);
+        Ok(())
+    }
+
+    fn apply_settings_from_state(&mut self, state: &mut SettingsWindowState) -> Result<(), String> {
+        let active_tab = state.active_tab;
+        let new_settings = state.to_app_settings()?;
+
+        self.apply_settings_to_runtime(&new_settings)?;
+
+        settings::replace(new_settings.clone());
+        self.settings = new_settings;
+
+        *state = SettingsWindowState::from_app_settings(&self.settings);
+        state.active_tab = active_tab;
+
+        Ok(())
     }
 
     fn add_connection_from_entry(&mut self, entry: ConnectionEntry) -> Task<Message> {
