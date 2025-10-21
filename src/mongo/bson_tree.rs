@@ -8,6 +8,7 @@ use iced_aw::ContextMenu;
 use mongodb::bson::{Bson, Document};
 
 use crate::i18n::tr;
+use crate::settings::AppSettings;
 use crate::mongo::shell;
 use crate::{MONO_FONT, Message, TabId, TableContextAction, ValueEditContext};
 
@@ -16,6 +17,33 @@ pub struct BsonTree {
     roots: Vec<BsonNode>,
     expanded: HashSet<usize>,
     context: BsonTreeContext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BsonTreeOptions {
+    pub sort_fields_alphabetically: bool,
+    pub sort_index_names_alphabetically: bool,
+}
+
+impl BsonTreeOptions {
+    pub const fn new(sort_fields_alphabetically: bool, sort_index_names_alphabetically: bool) -> Self {
+        Self { sort_fields_alphabetically, sort_index_names_alphabetically }
+    }
+}
+
+impl Default for BsonTreeOptions {
+    fn default() -> Self {
+        Self::new(false, false)
+    }
+}
+
+impl From<&AppSettings> for BsonTreeOptions {
+    fn from(settings: &AppSettings) -> Self {
+        Self::new(
+            settings.sort_fields_alphabetically,
+            settings.sort_index_names_alphabetically,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,13 +104,20 @@ impl BsonNode {
         path_key: Option<String>,
         value: &Bson,
         id: &mut IdGenerator,
+        options: &BsonTreeOptions,
     ) -> Self {
         let id_value = id.next();
         match value {
             Bson::Document(map) => {
-                let children = map
-                    .iter()
-                    .map(|(k, v)| BsonNode::from_bson(Some(k.clone()), Some(k.clone()), v, id))
+                let mut entries: Vec<_> = map.iter().collect();
+                if options.sort_fields_alphabetically {
+                    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                }
+                let children = entries
+                    .into_iter()
+                    .map(|(k, v)| {
+                        BsonNode::from_bson(Some(k.clone()), Some(k.clone()), v, id, options)
+                    })
                     .collect();
                 Self {
                     id: id_value,
@@ -98,7 +133,13 @@ impl BsonNode {
                     .enumerate()
                     .map(|(index, item)| {
                         let display = format!("[{index}]");
-                        BsonNode::from_bson(Some(display), Some(index.to_string()), item, id)
+                        BsonNode::from_bson(
+                            Some(display),
+                            Some(index.to_string()),
+                            item,
+                            id,
+                            options,
+                        )
                     })
                     .collect();
                 Self {
@@ -159,14 +200,14 @@ fn is_editable_scalar(_value: &Bson) -> bool {
 }
 
 impl BsonTree {
-    pub fn from_values(values: &[Bson]) -> Self {
+    pub fn from_values(values: &[Bson], options: BsonTreeOptions) -> Self {
         let mut id_gen = IdGenerator::default();
         let mut roots = Vec::new();
 
         if values.is_empty() {
             let info_value = Bson::String(String::from(tr("No documents found")));
             let placeholder =
-                BsonNode::from_bson(Some(String::from(tr("info"))), None, &info_value, &mut id_gen);
+                BsonNode::from_bson(Some(String::from(tr("info"))), None, &info_value, &mut id_gen, &options);
             roots.push(placeholder);
         } else {
             for (index, value) in values.iter().enumerate() {
@@ -179,7 +220,7 @@ impl BsonTree {
                         .unwrap_or_else(|| base_label.clone()),
                     _ => base_label.clone(),
                 };
-                roots.push(BsonNode::from_bson(Some(key), None, value, &mut id_gen));
+                roots.push(BsonNode::from_bson(Some(key), None, value, &mut id_gen, &options));
             }
         }
 
@@ -190,34 +231,36 @@ impl BsonTree {
 
     pub fn from_error(message: String) -> Self {
         let value = Bson::String(message);
-        Self::from_values(std::slice::from_ref(&value))
+        Self::from_values(std::slice::from_ref(&value), BsonTreeOptions::default())
     }
 
-    pub fn from_distinct(field: String, values: Vec<Bson>) -> Self {
+    pub fn from_distinct(field: String, values: Vec<Bson>, options: BsonTreeOptions) -> Self {
         let mut id_gen = IdGenerator::default();
         let array_bson = Bson::Array(values);
         let path_key = field.clone();
-        let node = BsonNode::from_bson(Some(field), Some(path_key), &array_bson, &mut id_gen);
+        let node =
+            BsonNode::from_bson(Some(field), Some(path_key), &array_bson, &mut id_gen, &options);
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
 
         Self { roots: vec![node], expanded, context: BsonTreeContext::Default }
     }
 
-    pub fn from_count(value: Bson) -> Self {
+    pub fn from_count(value: Bson, options: BsonTreeOptions) -> Self {
         let mut id_gen = IdGenerator::default();
         let node = BsonNode::from_bson(
             Some(String::from(tr("count"))),
             Some(String::from(tr("count"))),
             &value,
             &mut id_gen,
+            &options,
         );
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
         Self { roots: vec![node], expanded, context: BsonTreeContext::Default }
     }
 
-    pub fn from_document(document: Document) -> Self {
+    pub fn from_document(document: Document, options: BsonTreeOptions) -> Self {
         let mut id_gen = IdGenerator::default();
         let value = Bson::Document(document);
         let mut roots = Vec::new();
@@ -231,18 +274,33 @@ impl BsonTree {
             _ => String::from(tr("document")),
         };
 
-        let node = BsonNode::from_bson(Some(key), None, &value, &mut id_gen);
+        let node = BsonNode::from_bson(Some(key), None, &value, &mut id_gen, &options);
         expanded.insert(node.id);
         roots.push(node);
 
         Self { roots, expanded, context: BsonTreeContext::Default }
     }
 
-    pub fn from_indexes(values: &[Bson]) -> Self {
+    pub fn from_indexes(values: &[Bson], options: BsonTreeOptions) -> Self {
         let mut id_gen = IdGenerator::default();
         let mut roots = Vec::new();
 
-        for (index, value) in values.iter().enumerate() {
+        let mut items: Vec<_> = values.iter().collect();
+        if options.sort_index_names_alphabetically {
+            items.sort_by(|left, right| {
+                let left_name = match left {
+                    Bson::Document(doc) => doc.get_str("name").unwrap_or_default(),
+                    _ => "",
+                };
+                let right_name = match right {
+                    Bson::Document(doc) => doc.get_str("name").unwrap_or_default(),
+                    _ => "",
+                };
+                left_name.cmp(right_name)
+            });
+        }
+
+        for (index, value) in items.into_iter().enumerate() {
             let base_label = format!("[{}]", index + 1);
             match value {
                 Bson::Document(doc) => {
@@ -251,7 +309,7 @@ impl BsonTree {
                         Some(name) if !name.is_empty() => format!("{base_label} {name}"),
                         _ => base_label.clone(),
                     };
-                    roots.push(BsonNode::from_bson(Some(display), None, value, &mut id_gen));
+                    roots.push(BsonNode::from_bson(Some(display), None, value, &mut id_gen, &options));
                 }
                 other => {
                     roots.push(BsonNode::from_bson(
@@ -259,6 +317,7 @@ impl BsonTree {
                         None,
                         other,
                         &mut id_gen,
+                        &options,
                     ));
                 }
             }
@@ -693,6 +752,16 @@ impl BsonTree {
 
     pub fn is_root_node(&self, node_id: usize) -> bool {
         self.roots.iter().any(|node| node.id == node_id)
+    }
+
+    pub fn first_root_id(&self) -> Option<usize> {
+        self.roots.first().map(|node| node.id)
+    }
+
+    pub fn expand_node(&mut self, node_id: usize) {
+        if self.is_container(node_id) {
+            self.expanded.insert(node_id);
+        }
     }
 
     pub fn node_display_key(&self, node_id: usize) -> Option<String> {

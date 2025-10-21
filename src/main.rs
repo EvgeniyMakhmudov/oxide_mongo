@@ -37,7 +37,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use mongo::bson_edit::ValueEditKind;
-use mongo::bson_tree::BsonTree;
+use mongo::bson_tree::{BsonTree, BsonTreeOptions};
 use mongo::connection::{
     ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections,
 };
@@ -721,6 +721,7 @@ struct CollectionTab {
     skip_input: String,
     limit_input: String,
     last_query_duration: Option<Duration>,
+    last_result: Option<QueryResult>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -761,6 +762,7 @@ impl CollectionTab {
         db_name: String,
         collection: String,
         values: Vec<Bson>,
+        settings: &AppSettings,
     ) -> Self {
         let (mut panes, top) = pane_grid::State::new(CollectionPane::Request);
         let (_, split) = panes
@@ -769,13 +771,14 @@ impl CollectionTab {
         let initial_ratio = Self::clamp_split_ratio(Self::initial_split_ratio());
         panes.resize(split, initial_ratio);
 
-        let bson_tree = BsonTree::from_values(&values);
+        let options = BsonTreeOptions::from(settings);
+        let bson_tree = BsonTree::from_values(&values, options);
         let editor_text = format!(
             "db.getCollection('{collection_name}').find({{}})",
             collection_name = collection.as_str()
         );
 
-        Self {
+        let mut instance = Self {
             client_id,
             client_name,
             db_name,
@@ -786,7 +789,11 @@ impl CollectionTab {
             skip_input: DEFAULT_RESULT_SKIP.to_string(),
             limit_input: DEFAULT_RESULT_LIMIT.to_string(),
             last_query_duration: None,
-        }
+            last_result: Some(QueryResult::Documents(values)),
+        };
+
+        instance.apply_behavior_settings(settings);
+        instance
     }
 
     fn resize_split(&mut self, split: pane_grid::Split, ratio: f32) {
@@ -1084,24 +1091,31 @@ impl CollectionTab {
         }
     }
 
-    fn set_query_result(&mut self, result: QueryResult) {
+    fn set_query_result(&mut self, result: QueryResult, settings: &AppSettings) {
         let start = Instant::now();
+
+        let cached = result.clone();
+        self.last_result = Some(cached);
+
+        let options = BsonTreeOptions::from(settings);
 
         let (tree, count) = match result {
             QueryResult::Documents(values) => {
                 let count = values.len();
-                (BsonTree::from_values(&values), count)
+                (BsonTree::from_values(&values, options), count)
             }
             QueryResult::Indexes(values) => {
                 let count = values.len();
-                (BsonTree::from_indexes(&values), count)
+                (BsonTree::from_indexes(&values, options), count)
             }
-            QueryResult::SingleDocument { document } => (BsonTree::from_document(document), 1),
+            QueryResult::SingleDocument { document } => {
+                (BsonTree::from_document(document, options), 1)
+            }
             QueryResult::Distinct { field, values } => {
                 let count = values.len();
-                (BsonTree::from_distinct(field, values), count)
+                (BsonTree::from_distinct(field, values, options), count)
             }
-            QueryResult::Count { value } => (BsonTree::from_count(value), 1),
+            QueryResult::Count { value } => (BsonTree::from_count(value, options), 1),
         };
 
         let elapsed = start.elapsed();
@@ -1113,10 +1127,30 @@ impl CollectionTab {
         );
 
         self.bson_tree = tree;
+        self.apply_behavior_settings(settings);
     }
 
     fn set_tree_error(&mut self, error: String) {
         self.bson_tree = BsonTree::from_error(error);
+        self.last_result = None;
+    }
+
+    fn apply_behavior_settings(&mut self, settings: &AppSettings) {
+        if settings.expand_first_result {
+            if let Some(root_id) = self.bson_tree.first_root_id() {
+                self.bson_tree.expand_node(root_id);
+            }
+        }
+    }
+
+    fn refresh_with_settings(&mut self, settings: &AppSettings) {
+        if let Some(result) = self.last_result.clone() {
+            self.set_query_result(result, settings);
+        } else if settings.expand_first_result {
+            if let Some(root_id) = self.bson_tree.first_root_id() {
+                self.bson_tree.expand_node(root_id);
+            }
+        }
     }
 }
 
@@ -2447,7 +2481,7 @@ impl App {
                     let collection = &mut tab.collection;
                     collection.last_query_duration = Some(duration);
                     match result {
-                        Ok(query_result) => collection.set_query_result(query_result),
+                        Ok(query_result) => collection.set_query_result(query_result, &self.settings),
                         Err(error) => collection.set_tree_error(error),
                     }
                 }
@@ -4146,6 +4180,7 @@ impl App {
             db_name,
             collection,
             values,
+            &self.settings,
         ));
         self.active_tab = Some(id);
         id
@@ -4247,6 +4282,7 @@ impl App {
             db_name,
             collection_label,
             placeholder,
+            &self.settings,
         );
 
         tab.title = String::from(tr("serverStatus"));
@@ -4477,11 +4513,18 @@ impl App {
             return Task::none();
         };
 
+        let timeout_secs = self.settings.query_timeout_secs;
+        let timeout = if timeout_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(timeout_secs))
+        };
+
         Task::perform(
             async move {
                 let started = Instant::now();
                 let result =
-                    run_collection_query(handle, db_name, collection_name, operation, skip, limit);
+                    run_collection_query(handle, db_name, collection_name, operation, skip, limit, timeout);
                 (result, started.elapsed())
             },
             move |(result, duration)| Message::CollectionQueryCompleted {
@@ -4551,6 +4594,11 @@ impl App {
 
     fn apply_settings_to_runtime(&mut self, settings: &AppSettings) -> Result<(), String> {
         i18n::set_language(settings.language);
+
+        for tab in &mut self.tabs {
+            tab.collection.refresh_with_settings(settings);
+        }
+
         Ok(())
     }
 
@@ -4594,12 +4642,13 @@ impl TabData {
         db_name: String,
         collection: String,
         values: Vec<Bson>,
+        settings: &AppSettings,
     ) -> Self {
         let title = collection.clone();
         Self {
             id,
             title,
-            collection: CollectionTab::new(client_id, client_name, db_name, collection, values),
+            collection: CollectionTab::new(client_id, client_name, db_name, collection, values, settings),
         }
     }
 

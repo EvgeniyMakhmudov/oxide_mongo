@@ -3022,6 +3022,7 @@ pub fn run_collection_query(
     operation: QueryOperation,
     skip: u64,
     limit: u64,
+    timeout: Option<Duration>,
 ) -> Result<QueryResult, String> {
     let database = client.database(&db_name);
     let collection = database.collection::<Document>(&collection_name);
@@ -3042,6 +3043,10 @@ pub fn run_collection_query(
                 builder = builder.limit(limit_capped);
             }
 
+            if let Some(timeout) = timeout {
+                builder = builder.max_time(timeout);
+            }
+
             let cursor = builder.run().map_err(|err| err.to_string())?;
             let take_limit = if limit_capped > 0 { limit_capped as usize } else { usize::MAX };
             let mut documents = Vec::new();
@@ -3060,6 +3065,10 @@ pub fn run_collection_query(
             }
             builder = builder.limit(1);
 
+            if let Some(timeout) = timeout {
+                builder = builder.max_time(timeout);
+            }
+
             let cursor = builder.run().map_err(|err| err.to_string())?;
             if let Some(result) = cursor.into_iter().next() {
                 let document = result.map_err(|err| err.to_string())?;
@@ -3069,7 +3078,12 @@ pub fn run_collection_query(
             }
         }
         QueryOperation::Count { filter } => {
-            let count = collection.count_documents(filter).run().map_err(|err| err.to_string())?;
+            let mut action = collection.count_documents(filter);
+            if let Some(timeout) = timeout {
+                action = action.max_time(timeout);
+            }
+
+            let count = action.run().map_err(|err| err.to_string())?;
 
             let count_value = if count <= i64::MAX as u64 {
                 Bson::Int64(count as i64)
@@ -3097,6 +3111,10 @@ pub fn run_collection_query(
                 }
             }
 
+            if let Some(timeout) = timeout {
+                builder = builder.max_time(timeout);
+            }
+
             let count = builder.run().map_err(|err| err.to_string())?;
 
             let count_value = if count <= i64::MAX as u64 {
@@ -3116,6 +3134,10 @@ pub fn run_collection_query(
                 }
             }
 
+            if let Some(timeout) = timeout {
+                builder = builder.max_time(timeout);
+            }
+
             let count = builder.run().map_err(|err| err.to_string())?;
 
             let count_value = if count <= i64::MAX as u64 {
@@ -3127,8 +3149,12 @@ pub fn run_collection_query(
             Ok(QueryResult::Count { value: count_value })
         }
         QueryOperation::Distinct { field, filter } => {
-            let values =
-                collection.distinct(field.clone(), filter).run().map_err(|err| err.to_string())?;
+            let mut action = collection.distinct(field.clone(), filter);
+            if let Some(timeout) = timeout {
+                action = action.max_time(timeout);
+            }
+
+            let values = action.run().map_err(|err| err.to_string())?;
 
             Ok(QueryResult::Distinct { field, values })
         }
@@ -3143,7 +3169,12 @@ pub fn run_collection_query(
                 pipeline.push(doc! { "$limit": limit_i64 });
             }
 
-            let cursor = collection.aggregate(pipeline).run().map_err(|err| err.to_string())?;
+            let mut action = collection.aggregate(pipeline);
+            if let Some(timeout) = timeout {
+                action = action.max_time(timeout);
+            }
+
+            let cursor = action.run().map_err(|err| err.to_string())?;
 
             let mut documents = Vec::new();
             for result in cursor {
@@ -3438,6 +3469,10 @@ pub fn run_collection_query(
                 }
             }
 
+            if let Some(timeout) = timeout {
+                action = action.max_time(timeout);
+            }
+
             let result = action.run().map_err(|err| err.to_string())?;
             match result {
                 Some(document) => Ok(QueryResult::SingleDocument { document }),
@@ -3483,6 +3518,10 @@ pub fn run_collection_query(
                 }
             }
 
+            if let Some(timeout) = timeout {
+                action = action.max_time(timeout);
+            }
+
             let result = action.run().map_err(|err| err.to_string())?;
             match result {
                 Some(document) => Ok(QueryResult::SingleDocument { document }),
@@ -3519,6 +3558,10 @@ pub fn run_collection_query(
                 }
             }
 
+            if let Some(timeout) = timeout {
+                action = action.max_time(timeout);
+            }
+
             let result = action.run().map_err(|err| err.to_string())?;
             match result {
                 Some(document) => Ok(QueryResult::SingleDocument { document }),
@@ -3526,7 +3569,12 @@ pub fn run_collection_query(
             }
         }
         QueryOperation::ListIndexes => {
-            let cursor = collection.list_indexes().run().map_err(|err| err.to_string())?;
+            let mut action = collection.list_indexes();
+            if let Some(timeout) = timeout {
+                action = action.max_time(timeout);
+            }
+
+            let cursor = action.run().map_err(|err| err.to_string())?;
             let mut documents = Vec::new();
             for result in cursor {
                 let model = result.map_err(|err| err.to_string())?;
@@ -3538,7 +3586,8 @@ pub fn run_collection_query(
         }
         QueryOperation::DatabaseCommand { db, command } => {
             let database = client.database(&db);
-            let document = database.run_command(command).run().map_err(|err| err.to_string())?;
+            let action = database.run_command(command);
+            let document = action.run().map_err(|err| err.to_string())?;
             Ok(QueryResult::SingleDocument { document })
         }
     }
