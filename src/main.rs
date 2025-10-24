@@ -17,8 +17,8 @@ use iced::widget::text_editor::{
     self, Action as TextEditorAction, Binding as TextEditorBinding, Content as TextEditorContent,
 };
 use iced::widget::{
-    Button, Column, Container, Image, Row, Scrollable, Space, button, container, pane_grid,
-    text_input,
+    Button, Column, Container, Image, Row, Scrollable, Space, button, container, mouse_area,
+    pane_grid, text_input,
 };
 use iced::window;
 use iced::{
@@ -3645,7 +3645,12 @@ impl App {
             .push(fonts::primary_text(client.name.clone(), Some(6.0)))
             .push(fonts::primary_text(status_label.clone(), Some(6.0)));
 
-        let base_button = self.sidebar_button(header_row, 0.0, Message::ToggleClient(client.id));
+        let base_button = self.sidebar_button(
+            header_row,
+            0.0,
+            Message::ToggleClient(client.id),
+            None,
+        );
 
         let context_client_id = client.id;
         let is_ready = matches!(client.status, ConnectionStatus::Ready);
@@ -3750,6 +3755,7 @@ impl App {
             db_row,
             16.0,
             Message::ToggleDatabase { client_id, db_name: database.name.clone() },
+            None,
         );
 
         let db_name_owned = database.name.clone();
@@ -3856,18 +3862,24 @@ impl App {
             )
             .push(fonts::primary_text(collection.name.clone(), None));
 
+        let db_name_owned = db_name.to_owned();
+        let collection_name = collection.name.clone();
+
         let base_button = self.sidebar_button(
             row,
             32.0,
             Message::CollectionClicked {
                 client_id,
-                db_name: db_name.to_owned(),
-                collection: collection.name.clone(),
+                db_name: db_name_owned.clone(),
+                collection: collection_name.clone(),
             },
+            Some(Message::CollectionContextMenu {
+                client_id,
+                db_name: db_name_owned.clone(),
+                collection: collection_name.clone(),
+                action: CollectionContextAction::ViewDocuments,
+            }),
         );
-
-        let db_name_owned = db_name.to_owned();
-        let collection_name = collection.name.clone();
 
         ContextMenu::new(base_button, move || {
             let mut menu = Column::new().spacing(2).padding([4, 6]);
@@ -3979,6 +3991,7 @@ impl App {
         content: impl Into<Element<'a, Message>>,
         indent: f32,
         on_press: Message,
+        middle_press: Option<Message>,
     ) -> Element<'a, Message> {
         let button = Button::new(content)
             .padding([4, 4])
@@ -3987,12 +4000,18 @@ impl App {
             .style(Self::sidebar_button_style)
             .on_press(on_press);
 
-        Row::new()
+        let row: Element<Message> = Row::new()
             .spacing(8)
             .align_y(Vertical::Center)
             .push(Space::with_width(Length::Fixed(indent.max(0.0))))
             .push(button)
-            .into()
+            .into();
+
+        if let Some(message) = middle_press {
+            mouse_area(row).on_middle_press(message).into()
+        } else {
+            row
+        }
     }
 
     fn sidebar_button_style(theme: &Theme, status: button::Status) -> button::Style {
