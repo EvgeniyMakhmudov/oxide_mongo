@@ -16,3 +16,4 @@ toml = "0.8"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["std"] }
 base64 = "0.22"
+fontdb = "0.15"

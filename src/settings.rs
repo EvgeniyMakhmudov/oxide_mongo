@@ -1,3 +1,4 @@
+use crate::fonts;
 use crate::i18n::Language;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -9,35 +10,6 @@ use std::sync::{OnceLock, RwLock, RwLockWriteGuard};
 pub const SETTINGS_FILE_NAME: &str = "settings.toml";
 
 static GLOBAL_SETTINGS: OnceLock<RwLock<AppSettings>> = OnceLock::new();
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum FontChoice {
-    System,
-    Monospace,
-    Serif,
-}
-
-impl FontChoice {
-    pub const fn label(self) -> &'static str {
-        match self {
-            FontChoice::System => "System Default",
-            FontChoice::Monospace => "Monospace",
-            FontChoice::Serif => "Serif",
-        }
-    }
-}
-
-impl fmt::Display for FontChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.label())
-    }
-}
-
-impl Default for FontChoice {
-    fn default() -> Self {
-        FontChoice::System
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ThemeChoice {
@@ -76,9 +48,9 @@ pub struct AppSettings {
     pub query_timeout_secs: u64,
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
-    pub primary_font: FontChoice,
+    pub primary_font: String,
     pub primary_font_size: u16,
-    pub result_font: FontChoice,
+    pub result_font: String,
     pub result_font_size: u16,
     pub theme_choice: ThemeChoice,
 }
@@ -91,9 +63,9 @@ impl Default for AppSettings {
             query_timeout_secs: 600,
             sort_fields_alphabetically: false,
             sort_index_names_alphabetically: false,
-            primary_font: FontChoice::System,
+            primary_font: fonts::default_font_id().to_string(),
             primary_font_size: 16,
-            result_font: FontChoice::Monospace,
+            result_font: fonts::default_font_id().to_string(),
             result_font_size: 14,
             theme_choice: ThemeChoice::System,
         }
@@ -156,8 +128,16 @@ pub fn load_from_disk() -> Result<AppSettings, SettingsLoadError> {
     let path = settings_path();
     match fs::read_to_string(path) {
         Ok(contents) => toml::from_str::<AppSettings>(&contents)
+            .map(|mut settings| {
+                settings.normalize_fonts();
+                settings
+            })
             .map_err(SettingsLoadError::Parse),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(AppSettings::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            let mut settings = AppSettings::default();
+            settings.normalize_fonts();
+            Ok(settings)
+        }
         Err(error) => Err(SettingsLoadError::Io(error)),
     }
 }
@@ -188,5 +168,44 @@ pub fn replace(new_settings: AppSettings) {
     *guard = new_settings;
 }
 
-pub const ALL_FONTS: &[FontChoice] = &[FontChoice::System, FontChoice::Monospace, FontChoice::Serif];
 pub const ALL_THEMES: &[ThemeChoice] = &[ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+
+impl AppSettings {
+    pub fn normalize_fonts(&mut self) {
+        self.primary_font = normalize_font_id(&self.primary_font);
+        self.result_font = normalize_font_id(&self.result_font);
+    }
+}
+
+fn normalize_font_id(value: &str) -> String {
+    if let Some(option) = fonts::font_option_by_id(value) {
+        return option.id;
+    }
+
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return fonts::default_font_id().to_string();
+    }
+
+    let lowered = trimmed.to_lowercase();
+
+    if let Some(option) = fonts::available_fonts()
+        .iter()
+        .find(|option| option.name.to_lowercase() == lowered)
+    {
+        return option.id.clone();
+    }
+
+    match lowered.as_str() {
+        "system" | "system default" | "sans" => fonts::default_font_id().to_string(),
+        "monospace" => fonts::font_option_by_id(fonts::MONO_FONT_ID)
+            .map(|option| option.id)
+            .unwrap_or_else(|| fonts::default_font_id().to_string()),
+        "serif" => fonts::available_fonts()
+            .iter()
+            .find(|option| option.name.to_lowercase().contains("serif"))
+            .map(|option| option.id.clone())
+            .unwrap_or_else(|| fonts::default_font_id().to_string()),
+        _ => fonts::default_font_id().to_string(),
+    }
+}

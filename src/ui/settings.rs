@@ -1,12 +1,14 @@
 use iced::alignment::Vertical;
 use iced::widget::checkbox::Checkbox;
 use iced::widget::pick_list::PickList;
-use iced::widget::{self, Button, Column, Container, Row, Space, Text, button, text_input};
+use iced::widget::{self, Button, Column, Container, Row, Space, button, text_input};
 use iced::{Color, Element, Length, Shadow, Theme, border};
 
-use crate::i18n::{tr, tr_format, Language, ALL_LANGUAGES};
-use crate::settings::{AppSettings, FontChoice, ThemeChoice, ALL_FONTS, ALL_THEMES};
 use crate::Message;
+use crate::fonts;
+use crate::i18n::{ALL_LANGUAGES, Language, tr, tr_format};
+use crate::settings::{ALL_THEMES, AppSettings, ThemeChoice};
+use crate::ui::fonts_dropdown::{self, FontDropdown};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
@@ -31,9 +33,12 @@ pub struct SettingsWindowState {
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
     pub language: Language,
-    pub primary_font: FontChoice,
+    pub font_options: Vec<fonts_dropdown::FontOption>,
+    pub primary_font_open: bool,
+    pub primary_font_id: String,
     pub primary_font_size: String,
-    pub result_font: FontChoice,
+    pub result_font_open: bool,
+    pub result_font_id: String,
     pub result_font_size: String,
     pub theme_choice: ThemeChoice,
     pub validation_error: Option<String>,
@@ -41,25 +46,19 @@ pub struct SettingsWindowState {
 
 impl Default for SettingsWindowState {
     fn default() -> Self {
-        Self {
-            active_tab: SettingsTab::Behavior,
-            expand_first_result: true,
-            query_timeout_secs: "600".to_string(),
-            sort_fields_alphabetically: false,
-            sort_index_names_alphabetically: false,
-            language: Language::Russian,
-            primary_font: FontChoice::System,
-            primary_font_size: "16".to_string(),
-            result_font: FontChoice::Monospace,
-            result_font_size: "14".to_string(),
-            theme_choice: ThemeChoice::System,
-            validation_error: None,
-        }
+        Self::from_app_settings(&AppSettings::default())
     }
 }
 
 impl SettingsWindowState {
     pub fn from_app_settings(settings: &AppSettings) -> Self {
+        let font_options: Vec<fonts_dropdown::FontOption> = fonts::available_fonts()
+            .iter()
+            .map(|opt| fonts_dropdown::FontOption::new(opt.id.clone(), opt.name.clone(), opt.font))
+            .collect();
+
+        let primary_font_id = ensure_font_id(&font_options, &settings.primary_font);
+        let result_font_id = ensure_font_id(&font_options, &settings.result_font);
         Self {
             active_tab: SettingsTab::Behavior,
             expand_first_result: settings.expand_first_result,
@@ -67,9 +66,12 @@ impl SettingsWindowState {
             sort_fields_alphabetically: settings.sort_fields_alphabetically,
             sort_index_names_alphabetically: settings.sort_index_names_alphabetically,
             language: settings.language,
-            primary_font: settings.primary_font,
+            font_options,
+            primary_font_open: false,
+            primary_font_id,
             primary_font_size: settings.primary_font_size.to_string(),
-            result_font: settings.result_font,
+            result_font_open: false,
+            result_font_id,
             result_font_size: settings.result_font_size.to_string(),
             theme_choice: settings.theme_choice,
             validation_error: None,
@@ -77,7 +79,8 @@ impl SettingsWindowState {
     }
 
     pub fn to_app_settings(&self) -> Result<AppSettings, String> {
-        let timeout = parse_integer::<u64>(&self.query_timeout_secs, tr("Query timeout (seconds)"))?;
+        let timeout =
+            parse_integer::<u64>(&self.query_timeout_secs, tr("Query timeout (seconds)"))?;
         let primary_size = parse_integer::<u16>(&self.primary_font_size, tr("Primary Font"))?;
         let result_size = parse_integer::<u16>(&self.result_font_size, tr("Query Result Font"))?;
 
@@ -91,13 +94,27 @@ impl SettingsWindowState {
             sort_fields_alphabetically: self.sort_fields_alphabetically,
             sort_index_names_alphabetically: self.sort_index_names_alphabetically,
             language: self.language,
-            primary_font: self.primary_font,
+            primary_font: self.primary_font_id.clone(),
             primary_font_size: primary_size,
-            result_font: self.result_font,
+            result_font: self.result_font_id.clone(),
             result_font_size: result_size,
             theme_choice: self.theme_choice,
         })
     }
+}
+
+fn ensure_font_id(font_options: &[fonts_dropdown::FontOption], value: &str) -> String {
+    if let Some(option) = font_options.iter().find(|option| option.id == value) {
+        return option.id.clone();
+    }
+
+    let lowered = value.trim().to_lowercase();
+
+    if let Some(option) = font_options.iter().find(|option| option.name.to_lowercase() == lowered) {
+        return option.id.clone();
+    }
+
+    fonts::default_font_id().to_string()
 }
 
 fn parse_integer<T>(value: &str, label: &str) -> Result<T, String>
@@ -106,9 +123,9 @@ where
     <T as std::str::FromStr>::Err: std::fmt::Display,
 {
     let trimmed = value.trim();
-    trimmed.parse::<T>().map_err(|_| {
-        tr_format("Invalid numeric value for \"{}\".", &[label]).to_string()
-    })
+    trimmed
+        .parse::<T>()
+        .map_err(|_| tr_format("Invalid numeric value for \"{}\".", &[label]).to_string())
 }
 
 pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
@@ -121,16 +138,12 @@ pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
 
     let content = Column::new()
         .spacing(20)
-        .push(Text::new(tr("Settings")).size(24).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
+        .push(fonts::primary_text(tr("Settings"), Some(10.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
         .push(tab_row)
         .push(tab_content);
 
     let mut content = if let Some(error) = &state.validation_error {
-        content.push(
-            Text::new(error.clone())
-                .size(13)
-                .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-        )
+        content.push(fonts::primary_text(error.clone(), Some(-1.0)).color(Color::from_rgb8(0xd9, 0x53, 0x4f)))
     } else {
         content
     };
@@ -158,7 +171,7 @@ fn behavior_tab(state: &SettingsWindowState) -> Element<Message> {
     let timeout_row = Row::new()
         .spacing(12)
         .align_y(Vertical::Center)
-        .push(Text::new(tr("Query timeout (seconds)")).size(14))
+    .push(fonts::primary_text(tr("Query timeout (seconds)"), None))
         .push(
             text_input(tr("Seconds"), &state.query_timeout_secs)
                 .on_input(Message::SettingsQueryTimeoutChanged)
@@ -183,24 +196,37 @@ fn behavior_tab(state: &SettingsWindowState) -> Element<Message> {
         .into()
 }
 
-fn appearance_row<'a>(
+fn font_picker_row<'a>(
+    state: &'a SettingsWindowState,
     label: &'static str,
-    selected_font: FontChoice,
-    font_size: &str,
-    font_message: fn(FontChoice) -> Message,
-    size_message: fn(String) -> Message,
+    font_id: &'a str,
+    font_size: &'a str,
+    is_open: bool,
+    on_toggle: Message,
+    on_font_change: fn(String) -> Message,
+    on_size_change: fn(String) -> Message,
 ) -> Element<'a, Message> {
+    let selected = if font_id.is_empty() { None } else { Some(font_id) };
+
+    let dropdown = FontDropdown::new(
+        tr(label),
+        &state.font_options,
+        selected,
+        is_open,
+        on_toggle,
+        on_font_change,
+    )
+    .width(Length::FillPortion(5))
+    .max_height(240.0);
+
     Row::new()
         .spacing(12)
         .align_y(Vertical::Center)
-        .push(Text::new(tr(label)).size(14).width(Length::FillPortion(3)))
-        .push(
-            PickList::new(ALL_FONTS, Some(selected_font), font_message)
-                .width(Length::FillPortion(4)),
-        )
+        .push(fonts::primary_text(tr(label), None).width(Length::FillPortion(3)))
+        .push(dropdown)
         .push(
             text_input(tr("Font Size"), font_size)
-                .on_input(size_message)
+                .on_input(on_size_change)
                 .padding([6, 10])
                 .width(Length::Fixed(120.0)),
         )
@@ -211,25 +237,32 @@ fn appearance_tab(state: &SettingsWindowState) -> Element<Message> {
     let language_row = Row::new()
         .spacing(12)
         .align_y(Vertical::Center)
-        .push(Text::new(tr("Language")).size(14).width(Length::FillPortion(3)))
+        .push(fonts::primary_text(tr("Language"), None).width(Length::FillPortion(3)))
         .push(
             PickList::new(ALL_LANGUAGES, Some(state.language), Message::SettingsLanguageChanged)
                 .width(Length::FillPortion(4)),
         )
-        .push(Space::with_width(Length::FillPortion(3)));
+        .push(Space::with_width(Length::FillPortion(2)))
+        .push(Space::with_width(Length::Fixed(120.0)));
 
-    let primary_row = appearance_row(
+    let primary_row = font_picker_row(
+        state,
         "Primary Font",
-        state.primary_font,
+        &state.primary_font_id,
         &state.primary_font_size,
+        state.primary_font_open,
+        Message::SettingsPrimaryFontDropdownToggled,
         Message::SettingsPrimaryFontChanged,
         Message::SettingsPrimaryFontSizeChanged,
     );
 
-    let result_row = appearance_row(
+    let result_row = font_picker_row(
+        state,
         "Query Result Font",
-        state.result_font,
+        &state.result_font_id,
         &state.result_font_size,
+        state.result_font_open,
+        Message::SettingsResultFontDropdownToggled,
         Message::SettingsResultFontChanged,
         Message::SettingsResultFontSizeChanged,
     );
@@ -237,12 +270,13 @@ fn appearance_tab(state: &SettingsWindowState) -> Element<Message> {
     let theme_row = Row::new()
         .spacing(12)
         .align_y(Vertical::Center)
-        .push(Text::new(tr("Theme")).size(14).width(Length::FillPortion(3)))
+        .push(fonts::primary_text(tr("Theme"), None).width(Length::FillPortion(3)))
         .push(
             PickList::new(ALL_THEMES, Some(state.theme_choice), Message::SettingsThemeChanged)
                 .width(Length::FillPortion(4)),
         )
-        .push(Space::with_width(Length::FillPortion(3)));
+        .push(Space::with_width(Length::FillPortion(2)))
+        .push(Space::with_width(Length::Fixed(120.0)));
 
     Column::new()
         .spacing(16)
@@ -254,13 +288,13 @@ fn appearance_tab(state: &SettingsWindowState) -> Element<Message> {
 }
 
 fn bottom_actions() -> Element<'static, Message> {
-    let apply = Button::new(Text::new(tr("Apply")).size(14))
+    let apply = Button::new(fonts::primary_text(tr("Apply"), None))
         .padding([6, 16])
         .on_press(Message::SettingsApply);
-    let cancel = Button::new(Text::new(tr("Cancel")).size(14))
+    let cancel = Button::new(fonts::primary_text(tr("Cancel"), None))
         .padding([6, 16])
         .on_press(Message::SettingsCancel);
-    let save = Button::new(Text::new(tr("Save")).size(14))
+    let save = Button::new(fonts::primary_text(tr("Save"), None))
         .padding([6, 16])
         .on_press(Message::SettingsSave);
 
@@ -275,16 +309,16 @@ fn bottom_actions() -> Element<'static, Message> {
 }
 
 fn tab_buttons(active: SettingsTab) -> Row<'static, Message> {
-    let mut behavior = Button::new(Text::new(tr(SettingsTab::Behavior.label())).size(14))
-        .padding([6, 16])
-        .style(move |_, _| tab_button_style(active == SettingsTab::Behavior));
+    let mut behavior = Button::new(fonts::primary_text(tr(SettingsTab::Behavior.label()), None))
+    .padding([6, 16])
+    .style(move |_, _| tab_button_style(active == SettingsTab::Behavior));
     if active != SettingsTab::Behavior {
         behavior = behavior.on_press(Message::SettingsTabChanged(SettingsTab::Behavior));
     }
 
-    let mut appearance = Button::new(Text::new(tr(SettingsTab::Appearance.label())).size(14))
-        .padding([6, 16])
-        .style(move |_, _| tab_button_style(active == SettingsTab::Appearance));
+    let mut appearance = Button::new(fonts::primary_text(tr(SettingsTab::Appearance.label()), None))
+    .padding([6, 16])
+    .style(move |_, _| tab_button_style(active == SettingsTab::Appearance));
     if active != SettingsTab::Appearance {
         appearance = appearance.on_press(Message::SettingsTabChanged(SettingsTab::Appearance));
     }

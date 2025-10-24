@@ -2,15 +2,16 @@ use std::collections::HashSet;
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
-use iced::widget::{self, Button, Column, Container, Row, Scrollable, Space, Text, button};
+use iced::widget::{self, Button, Column, Container, Row, Scrollable, Space, button};
 use iced::{Color, Element, Length, Shadow, border};
 use iced_aw::ContextMenu;
 use mongodb::bson::{Bson, Document};
 
+use crate::fonts;
 use crate::i18n::tr;
-use crate::settings::AppSettings;
 use crate::mongo::shell;
-use crate::{MONO_FONT, Message, TabId, TableContextAction, ValueEditContext};
+use crate::settings::AppSettings;
+use crate::{Message, TabId, TableContextAction, ValueEditContext};
 
 #[derive(Debug)]
 pub struct BsonTree {
@@ -26,7 +27,10 @@ pub struct BsonTreeOptions {
 }
 
 impl BsonTreeOptions {
-    pub const fn new(sort_fields_alphabetically: bool, sort_index_names_alphabetically: bool) -> Self {
+    pub const fn new(
+        sort_fields_alphabetically: bool,
+        sort_index_names_alphabetically: bool,
+    ) -> Self {
         Self { sort_fields_alphabetically, sort_index_names_alphabetically }
     }
 }
@@ -39,10 +43,7 @@ impl Default for BsonTreeOptions {
 
 impl From<&AppSettings> for BsonTreeOptions {
     fn from(settings: &AppSettings) -> Self {
-        Self::new(
-            settings.sort_fields_alphabetically,
-            settings.sort_index_names_alphabetically,
-        )
+        Self::new(settings.sort_fields_alphabetically, settings.sort_index_names_alphabetically)
     }
 }
 
@@ -206,8 +207,13 @@ impl BsonTree {
 
         if values.is_empty() {
             let info_value = Bson::String(String::from(tr("No documents found")));
-            let placeholder =
-                BsonNode::from_bson(Some(String::from(tr("info"))), None, &info_value, &mut id_gen, &options);
+            let placeholder = BsonNode::from_bson(
+                Some(String::from(tr("info"))),
+                None,
+                &info_value,
+                &mut id_gen,
+                &options,
+            );
             roots.push(placeholder);
         } else {
             for (index, value) in values.iter().enumerate() {
@@ -309,7 +315,13 @@ impl BsonTree {
                         Some(name) if !name.is_empty() => format!("{base_label} {name}"),
                         _ => base_label.clone(),
                     };
-                    roots.push(BsonNode::from_bson(Some(display), None, value, &mut id_gen, &options));
+                    roots.push(BsonNode::from_bson(
+                        Some(display),
+                        None,
+                        value,
+                        &mut id_gen,
+                        &options,
+                    ));
                 }
                 other => {
                     roots.push(BsonNode::from_bson(
@@ -377,7 +389,7 @@ impl BsonTree {
             .width(Length::Fill)
             .height(Length::Shrink)
             .push(
-                Container::new(Text::new(tr("Key")).size(14).font(MONO_FONT))
+                Container::new(fonts::result_text(tr("Key"), None))
                     .width(Length::FillPortion(4))
                     .padding([6, 8]),
             )
@@ -392,7 +404,7 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(Text::new(tr("Value")).size(14).font(MONO_FONT))
+                Container::new(fonts::result_text(tr("Value"), None))
                     .width(Length::FillPortion(5))
                     .padding([6, 8]),
             )
@@ -407,7 +419,7 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(Text::new(tr("Type")).size(14).font(MONO_FONT))
+                Container::new(fonts::result_text(tr("Type"), None))
                     .width(Length::FillPortion(3))
                     .padding([6, 8]),
             );
@@ -433,13 +445,13 @@ impl BsonTree {
                     node.children().map(|children| !children.is_empty()).unwrap_or(false);
 
                 if has_children {
-                    let toggle = Button::new(Text::new(indicator))
+                    let toggle = Button::new(fonts::result_text(indicator, None))
                         .padding([0, 4])
                         .on_press(Message::CollectionTreeToggle { tab_id, node_id: node.id });
                     key_row = key_row.push(toggle);
                 } else {
                     let disabled = Container::new(
-                        Text::new(indicator).size(14).color(Color::from_rgb8(0xb5, 0xbc, 0xc6)),
+                        fonts::result_text(indicator, None).color(Color::from_rgb8(0xb5, 0xbc, 0xc6)),
                     )
                     .padding([0, 4])
                     .width(Length::Fixed(18.0))
@@ -453,11 +465,7 @@ impl BsonTree {
 
             let key_label = node.display_key();
             key_row = key_row.push(
-                Text::new(key_label.clone())
-                    .size(14)
-                    .font(MONO_FONT)
-                    .wrapping(Wrapping::Word)
-                    .width(Length::Fill),
+                fonts::result_text(key_label.clone(), None).wrapping(Wrapping::Word).width(Length::Fill),
             );
 
             let value_text = node.value_display().unwrap_or_default();
@@ -466,21 +474,13 @@ impl BsonTree {
             let key_cell = Container::new(key_row).width(Length::FillPortion(4)).padding([6, 8]);
 
             let value_cell = Container::new(
-                Text::new(value_text.clone())
-                    .size(14)
-                    .font(MONO_FONT)
-                    .wrapping(Wrapping::Word)
-                    .width(Length::Fill),
+                fonts::result_text(value_text.clone(), None).wrapping(Wrapping::Word).width(Length::Fill),
             )
             .width(Length::FillPortion(5))
             .padding([6, 8]);
 
             let type_cell = Container::new(
-                Text::new(type_text.clone())
-                    .size(14)
-                    .font(MONO_FONT)
-                    .wrapping(Wrapping::Word)
-                    .width(Length::Fill),
+                fonts::result_text(type_text.clone(), None).wrapping(Wrapping::Word).width(Length::Fill),
             )
             .width(Length::FillPortion(3))
             .padding([6, 8]);
@@ -544,7 +544,7 @@ impl BsonTree {
 
                 if node.is_container() {
                     let expand_button =
-                        Button::new(Text::new(tr("Expand Hierarchically")).size(14))
+                        Button::new(fonts::primary_text(tr("Expand Hierarchically"), None))
                             .padding([4, 12])
                             .width(Length::Shrink)
                             .on_press(Message::TableContextMenu {
@@ -554,7 +554,7 @@ impl BsonTree {
                             });
 
                     let collapse_button =
-                        Button::new(Text::new(tr("Collapse Hierarchically")).size(14))
+                        Button::new(fonts::primary_text(tr("Collapse Hierarchically"), None))
                             .padding([4, 12])
                             .width(Length::Shrink)
                             .on_press(Message::TableContextMenu {
@@ -567,7 +567,7 @@ impl BsonTree {
                     menu = menu.push(collapse_button);
                 }
 
-                let copy_json = Button::new(Text::new(tr("Copy JSON")).size(14))
+                let copy_json = Button::new(fonts::primary_text(tr("Copy JSON"), None))
                     .padding([4, 12])
                     .width(Length::Shrink)
                     .on_press(Message::TableContextMenu {
@@ -576,7 +576,7 @@ impl BsonTree {
                         action: TableContextAction::CopyJson,
                     });
 
-                let copy_key = Button::new(Text::new(tr("Copy Key")).size(14))
+                let copy_key = Button::new(fonts::primary_text(tr("Copy Key"), None))
                     .padding([4, 12])
                     .width(Length::Shrink)
                     .on_press(Message::TableContextMenu {
@@ -585,7 +585,7 @@ impl BsonTree {
                         action: TableContextAction::CopyKey,
                     });
 
-                let copy_value = Button::new(Text::new(tr("Copy Value")).size(14))
+                let copy_value = Button::new(fonts::primary_text(tr("Copy Value"), None))
                     .padding([4, 12])
                     .width(Length::Shrink)
                     .on_press(Message::TableContextMenu {
@@ -594,7 +594,7 @@ impl BsonTree {
                         action: TableContextAction::CopyValue,
                     });
 
-                let mut copy_path = Button::new(Text::new(tr("Copy Path")).size(14))
+                let mut copy_path = Button::new(fonts::primary_text(tr("Copy Path"), None))
                     .padding([4, 12])
                     .width(Length::Shrink);
 
@@ -611,7 +611,7 @@ impl BsonTree {
                 menu = menu.push(copy_value);
                 menu = menu.push(copy_path);
                 if value_edit_enabled {
-                    let edit_value = Button::new(Text::new(tr("Edit Value Only...")).size(14))
+                    let edit_value = Button::new(fonts::primary_text(tr("Edit Value Only..."), None))
                         .padding([4, 12])
                         .width(Length::Shrink)
                         .on_press(Message::TableContextMenu {
@@ -623,7 +623,7 @@ impl BsonTree {
                 }
 
                 if let Some((index_name, hidden_state, ttl_enabled)) = index_context.clone() {
-                    let mut delete_button = Button::new(Text::new(tr("Delete Index")).size(14))
+                    let mut delete_button = Button::new(fonts::primary_text(tr("Delete Index"), None))
                         .padding([4, 12])
                         .width(Length::Shrink);
                     if index_name != "_id_" {
@@ -637,7 +637,7 @@ impl BsonTree {
 
                     let hidden = hidden_state.unwrap_or(false);
 
-                    let mut hide_button = Button::new(Text::new(tr("Hide Index")).size(14))
+                    let mut hide_button = Button::new(fonts::primary_text(tr("Hide Index"), None))
                         .padding([4, 12])
                         .width(Length::Shrink);
                     if !hidden {
@@ -649,7 +649,7 @@ impl BsonTree {
                     }
                     menu = menu.push(hide_button);
 
-                    let mut unhide_button = Button::new(Text::new(tr("Unhide Index")).size(14))
+                    let mut unhide_button = Button::new(fonts::primary_text(tr("Unhide Index"), None))
                         .padding([4, 12])
                         .width(Length::Shrink);
                     if hidden {
@@ -662,7 +662,7 @@ impl BsonTree {
                     menu = menu.push(unhide_button);
 
                     if ttl_enabled {
-                        let edit_button = Button::new(Text::new(tr("Edit Index...")).size(14))
+                        let edit_button = Button::new(fonts::primary_text(tr("Edit Index..."), None))
                             .padding([4, 12])
                             .width(Length::Shrink)
                             .on_press(Message::DocumentEditRequested {
@@ -671,7 +671,7 @@ impl BsonTree {
                             });
                         menu = menu.push(edit_button);
                     } else {
-                        let edit_button = Button::new(Text::new(tr("Edit Index...")).size(14))
+                        let edit_button = Button::new(fonts::primary_text(tr("Edit Index..."), None))
                             .padding([4, 12])
                             .width(Length::Shrink)
                             .style(|_, _| button::Style {
@@ -685,7 +685,7 @@ impl BsonTree {
                         menu = menu.push(edit_button);
                     }
                 } else if is_root_document {
-                    let edit_button = Button::new(Text::new(tr("Edit Document...")).size(14))
+                    let edit_button = Button::new(fonts::primary_text(tr("Edit Document..."), None))
                         .padding([4, 12])
                         .width(Length::Shrink)
                         .on_press(Message::DocumentEditRequested {

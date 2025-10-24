@@ -1,3 +1,4 @@
+mod fonts;
 mod i18n;
 mod mongo;
 mod settings;
@@ -16,8 +17,8 @@ use iced::widget::text_editor::{
     self, Action as TextEditorAction, Binding as TextEditorBinding, Content as TextEditorContent,
 };
 use iced::widget::{
-    Button, Column, Container, Image, Row, Scrollable, Space, Text, button, container, pane_grid,
-    text, text_input,
+    Button, Column, Container, Image, Row, Scrollable, Space, button, container, pane_grid,
+    text_input,
 };
 use iced::window;
 use iced::{
@@ -36,6 +37,7 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use crate::fonts::{MONO_FONT, MONO_FONT_BYTES};
 use mongo::bson_edit::ValueEditKind;
 use mongo::bson_tree::{BsonTree, BsonTreeOptions};
 use mongo::connection::{
@@ -43,7 +45,7 @@ use mongo::connection::{
 };
 use mongo::query::{QueryOperation, QueryResult, parse_collection_query, run_collection_query};
 use mongo::shell;
-use crate::settings::{AppSettings, FontChoice, ThemeChoice};
+use settings::{AppSettings, ThemeChoice};
 use ui::connections::{
     ConnectionEntry, ConnectionFormMode, ConnectionFormState, ConnectionFormTab,
     ConnectionsWindowState, ListClick, TestFeedback, connection_form_view, connections_view,
@@ -60,8 +62,6 @@ const WINDOW_ICON_BYTES: &[u8] = include_bytes!("../assests/icons/oxide_mongo_25
 pub(crate) const ICON_NETWORK_BYTES: &[u8] = include_bytes!("../assests/icons/network_115x128.png");
 const ICON_DATABASE_BYTES: &[u8] = include_bytes!("../assests/icons/database_105x128.png");
 const ICON_COLLECTION_BYTES: &[u8] = include_bytes!("../assests/icons/collection_108x128.png");
-const MONO_FONT_BYTES: &[u8] = include_bytes!("../assests/fonts/DejaVuSansMono.ttf");
-const MONO_FONT: Font = Font::with_name("DejaVu Sans Mono");
 pub(crate) static ICON_NETWORK_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_DATABASE_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_COLLECTION_HANDLE: OnceLock<Handle> = OnceLock::new();
@@ -234,9 +234,11 @@ enum Message {
     SettingsToggleSortFields(bool),
     SettingsToggleSortIndexes(bool),
     SettingsLanguageChanged(i18n::Language),
-    SettingsPrimaryFontChanged(FontChoice),
+    SettingsPrimaryFontDropdownToggled,
+    SettingsPrimaryFontChanged(String),
     SettingsPrimaryFontSizeChanged(String),
-    SettingsResultFontChanged(FontChoice),
+    SettingsResultFontDropdownToggled,
+    SettingsResultFontChanged(String),
     SettingsResultFontSizeChanged(String),
     SettingsThemeChanged(ThemeChoice),
     SettingsApply,
@@ -816,7 +818,7 @@ impl CollectionTab {
             .map(Self::format_duration)
             .unwrap_or_else(|| String::from(tr("—")));
 
-        let icon_size = 18.0;
+        let icon_size = fonts::active_fonts().primary_size * 1.5;
 
         let skip_input = text_input(tr("skip"), &self.skip_input)
             .padding([4, 6])
@@ -830,11 +832,11 @@ impl CollectionTab {
             .on_input(move |value| Message::CollectionLimitChanged { tab_id: limit_tab_id, value })
             .width(Length::Fixed(52.0));
 
-        let skip_prev = Button::new(Text::new(tr("◀")).size(16))
+        let skip_prev = Button::new(fonts::primary_text(tr("◀"), Some(6.0)))
             .on_press(Message::CollectionSkipPrev(skip_prev_tab_id))
             .padding([2, 6]);
 
-        let skip_next = Button::new(Text::new(tr("▶")).size(16))
+        let skip_next = Button::new(fonts::primary_text(tr("▶"), Some(6.0)))
             .on_press(Message::CollectionSkipNext(skip_next_tab_id))
             .padding([2, 6]);
 
@@ -854,7 +856,7 @@ impl CollectionTab {
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
-            .push(Text::new(self.client_name.clone()).size(14));
+            .push(fonts::primary_text(self.client_name.clone(), None));
 
         let database_label = Row::new()
             .spacing(6)
@@ -864,7 +866,7 @@ impl CollectionTab {
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
-            .push(Text::new(self.db_name.clone()).size(14));
+            .push(fonts::primary_text(self.db_name.clone(), None));
 
         let collection_label = Row::new()
             .spacing(6)
@@ -874,7 +876,7 @@ impl CollectionTab {
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
-            .push(Text::new(self.collection.clone()).size(14));
+            .push(fonts::primary_text(self.collection.clone(), None));
 
         let info_labels = Row::new()
             .spacing(12)
@@ -882,7 +884,7 @@ impl CollectionTab {
             .push(connection_label)
             .push(database_label)
             .push(collection_label)
-            .push(Text::new(format!("{} {}", tr("Duration:"), duration_text)).size(14));
+            .push(fonts::primary_text(format!("{} {}", tr("Duration:"), duration_text), None));
 
         let info_row = Row::new()
             .spacing(16)
@@ -960,8 +962,9 @@ impl CollectionTab {
             .on_action(move |action| Message::CollectionEditorAction { tab_id, action })
             .height(Length::Fill);
 
-        let send_content =
-            Container::new(Text::new(tr("Send"))).center_x(Length::Shrink).center_y(Length::Fill);
+        let send_content = Container::new(fonts::primary_text(tr("Send"), None))
+            .center_x(Length::Shrink)
+            .center_y(Length::Fill);
 
         let send_button = Button::new(send_content)
             .on_press(Message::CollectionSend(tab_id))
@@ -1162,6 +1165,12 @@ impl Default for App {
 
 impl App {
     fn new(settings: AppSettings) -> Self {
+        fonts::set_active_fonts(
+            &settings.primary_font,
+            settings.primary_font_size as f32,
+            &settings.result_font,
+            settings.result_font_size as f32,
+        );
         let (mut panes, sidebar) = pane_grid::State::new(PaneContent::Sidebar);
         let (_content_pane, split) = panes
             .split(pane_grid::Axis::Vertical, sidebar, PaneContent::Main)
@@ -1203,6 +1212,12 @@ impl App {
             Err(error) => (AppSettings::default(), Some(error)),
         };
 
+        fonts::set_active_fonts(
+            &settings.primary_font,
+            settings.primary_font_size as f32,
+            &settings.result_font,
+            settings.result_font_size as f32,
+        );
         settings::initialize(settings.clone());
         i18n::init_language(settings.language);
 
@@ -2749,9 +2764,27 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SettingsPrimaryFontDropdownToggled => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.primary_font_open = !state.primary_font_open;
+                    if state.primary_font_open {
+                        state.result_font_open = false;
+                    }
+                }
+                Task::none()
+            }
             Message::SettingsPrimaryFontChanged(choice) => {
                 if let Some(state) = self.settings_window.as_mut() {
-                    state.primary_font = choice;
+                    state.primary_font_id = if state
+                        .font_options
+                        .iter()
+                        .any(|option| option.id == choice)
+                    {
+                        choice
+                    } else {
+                        fonts::default_font_id().to_string()
+                    };
+                    state.primary_font_open = false;
                     state.validation_error = None;
                 }
                 Task::none()
@@ -2763,9 +2796,27 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SettingsResultFontDropdownToggled => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.result_font_open = !state.result_font_open;
+                    if state.result_font_open {
+                        state.primary_font_open = false;
+                    }
+                }
+                Task::none()
+            }
             Message::SettingsResultFontChanged(choice) => {
                 if let Some(state) = self.settings_window.as_mut() {
-                    state.result_font = choice;
+                    state.result_font_id = if state
+                        .font_options
+                        .iter()
+                        .any(|option| option.id == choice)
+                    {
+                        choice
+                    } else {
+                        fonts::default_font_id().to_string()
+                    };
+                    state.result_font_open = false;
                     state.validation_error = None;
                 }
                 Task::none()
@@ -2984,19 +3035,17 @@ impl App {
     }
 
     fn settings_error_modal_view(&self, state: &SettingsErrorModalState) -> Element<Message> {
-        let title = Text::new(tr("Settings Error"))
-            .size(22)
-            .color(Color::from_rgb8(0x17, 0x1a, 0x20));
+        let title = fonts::primary_text(tr("Settings Error"), Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20));
 
-        let message = Text::new(state.message.clone())
-            .size(14)
-            .color(Color::from_rgb8(0x31, 0x38, 0x4a));
+        let message = fonts::primary_text(state.message.clone(), None).color(Color::from_rgb8(0x31, 0x38, 0x4a));
 
-        let exit_button = Button::new(Text::new(tr("Exit")).size(14))
+        let exit_button = Button::new(fonts::primary_text(tr("Exit"), None))
             .padding([6, 16])
             .on_press(Message::SettingsLoadErrorExit);
 
-        let continue_button = Button::new(Text::new(tr("Continue with default settings")).size(14))
+        let continue_button = Button::new(
+            fonts::primary_text(tr("Continue with default settings"), None),
+        )
             .padding([6, 16])
             .on_press(Message::SettingsLoadErrorUseDefaults);
 
@@ -3104,12 +3153,11 @@ impl App {
 
         let mut column = Column::new()
             .spacing(16)
-            .push(Text::new(title).size(22).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
-            .push(Text::new(warning).size(14).color(Color::from_rgb8(0x31, 0x38, 0x4a)));
+            .push(fonts::primary_text(title, Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
+            .push(fonts::primary_text(warning, None).color(Color::from_rgb8(0x31, 0x38, 0x4a)));
 
         if let Some(prompt) = prompt {
-            column =
-                column.push(Text::new(prompt).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
+            column = column.push(fonts::primary_text(prompt, Some(-1.0)).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
         }
 
         let input_field = text_input(placeholder, &state.input)
@@ -3120,21 +3168,19 @@ impl App {
         column = column.push(input_field);
 
         if let Some(error) = &state.error {
-            column = column
-                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+            column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
         }
 
         if state.processing {
-            column = column.push(
-                Text::new(tr("Processing...")).size(13).color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-            );
+            column = column.push(fonts::primary_text(tr("Processing..."), Some(-1.0)).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
         }
 
-        let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
+        let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
             .padding([6, 16])
             .on_press(Message::CollectionModalCancel);
 
-        let mut confirm_button = Button::new(Text::new(confirm_label).size(14)).padding([6, 16]);
+        let mut confirm_button =
+            Button::new(fonts::primary_text(confirm_label, None)).padding([6, 16]);
         if confirm_ready {
             confirm_button = confirm_button.on_press(Message::CollectionModalConfirm);
         } else {
@@ -3191,13 +3237,9 @@ impl App {
 
                 let mut column = Column::new()
                     .spacing(16)
-                    .push(
-                        Text::new(tr("Delete Database"))
-                            .size(22)
-                            .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
-                    )
-                    .push(Text::new(warning).size(14).color(Color::from_rgb8(0x31, 0x38, 0x4a)))
-                    .push(Text::new(prompt).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
+                    .push(fonts::primary_text(tr("Delete Database"), Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
+                    .push(fonts::primary_text(warning, None).color(Color::from_rgb8(0x31, 0x38, 0x4a)))
+                    .push(fonts::primary_text(prompt, Some(-1.0)).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
 
                 let input_field = text_input(tr("Database name"), &state.input)
                     .padding([6, 10])
@@ -3207,25 +3249,21 @@ impl App {
                 column = column.push(input_field);
 
                 if let Some(error) = &state.error {
-                    column = column.push(
-                        Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-                    );
+                    column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
                 }
 
                 if state.processing {
-                    column = column.push(
-                        Text::new(tr("Processing..."))
-                            .size(13)
-                            .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-                    );
+                    column = column.push(fonts::primary_text(tr("Processing..."), Some(-1.0)).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
                 }
 
-                let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
+                let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
                     .padding([6, 16])
                     .on_press(Message::DatabaseModalCancel);
 
-                let mut confirm_button =
-                    Button::new(Text::new(tr("Confirm Deletion")).size(14)).padding([6, 16]);
+                let mut confirm_button = Button::new(
+                    fonts::primary_text(tr("Confirm Deletion"), None),
+                )
+                .padding([6, 16]);
 
                 if confirm_ready {
                     confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
@@ -3252,18 +3290,10 @@ impl App {
 
                 let mut column = Column::new()
                     .spacing(16)
-                    .push(
-                        Text::new(tr("Create Database"))
-                            .size(22)
-                            .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
-                    )
-                    .push(
-                        Text::new(tr(
+                    .push(fonts::primary_text(tr("Create Database"), Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
+                    .push(fonts::primary_text(tr(
                             "MongoDB creates a database only when the first collection is created. Provide the database name and the first collection to create immediately."
-                        ))
-                        .size(13)
-                        .color(Color::from_rgb8(0x55, 0x5f, 0x73)),
-                    );
+                        ), Some(-1.0)).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
 
                 let input_field = text_input(tr("Database name"), &state.input)
                     .padding([6, 10])
@@ -3279,25 +3309,21 @@ impl App {
                 column = column.push(input_field).push(collection_field);
 
                 if let Some(error) = &state.error {
-                    column = column.push(
-                        Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-                    );
+                    column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
                 }
 
                 if state.processing {
-                    column = column.push(
-                        Text::new(tr("Creating database..."))
-                            .size(13)
-                            .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-                    );
+                    column = column.push(fonts::primary_text(tr("Creating database..."), Some(-1.0)).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
                 }
 
-                let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
+                let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
                     .padding([6, 16])
                     .on_press(Message::DatabaseModalCancel);
 
-                let mut confirm_button =
-                    Button::new(Text::new(tr("Create")).size(14)).padding([6, 16]);
+                let mut confirm_button = Button::new(
+                    fonts::primary_text(tr("Create"), None),
+                )
+                .padding([6, 16]);
 
                 if confirm_ready {
                     confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
@@ -3362,9 +3388,9 @@ impl App {
             ),
         };
 
-        let title = Text::new(title_text).size(22).color(Color::from_rgb8(0x17, 0x1a, 0x20));
+        let title = fonts::primary_text(title_text, Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20));
 
-        let hint = Text::new(hint_text).size(13).color(Color::from_rgb8(0x55, 0x5f, 0x73));
+        let hint = fonts::primary_text(hint_text, Some(-1.0)).color(Color::from_rgb8(0x55, 0x5f, 0x73));
 
         let editor = text_editor::TextEditor::new(&state.editor)
             .font(MONO_FONT)
@@ -3386,16 +3412,14 @@ impl App {
         let mut column = Column::new().spacing(16).push(title).push(hint).push(editor_container);
 
         if let Some(error) = &state.error {
-            column = column
-                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+            column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
         }
 
         if state.processing {
-            column = column
-                .push(Text::new(saving_text).size(13).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
+            column = column.push(fonts::primary_text(saving_text, Some(-1.0)).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
         }
 
-        let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
+        let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
             .padding([6, 16])
             .on_press(Message::DocumentModalCancel)
             .style(|_, _| button::Style {
@@ -3404,7 +3428,8 @@ impl App {
                 ..Default::default()
             });
 
-        let mut save_button = Button::new(Text::new(tr("Save")).size(14)).padding([6, 16]);
+        let mut save_button = Button::new(fonts::primary_text(tr("Save"), None))
+            .padding([6, 16]);
         if state.processing {
             save_button = save_button.style(|_, _| button::Style {
                 background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
@@ -3443,22 +3468,21 @@ impl App {
     }
 
     fn value_edit_modal_view<'a>(&self, state: &'a ValueEditModalState) -> Element<'a, Message> {
-        let bold_font = Font { weight: Weight::Bold, ..MONO_FONT };
+        let fonts_state = fonts::active_fonts();
+        let bold_font = Font { weight: Weight::Bold, ..fonts_state.primary_font };
 
         let description = Column::new()
             .spacing(4)
             .push(
-                Text::new(tr("Field value will be modified"))
-                    .size(14)
+                fonts::primary_text(tr("Field value will be modified"), None)
                     .wrapping(Wrapping::Word)
                     .width(Length::Fill),
             )
             .push(
-                Text::new(state.path.clone())
-                    .size(14)
-                    .font(bold_font)
+                fonts::primary_text(state.path.clone(), None)
                     .wrapping(Wrapping::Word)
-                    .width(Length::Fill),
+                    .width(Length::Fill)
+                    .font(bold_font),
             );
 
         let editor = text_editor::TextEditor::new(&state.value_editor)
@@ -3480,8 +3504,7 @@ impl App {
             });
 
         let type_indicator = Container::new(
-            Text::new(state.value_label.clone())
-                .size(14)
+            fonts::primary_text(state.value_label.clone(), None)
                 .color(Color::from_rgb8(0x17, 0x1a, 0x20))
                 .wrapping(Wrapping::Word)
                 .width(Length::Fill),
@@ -3499,8 +3522,7 @@ impl App {
         let type_label = Column::new()
             .spacing(4)
             .push(
-                Text::new(tr("Value Type"))
-                    .size(14)
+                fonts::primary_text(tr("Value Type"), None)
                     .color(Color::from_rgb8(0x55, 0x5f, 0x73))
                     .wrapping(Wrapping::Word)
                     .width(Length::Shrink),
@@ -3513,17 +3535,14 @@ impl App {
             Column::new().spacing(16).push(description).push(inputs_row).push(type_row);
 
         if let Some(error) = &state.error {
-            column = column
-                .push(Text::new(error.clone()).size(13).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+            column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
         }
 
         if state.processing {
-            column = column.push(
-                Text::new(tr("Saving value...")).size(13).color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-            );
+            column = column.push(fonts::primary_text(tr("Saving value..."), Some(-1.0)).color(Color::from_rgb8(0x36, 0x71, 0xc9)));
         }
 
-        let cancel_button = Button::new(Text::new(tr("Cancel")).size(14))
+        let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
             .padding([6, 16])
             .on_press(Message::ValueEditModalCancel)
             .style(|_, _| button::Style {
@@ -3532,7 +3551,7 @@ impl App {
                 ..Default::default()
             });
 
-        let mut save_button = Button::new(Text::new(tr("Save")).size(14)).padding([6, 16]);
+    let mut save_button = Button::new(fonts::primary_text(tr("Save"), None)).padding([6, 16]);
         if state.processing {
             save_button = save_button.style(|_, _| button::Style {
                 background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
@@ -3588,7 +3607,7 @@ impl App {
         let mut list = Column::new().spacing(4);
 
         if self.clients.is_empty() {
-            list = list.push(text(tr("No connections")).size(16));
+            list = list.push(fonts::primary_text(tr("No connections"), Some(6.0)));
         } else {
             for client in &self.clients {
                 list = list.push(self.render_client(client));
@@ -3606,6 +3625,7 @@ impl App {
     }
 
     fn render_client<'a>(&'a self, client: &'a OMDBClient) -> Element<'a, Message> {
+        let icon_size = fonts::active_fonts().primary_size * 1.5;
         let indicator = if client.expanded { "v" } else { ">" };
         let status_label = match &client.status {
             ConnectionStatus::Connecting => tr("Connecting...").to_owned(),
@@ -3616,14 +3636,14 @@ impl App {
         let header_row = Row::new()
             .spacing(8)
             .align_y(Vertical::Center)
-            .push(text(indicator))
+            .push(fonts::primary_text(indicator, None))
             .push(
                 Image::new(shared_icon_handle(&ICON_NETWORK_HANDLE, ICON_NETWORK_BYTES))
-                    .width(Length::Fixed(16.0))
-                    .height(Length::Fixed(16.0)),
+                    .width(Length::Fixed(icon_size))
+                    .height(Length::Fixed(icon_size)),
             )
-            .push(text(&client.name).size(16))
-            .push(text(status_label.clone()).size(12));
+            .push(fonts::primary_text(client.name.clone(), Some(6.0)))
+            .push(fonts::primary_text(status_label.clone(), Some(6.0)));
 
         let base_button = self.sidebar_button(header_row, 0.0, Message::ToggleClient(client.id));
 
@@ -3643,7 +3663,7 @@ impl App {
             let make_button =
                 |label: &str, action: ConnectionContextAction, enabled: bool| -> Element<Message> {
                     let mut button =
-                        Button::new(Text::new(label.to_owned()).size(14)).padding([4, 8]);
+                        Button::new(fonts::primary_text(label.to_owned(), None)).padding([4, 8]);
                     if enabled {
                         button = button.on_press(Message::ConnectionContextMenu {
                             client_id: context_client_id,
@@ -3679,7 +3699,7 @@ impl App {
                 Row::new()
                     .spacing(8)
                     .push(Space::with_width(Length::Fixed(16.0)))
-                    .push(text(status_label).size(12)),
+                    .push(fonts::primary_text(status_label, Some(6.0))),
             );
         }
 
@@ -3689,7 +3709,7 @@ impl App {
                     Row::new()
                         .spacing(8)
                         .push(Space::with_width(Length::Fixed(16.0)))
-                        .push(text(tr("No databases")).size(12)),
+                        .push(fonts::primary_text(tr("No databases"), Some(6.0))),
                 );
             } else {
                 for database in &client.databases {
@@ -3711,19 +3731,20 @@ impl App {
         client_id: ClientId,
         database: &'a DatabaseNode,
     ) -> Element<'a, Message> {
+        let primary_font_size = fonts::active_fonts().primary_size;
         let indicator = if database.expanded { "v" } else { ">" };
-        let icon_size = 14.0;
+        let icon_size = primary_font_size * 1.5;
 
         let db_row = Row::new()
             .spacing(6)
             .align_y(Vertical::Center)
-            .push(text(indicator))
+            .push(fonts::primary_text(indicator, None))
             .push(
                 Image::new(shared_icon_handle(&ICON_DATABASE_HANDLE, ICON_DATABASE_BYTES))
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
-            .push(text(&database.name));
+            .push(fonts::primary_text(database.name.clone(), None));
 
         let base_button = self.sidebar_button(
             db_row,
@@ -3736,7 +3757,7 @@ impl App {
             let mut menu = Column::new().spacing(2).padding([4, 6]);
 
             let make_button = |label: &str, message: Message| -> Element<Message> {
-                Button::new(Text::new(label.to_owned()).size(14))
+                Button::new(fonts::primary_text(label.to_owned(), None))
                     .padding([4, 8])
                     .on_press(message)
                     .into()
@@ -3778,28 +3799,28 @@ impl App {
             match &database.state {
                 DatabaseState::Idle => {}
                 DatabaseState::Loading => {
-                    column = column.push(
+                            column = column.push(
                         Row::new()
                             .spacing(8)
                             .push(Space::with_width(Length::Fixed(32.0)))
-                            .push(text(tr("Loading collections...")).size(12)),
+                            .push(fonts::primary_text(tr("Loading collections..."), Some(6.0))),
                     );
                 }
                 DatabaseState::Error(error) => {
-                    column = column.push(
+                            column = column.push(
                         Row::new()
                             .spacing(8)
                             .push(Space::with_width(Length::Fixed(32.0)))
-                            .push(text(format!("{} {}", tr("Error:"), error)).size(12)),
+                            .push(fonts::primary_text(format!("{} {}", tr("Error:"), error), Some(6.0))),
                     );
                 }
                 DatabaseState::Loaded => {
                     if database.collections.is_empty() {
-                        column = column.push(
-                            Row::new()
-                                .spacing(8)
-                                .push(Space::with_width(Length::Fixed(32.0)))
-                                .push(text(tr("No collections")).size(12)),
+                            column = column.push(
+                                Row::new()
+                                    .spacing(8)
+                                    .push(Space::with_width(Length::Fixed(32.0)))
+                                    .push(fonts::primary_text(tr("No collections"), Some(6.0))),
                         );
                     } else {
                         for collection in &database.collections {
@@ -3823,7 +3844,7 @@ impl App {
         db_name: &str,
         collection: &'a CollectionNode,
     ) -> Element<'a, Message> {
-        let icon_size = 12.0;
+        let icon_size = fonts::active_fonts().primary_size * 1.5;
 
         let row = Row::new()
             .spacing(6)
@@ -3833,7 +3854,7 @@ impl App {
                     .width(Length::Fixed(icon_size))
                     .height(Length::Fixed(icon_size)),
             )
-            .push(text(&collection.name).size(14));
+            .push(fonts::primary_text(collection.name.clone(), None));
 
         let base_button = self.sidebar_button(
             row,
@@ -3852,7 +3873,7 @@ impl App {
             let mut menu = Column::new().spacing(2).padding([4, 6]);
 
             let make_button = |label: &str, message: Message| -> Element<Message> {
-                Button::new(Text::new(label.to_owned()).size(14))
+                Button::new(fonts::primary_text(label.to_owned(), None))
                     .padding([4, 8])
                     .on_press(message)
                     .into()
@@ -3997,7 +4018,7 @@ impl App {
 
     fn main_panel(&self) -> Element<Message> {
         if self.tabs.is_empty() {
-            Container::new(text(tr("No tabs opened")))
+            Container::new(fonts::primary_text(tr("No tabs opened"), None))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
@@ -4017,11 +4038,11 @@ impl App {
             for tab in &self.tabs {
                 let is_active = active_id == Some(tab.id);
 
-                let title_button = Button::new(Text::new(tab.title.clone()).size(14))
+                let title_button = Button::new(fonts::primary_text(tab.title.clone(), None))
                     .padding([4, 12])
                     .on_press(Message::TabSelected(tab.id));
 
-                let close_button = Button::new(Text::new(tr("×")).size(14))
+                let close_button = Button::new(fonts::primary_text(tr("×"), None))
                     .padding([4, 8])
                     .on_press(Message::TabClosed(tab.id));
 
@@ -4062,9 +4083,9 @@ impl App {
 
             let content = active_id
                 .and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
-                .map(|tab| tab.view())
-                .unwrap_or_else(|| {
-                    Container::new(text(tr("No active tab")))
+                    .map(|tab| tab.view())
+                    .unwrap_or_else(|| {
+                    Container::new(fonts::primary_text(tr("No active tab"), None))
                         .center_x(Length::Fill)
                         .center_y(Length::Fill)
                         .into()
@@ -4087,12 +4108,12 @@ impl App {
     }
 
     fn build_menu_bar(&self) -> MenuBar<'_, Message, Theme, Renderer> {
-        let connections_button = button(text(tr("Connections")).size(16))
+        let connections_button = button(fonts::primary_text(tr("Connections"), Some(1.0)))
             .padding([6, 12])
             .on_press(Message::MenuItemSelected(TopMenu::File, MenuEntry::Action("Connections")));
 
         let settings_button =
-            button(text(tr("Settings")).size(16)).padding([6, 12]).on_press(Message::SettingsOpen);
+            button(fonts::primary_text(tr("Settings"), Some(1.0))).padding([6, 12]).on_press(Message::SettingsOpen);
 
         let mut roots = Vec::new();
         roots.push(MenuItemWidget::new(connections_button));
@@ -4118,14 +4139,14 @@ impl App {
         menu: TopMenu,
         entries: &[MenuEntry],
     ) -> MenuItemWidget<'_, Message, Theme, Renderer> {
-        let label = text(tr(menu.label())).size(16);
-        let root_button = button(label).padding([6, 12]);
+    let label = fonts::primary_text(tr(menu.label()), Some(1.0));
+    let root_button = button(label).padding([6, 12]);
 
         let menu_widget = Menu::new(
             entries
                 .iter()
                 .map(|entry| {
-                    let entry_label = text(entry.label()).size(14);
+                    let entry_label = fonts::primary_text(entry.label(), None);
                     let entry_button = button(entry_label)
                         .on_press(Message::MenuItemSelected(menu, *entry))
                         .padding([6, 12])
@@ -4594,6 +4615,12 @@ impl App {
 
     fn apply_settings_to_runtime(&mut self, settings: &AppSettings) -> Result<(), String> {
         i18n::set_language(settings.language);
+        fonts::set_active_fonts(
+            &settings.primary_font,
+            settings.primary_font_size as f32,
+            &settings.result_font,
+            settings.result_font_size as f32,
+        );
 
         for tab in &mut self.tabs {
             tab.collection.refresh_with_settings(settings);
