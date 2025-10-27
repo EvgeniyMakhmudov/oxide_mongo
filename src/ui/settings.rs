@@ -104,6 +104,14 @@ pub struct SettingsWindowState {
     pub theme_choice: ThemeChoice,
     pub theme_light: ThemePalette,
     pub theme_dark: ThemePalette,
+    pub theme_solarized_light: ThemePalette,
+    pub theme_solarized_dark: ThemePalette,
+    pub theme_nord_light: ThemePalette,
+    pub theme_nord_dark: ThemePalette,
+    pub theme_gruvbox_light: ThemePalette,
+    pub theme_gruvbox_dark: ThemePalette,
+    pub theme_one_light: ThemePalette,
+    pub theme_one_dark: ThemePalette,
     pub active_color_picker: Option<ThemeColorField>,
     pub validation_error: Option<String>,
 }
@@ -140,6 +148,14 @@ impl SettingsWindowState {
             theme_choice: settings.theme_choice,
             theme_light: settings.theme_colors.light.clone(),
             theme_dark: settings.theme_colors.dark.clone(),
+            theme_solarized_light: settings.theme_colors.solarized_light.clone(),
+            theme_solarized_dark: settings.theme_colors.solarized_dark.clone(),
+            theme_nord_light: settings.theme_colors.nord_light.clone(),
+            theme_nord_dark: settings.theme_colors.nord_dark.clone(),
+            theme_gruvbox_light: settings.theme_colors.gruvbox_light.clone(),
+            theme_gruvbox_dark: settings.theme_colors.gruvbox_dark.clone(),
+            theme_one_light: settings.theme_colors.one_light.clone(),
+            theme_one_dark: settings.theme_colors.one_dark.clone(),
             active_color_picker: None,
             validation_error: None,
         }
@@ -169,6 +185,14 @@ impl SettingsWindowState {
             theme_colors: ThemeColors {
                 light: self.theme_light.clone(),
                 dark: self.theme_dark.clone(),
+                solarized_light: self.theme_solarized_light.clone(),
+                solarized_dark: self.theme_solarized_dark.clone(),
+                nord_light: self.theme_nord_light.clone(),
+                nord_dark: self.theme_nord_dark.clone(),
+                gruvbox_light: self.theme_gruvbox_light.clone(),
+                gruvbox_dark: self.theme_gruvbox_dark.clone(),
+                one_light: self.theme_one_light.clone(),
+                one_dark: self.theme_one_dark.clone(),
             },
         })
     }
@@ -184,6 +208,14 @@ impl SettingsWindowState {
         match self.edit_theme_choice() {
             ThemeChoice::Light => &self.theme_light,
             ThemeChoice::Dark => &self.theme_dark,
+            ThemeChoice::SolarizedLight => &self.theme_solarized_light,
+            ThemeChoice::SolarizedDark => &self.theme_solarized_dark,
+            ThemeChoice::NordLight => &self.theme_nord_light,
+            ThemeChoice::NordDark => &self.theme_nord_dark,
+            ThemeChoice::GruvboxLight => &self.theme_gruvbox_light,
+            ThemeChoice::GruvboxDark => &self.theme_gruvbox_dark,
+            ThemeChoice::OneLight => &self.theme_one_light,
+            ThemeChoice::OneDark => &self.theme_one_dark,
             ThemeChoice::System => &self.theme_light,
         }
     }
@@ -192,6 +224,14 @@ impl SettingsWindowState {
         match self.edit_theme_choice() {
             ThemeChoice::Light => &mut self.theme_light,
             ThemeChoice::Dark => &mut self.theme_dark,
+            ThemeChoice::SolarizedLight => &mut self.theme_solarized_light,
+            ThemeChoice::SolarizedDark => &mut self.theme_solarized_dark,
+            ThemeChoice::NordLight => &mut self.theme_nord_light,
+            ThemeChoice::NordDark => &mut self.theme_nord_dark,
+            ThemeChoice::GruvboxLight => &mut self.theme_gruvbox_light,
+            ThemeChoice::GruvboxDark => &mut self.theme_gruvbox_dark,
+            ThemeChoice::OneLight => &mut self.theme_one_light,
+            ThemeChoice::OneDark => &mut self.theme_one_dark,
             ThemeChoice::System => &mut self.theme_light,
         }
     }
@@ -251,6 +291,30 @@ impl SettingsWindowState {
         match self.edit_theme_choice() {
             ThemeChoice::Light => self.theme_light = ThemePalette::light(),
             ThemeChoice::Dark => self.theme_dark = ThemePalette::dark(),
+            ThemeChoice::SolarizedLight => {
+                self.theme_solarized_light = ThemePalette::solarized_light()
+            }
+            ThemeChoice::SolarizedDark => {
+                self.theme_solarized_dark = ThemePalette::solarized_dark()
+            }
+            ThemeChoice::NordLight => {
+                self.theme_nord_light = ThemePalette::nord_light()
+            }
+            ThemeChoice::NordDark => {
+                self.theme_nord_dark = ThemePalette::nord_dark()
+            }
+            ThemeChoice::GruvboxLight => {
+                self.theme_gruvbox_light = ThemePalette::gruvbox_light()
+            }
+            ThemeChoice::GruvboxDark => {
+                self.theme_gruvbox_dark = ThemePalette::gruvbox_dark()
+            }
+            ThemeChoice::OneLight => {
+                self.theme_one_light = ThemePalette::one_light()
+            }
+            ThemeChoice::OneDark => {
+                self.theme_one_dark = ThemePalette::one_dark()
+            }
             ThemeChoice::System => self.theme_light = ThemePalette::light(),
         }
         self.active_color_picker = None;

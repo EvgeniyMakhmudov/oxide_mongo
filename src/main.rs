@@ -3695,6 +3695,14 @@ impl App {
             ThemeChoice::System => Theme::default(),
             ThemeChoice::Light => Theme::Light,
             ThemeChoice::Dark => Theme::Dark,
+            ThemeChoice::SolarizedLight => Theme::Light,
+            ThemeChoice::SolarizedDark => Theme::Dark,
+            ThemeChoice::NordLight => Theme::Light,
+            ThemeChoice::NordDark => Theme::Dark,
+            ThemeChoice::GruvboxLight => Theme::Light,
+            ThemeChoice::GruvboxDark => Theme::Dark,
+            ThemeChoice::OneLight => Theme::Light,
+            ThemeChoice::OneDark => Theme::Dark,
         }
     }
 

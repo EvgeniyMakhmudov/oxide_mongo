@@ -18,6 +18,14 @@ pub enum ThemeChoice {
     System,
     Light,
     Dark,
+    SolarizedLight,
+    SolarizedDark,
+    NordLight,
+    NordDark,
+    GruvboxLight,
+    GruvboxDark,
+    OneLight,
+    OneDark,
 }
 
 impl ThemeChoice {
@@ -26,6 +34,14 @@ impl ThemeChoice {
             ThemeChoice::System => "System",
             ThemeChoice::Light => "Light",
             ThemeChoice::Dark => "Dark",
+            ThemeChoice::SolarizedLight => "Solarized Light",
+            ThemeChoice::SolarizedDark => "Solarized Dark",
+            ThemeChoice::NordLight => "Nord Light",
+            ThemeChoice::NordDark => "Nord Dark",
+            ThemeChoice::GruvboxLight => "Gruvbox Light",
+            ThemeChoice::GruvboxDark => "Gruvbox Dark",
+            ThemeChoice::OneLight => "One Light",
+            ThemeChoice::OneDark => "One Dark",
         }
     }
 }
@@ -316,6 +332,278 @@ impl ThemePalette {
         }
     }
 
+    pub fn solarized_light() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0xee, 0xe8, 0xd5),
+            widget_border: RgbaColor::opaque(0x93, 0xa1, 0xa1),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0xfd, 0xf6, 0xe3),
+                hover: RgbaColor::opaque(0xf4, 0xe9, 0xc1),
+                pressed: RgbaColor::opaque(0xe9, 0xdd, 0xaf),
+                text: RgbaColor::opaque(0x65, 0x7b, 0x83),
+                border: RgbaColor::opaque(0x93, 0xa1, 0xa1),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x26, 0x8b, 0xd2),
+                hover: RgbaColor::opaque(0x2a, 0xa1, 0x98),
+                pressed: RgbaColor::opaque(0x1f, 0x6b, 0xa8),
+                text: RgbaColor::opaque(0xfd, 0xf6, 0xe3),
+                border: RgbaColor::opaque(0x1f, 0x4f, 0x6b),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0xfd, 0xf6, 0xe3),
+                row_odd: RgbaColor::opaque(0xf5, 0xe9, 0xd0),
+                header_background: RgbaColor::opaque(0xee, 0xe8, 0xd5),
+                separator: RgbaColor::opaque(0x93, 0xa1, 0xa1),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0xfd, 0xf6, 0xe3),
+                hover_background: RgbaColor::opaque(0xee, 0xe8, 0xd5),
+                text: RgbaColor::opaque(0x65, 0x7b, 0x83),
+            },
+            text_primary: RgbaColor::opaque(0x65, 0x7b, 0x83),
+            text_muted: RgbaColor::opaque(0x93, 0xa1, 0xa1),
+        }
+    }
+
+    pub fn solarized_dark() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0x07, 0x36, 0x42),
+            widget_border: RgbaColor::opaque(0x58, 0x6e, 0x75),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x07, 0x36, 0x42),
+                hover: RgbaColor::opaque(0x0c, 0x4f, 0x5c),
+                pressed: RgbaColor::opaque(0x06, 0x31, 0x3b),
+                text: RgbaColor::opaque(0x93, 0xa1, 0xa1),
+                border: RgbaColor::opaque(0x58, 0x6e, 0x75),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x26, 0x8b, 0xd2),
+                hover: RgbaColor::opaque(0x2a, 0xa1, 0x98),
+                pressed: RgbaColor::opaque(0x1f, 0x69, 0x96),
+                text: RgbaColor::opaque(0xfd, 0xf6, 0xe3),
+                border: RgbaColor::opaque(0x1c, 0x4f, 0x6e),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0x00, 0x2b, 0x36),
+                row_odd: RgbaColor::opaque(0x07, 0x36, 0x42),
+                header_background: RgbaColor::opaque(0x00, 0x3b, 0x4d),
+                separator: RgbaColor::opaque(0x58, 0x6e, 0x75),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0x00, 0x2b, 0x36),
+                hover_background: RgbaColor::opaque(0x07, 0x36, 0x42),
+                text: RgbaColor::opaque(0x93, 0xa1, 0xa1),
+            },
+            text_primary: RgbaColor::opaque(0x93, 0xa1, 0xa1),
+            text_muted: RgbaColor::opaque(0x58, 0x6e, 0x75),
+        }
+    }
+
+    pub fn nord_light() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0xec, 0xef, 0xf4),
+            widget_border: RgbaColor::opaque(0xd8, 0xde, 0xe9),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0xe5, 0xe9, 0xf0),
+                hover: RgbaColor::opaque(0xd8, 0xde, 0xe9),
+                pressed: RgbaColor::opaque(0xcc, 0xd3, 0xe0),
+                text: RgbaColor::opaque(0x4c, 0x56, 0x6a),
+                border: RgbaColor::opaque(0xc0, 0xcb, 0xd9),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x5e, 0x81, 0xac),
+                hover: RgbaColor::opaque(0x81, 0xa1, 0xc1),
+                pressed: RgbaColor::opaque(0x4c, 0x6a, 0x94),
+                text: RgbaColor::opaque(0xec, 0xef, 0xf4),
+                border: RgbaColor::opaque(0x3b, 0x54, 0x79),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0xf4, 0xf6, 0xfb),
+                row_odd: RgbaColor::opaque(0xec, 0xef, 0xf4),
+                header_background: RgbaColor::opaque(0xe5, 0xe9, 0xf0),
+                separator: RgbaColor::opaque(0xd8, 0xde, 0xe9),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0xf4, 0xf6, 0xfb),
+                hover_background: RgbaColor::opaque(0xec, 0xef, 0xf4),
+                text: RgbaColor::opaque(0x4c, 0x56, 0x6a),
+            },
+            text_primary: RgbaColor::opaque(0x4c, 0x56, 0x6a),
+            text_muted: RgbaColor::opaque(0x7b, 0x88, 0xa1),
+        }
+    }
+
+    pub fn nord_dark() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0x2e, 0x34, 0x40),
+            widget_border: RgbaColor::opaque(0x3b, 0x42, 0x52),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x3b, 0x42, 0x52),
+                hover: RgbaColor::opaque(0x43, 0x4c, 0x5e),
+                pressed: RgbaColor::opaque(0x29, 0x2d, 0x37),
+                text: RgbaColor::opaque(0xd8, 0xde, 0xe9),
+                border: RgbaColor::opaque(0x4c, 0x56, 0x6a),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x88, 0xc0, 0xd0),
+                hover: RgbaColor::opaque(0x81, 0xa1, 0xc1),
+                pressed: RgbaColor::opaque(0x5e, 0x81, 0xac),
+                text: RgbaColor::opaque(0x2e, 0x34, 0x40),
+                border: RgbaColor::opaque(0x3b, 0x54, 0x79),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0x2e, 0x34, 0x40),
+                row_odd: RgbaColor::opaque(0x23, 0x29, 0x35),
+                header_background: RgbaColor::opaque(0x3b, 0x42, 0x52),
+                separator: RgbaColor::opaque(0x4c, 0x56, 0x6a),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0x23, 0x29, 0x35),
+                hover_background: RgbaColor::opaque(0x2e, 0x34, 0x40),
+                text: RgbaColor::opaque(0xd8, 0xde, 0xe9),
+            },
+            text_primary: RgbaColor::opaque(0xd8, 0xde, 0xe9),
+            text_muted: RgbaColor::opaque(0x7b, 0x88, 0xa1),
+        }
+    }
+
+    pub fn gruvbox_light() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0xf2, 0xe5, 0xbc),
+            widget_border: RgbaColor::opaque(0xd5, 0xc4, 0xa1),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0xfb, 0xf1, 0xc7),
+                hover: RgbaColor::opaque(0xeb, 0xdb, 0xb2),
+                pressed: RgbaColor::opaque(0xd5, 0xc4, 0xa1),
+                text: RgbaColor::opaque(0x3c, 0x38, 0x36),
+                border: RgbaColor::opaque(0xd5, 0xc4, 0xa1),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0xb1, 0x62, 0x86),
+                hover: RgbaColor::opaque(0xd3, 0x86, 0x9b),
+                pressed: RgbaColor::opaque(0x8f, 0x3f, 0x71),
+                text: RgbaColor::opaque(0xfb, 0xf1, 0xc7),
+                border: RgbaColor::opaque(0x73, 0x23, 0x51),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0xfb, 0xf1, 0xc7),
+                row_odd: RgbaColor::opaque(0xf9, 0xf5, 0xd7),
+                header_background: RgbaColor::opaque(0xeb, 0xdb, 0xb2),
+                separator: RgbaColor::opaque(0xd5, 0xc4, 0xa1),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0xfb, 0xf1, 0xc7),
+                hover_background: RgbaColor::opaque(0xeb, 0xdb, 0xb2),
+                text: RgbaColor::opaque(0x3c, 0x38, 0x36),
+            },
+            text_primary: RgbaColor::opaque(0x3c, 0x38, 0x36),
+            text_muted: RgbaColor::opaque(0x7c, 0x6f, 0x64),
+        }
+    }
+
+    pub fn gruvbox_dark() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0x3c, 0x38, 0x36),
+            widget_border: RgbaColor::opaque(0x50, 0x49, 0x45),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x3c, 0x38, 0x36),
+                hover: RgbaColor::opaque(0x50, 0x49, 0x45),
+                pressed: RgbaColor::opaque(0x28, 0x28, 0x28),
+                text: RgbaColor::opaque(0xeb, 0xdb, 0xb2),
+                border: RgbaColor::opaque(0x66, 0x5c, 0x54),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0xd7, 0x99, 0x21),
+                hover: RgbaColor::opaque(0xfa, 0xbd, 0x2f),
+                pressed: RgbaColor::opaque(0xb5, 0x76, 0x14),
+                text: RgbaColor::opaque(0x28, 0x28, 0x28),
+                border: RgbaColor::opaque(0x8f, 0x61, 0x0f),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0x32, 0x30, 0x2f),
+                row_odd: RgbaColor::opaque(0x28, 0x28, 0x28),
+                header_background: RgbaColor::opaque(0x50, 0x49, 0x45),
+                separator: RgbaColor::opaque(0x66, 0x5c, 0x54),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0x28, 0x28, 0x28),
+                hover_background: RgbaColor::opaque(0x3c, 0x38, 0x36),
+                text: RgbaColor::opaque(0xeb, 0xdb, 0xb2),
+            },
+            text_primary: RgbaColor::opaque(0xeb, 0xdb, 0xb2),
+            text_muted: RgbaColor::opaque(0xbd, 0xae, 0x93),
+        }
+    }
+
+    pub fn one_light() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0xf5, 0xf5, 0xf5),
+            widget_border: RgbaColor::opaque(0xd0, 0xd0, 0xd0),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0xfd, 0xfd, 0xfd),
+                hover: RgbaColor::opaque(0xee, 0xee, 0xee),
+                pressed: RgbaColor::opaque(0xdd, 0xdd, 0xdd),
+                text: RgbaColor::opaque(0x38, 0x3a, 0x42),
+                border: RgbaColor::opaque(0xc5, 0xc5, 0xc5),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x40, 0x7b, 0xd8),
+                hover: RgbaColor::opaque(0x2f, 0x66, 0xc5),
+                pressed: RgbaColor::opaque(0x25, 0x54, 0xa6),
+                text: RgbaColor::opaque(0xfd, 0xfd, 0xfd),
+                border: RgbaColor::opaque(0x1c, 0x44, 0x85),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0xfd, 0xfd, 0xfd),
+                row_odd: RgbaColor::opaque(0xf0, 0xf0, 0xf0),
+                header_background: RgbaColor::opaque(0xee, 0xee, 0xee),
+                separator: RgbaColor::opaque(0xd0, 0xd0, 0xd0),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0xfd, 0xfd, 0xfd),
+                hover_background: RgbaColor::opaque(0xee, 0xee, 0xee),
+                text: RgbaColor::opaque(0x38, 0x3a, 0x42),
+            },
+            text_primary: RgbaColor::opaque(0x38, 0x3a, 0x42),
+            text_muted: RgbaColor::opaque(0x6c, 0x70, 0x7c),
+        }
+    }
+
+    pub fn one_dark() -> Self {
+        Self {
+            widget_background: RgbaColor::opaque(0x28, 0x2c, 0x34),
+            widget_border: RgbaColor::opaque(0x3e, 0x44, 0x51),
+            subtle_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x28, 0x2c, 0x34),
+                hover: RgbaColor::opaque(0x32, 0x37, 0x45),
+                pressed: RgbaColor::opaque(0x20, 0x23, 0x2b),
+                text: RgbaColor::opaque(0xe5, 0xe5, 0xe5),
+                border: RgbaColor::opaque(0x4c, 0x54, 0x63),
+            },
+            primary_buttons: ButtonColors {
+                active: RgbaColor::opaque(0x61, 0xaf, 0xef),
+                hover: RgbaColor::opaque(0x52, 0x9c, 0xd9),
+                pressed: RgbaColor::opaque(0x3b, 0x78, 0xa6),
+                text: RgbaColor::opaque(0x16, 0x1b, 0x22),
+                border: RgbaColor::opaque(0x2b, 0x55, 0x7b),
+            },
+            table: TableColors {
+                row_even: RgbaColor::opaque(0x23, 0x27, 0x2f),
+                row_odd: RgbaColor::opaque(0x1b, 0x1f, 0x26),
+                header_background: RgbaColor::opaque(0x32, 0x37, 0x45),
+                separator: RgbaColor::opaque(0x4c, 0x54, 0x63),
+            },
+            menu: MenuColors {
+                background: RgbaColor::opaque(0x1b, 0x1f, 0x26),
+                hover_background: RgbaColor::opaque(0x23, 0x27, 0x2f),
+                text: RgbaColor::opaque(0xe5, 0xe5, 0xe5),
+            },
+            text_primary: RgbaColor::opaque(0xe5, 0xe5, 0xe5),
+            text_muted: RgbaColor::opaque(0x93, 0x99, 0xa6),
+        }
+    }
+
     pub fn widget_background_color(&self) -> Color {
         self.widget_background.to_color()
     }
@@ -364,11 +652,30 @@ impl ThemePalette {
 pub struct ThemeColors {
     pub light: ThemePalette,
     pub dark: ThemePalette,
+    pub solarized_light: ThemePalette,
+    pub solarized_dark: ThemePalette,
+    pub nord_light: ThemePalette,
+    pub nord_dark: ThemePalette,
+    pub gruvbox_light: ThemePalette,
+    pub gruvbox_dark: ThemePalette,
+    pub one_light: ThemePalette,
+    pub one_dark: ThemePalette,
 }
 
 impl Default for ThemeColors {
     fn default() -> Self {
-        Self { light: ThemePalette::light(), dark: ThemePalette::dark() }
+        Self {
+            light: ThemePalette::light(),
+            dark: ThemePalette::dark(),
+            solarized_light: ThemePalette::solarized_light(),
+            solarized_dark: ThemePalette::solarized_dark(),
+            nord_light: ThemePalette::nord_light(),
+            nord_dark: ThemePalette::nord_dark(),
+            gruvbox_light: ThemePalette::gruvbox_light(),
+            gruvbox_dark: ThemePalette::gruvbox_dark(),
+            one_light: ThemePalette::one_light(),
+            one_dark: ThemePalette::one_dark(),
+        }
     }
 }
 
@@ -377,6 +684,14 @@ impl ThemeColors {
         match choice {
             ThemeChoice::System | ThemeChoice::Light => &self.light,
             ThemeChoice::Dark => &self.dark,
+            ThemeChoice::SolarizedLight => &self.solarized_light,
+            ThemeChoice::SolarizedDark => &self.solarized_dark,
+            ThemeChoice::NordLight => &self.nord_light,
+            ThemeChoice::NordDark => &self.nord_dark,
+            ThemeChoice::GruvboxLight => &self.gruvbox_light,
+            ThemeChoice::GruvboxDark => &self.gruvbox_dark,
+            ThemeChoice::OneLight => &self.one_light,
+            ThemeChoice::OneDark => &self.one_dark,
         }
     }
 }
@@ -472,8 +787,19 @@ pub fn replace(new_settings: AppSettings) {
     *guard = new_settings;
 }
 
-pub const ALL_THEMES: &[ThemeChoice] =
-    &[ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
+pub const ALL_THEMES: &[ThemeChoice] = &[
+    ThemeChoice::System,
+    ThemeChoice::Light,
+    ThemeChoice::Dark,
+    ThemeChoice::SolarizedLight,
+    ThemeChoice::SolarizedDark,
+    ThemeChoice::NordLight,
+    ThemeChoice::NordDark,
+    ThemeChoice::GruvboxLight,
+    ThemeChoice::GruvboxDark,
+    ThemeChoice::OneLight,
+    ThemeChoice::OneDark,
+];
 
 impl AppSettings {
     pub fn normalize_fonts(&mut self) {
