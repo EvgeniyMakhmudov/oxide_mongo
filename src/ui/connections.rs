@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::fonts;
 use crate::i18n::tr;
+use crate::settings::ThemePalette;
 use crate::{
     DOUBLE_CLICK_INTERVAL, ICON_NETWORK_BYTES, ICON_NETWORK_HANDLE, Message, shared_icon_handle,
 };
@@ -230,19 +231,26 @@ pub fn save_connections_to_disk(connections: &[ConnectionEntry]) -> Result<(), S
 pub fn connections_view<'a>(
     state: &'a ConnectionsWindowState,
     connections: &'a [ConnectionEntry],
+    palette: &ThemePalette,
 ) -> Element<'a, Message> {
-    let border_color = Color::from_rgb8(0xba, 0xc5, 0xd6);
-    let selected_bg = Color::from_rgb8(0xe9, 0xf0, 0xfa);
-    let normal_bg = Color::from_rgb8(0xfc, 0xfd, 0xfe);
-    let accent_bar = Color::from_rgb8(0x41, 0x82, 0xf2);
+    let palette = palette.clone();
+    let border_color = palette.widget_border_color();
+    let normal_bg = palette.widget_background_color();
+    let selected_bg = palette.subtle_buttons.hover.to_color();
+    let accent_bar = palette.primary_buttons.active.to_color();
+    let primary_text = palette.text_primary.to_color();
+    let muted_text = palette.text_muted.to_color();
+    let accent_text = palette.primary_buttons.active.to_color();
 
     let mut entries = Column::new().spacing(4).width(Length::Fill);
 
     if connections.is_empty() {
         entries = entries.push(
-            Container::new(fonts::primary_text(tr("No saved connections"), Some(2.0)))
-                .width(Length::Fill)
-                .padding([12, 8]),
+            Container::new(
+                fonts::primary_text(tr("No saved connections"), Some(2.0)).color(muted_text),
+            )
+            .width(Length::Fill)
+            .padding([12, 8]),
         );
     } else {
         for (index, entry) in connections.iter().enumerate() {
@@ -257,21 +265,21 @@ pub fn connections_view<'a>(
             .align_x(Horizontal::Center)
             .align_y(Vertical::Center);
 
-            let name_text = fonts::primary_text(entry.name.clone(), Some(4.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20));
-            let details_text = fonts::primary_text(format!("{}:{}", entry.host, entry.port), Some(-1.0))
-                .color(Color::from_rgb8(0x2f, 0x3b, 0x4b));
+            let name_text =
+                fonts::primary_text(entry.name.clone(), Some(4.0)).color(primary_text);
+            let details_text =
+                fonts::primary_text(format!("{}:{}", entry.host, entry.port), Some(-1.0))
+                    .color(muted_text);
 
             let labels = Column::new().spacing(4).push(name_text).push(details_text);
 
             let filters_text = if entry.include_filter.trim().is_empty()
                 && entry.exclude_filter.trim().is_empty()
             {
-                fonts::primary_text(tr("No filters configured"), Some(-2.0)).color(Color::from_rgb8(0x8a, 0x95, 0xa5))
-
-
-
+                fonts::primary_text(tr("No filters configured"), Some(-2.0)).color(muted_text)
             } else {
-                fonts::primary_text(tr("Collection filters configured"), Some(-2.0)).color(Color::from_rgb8(0x36, 0x71, 0xc9))
+                fonts::primary_text(tr("Collection filters configured"), Some(-2.0))
+                    .color(accent_text)
             };
 
             let right_info = Column::new().spacing(4).align_x(Horizontal::Right).push(filters_text);
@@ -307,10 +315,12 @@ pub fn connections_view<'a>(
                     ..Default::default()
                 });
 
-            let mut button =
-                Button::new(Row::new().spacing(0).width(Length::Fill).push(accent).push(container))
-                    .width(Length::Fill)
-                    .on_press(Message::ConnectionsSelect(index));
+            let mut button = Button::new(
+                Row::new().spacing(0).width(Length::Fill).push(accent).push(container),
+            )
+            .width(Length::Fill)
+            .style(subtle_button_style(palette.clone(), 6.0))
+            .on_press(Message::ConnectionsSelect(index));
 
             if state.last_click.map_or(false, |last| {
                 last.index == index && last.at.elapsed() <= DOUBLE_CLICK_INTERVAL
@@ -325,43 +335,58 @@ pub fn connections_view<'a>(
     let list = Scrollable::new(entries).width(Length::Fill).height(Length::Fixed(280.0));
 
     let mut left_controls = Row::new().spacing(8).push(
-    Button::new(fonts::primary_text(tr("Create"), None)).padding([6, 16]).on_press(Message::ConnectionsCreate),
+        Button::new(fonts::primary_text(tr("Create"), None))
+            .padding([6, 16])
+            .style(primary_button_style(palette.clone(), 6.0))
+            .on_press(Message::ConnectionsCreate),
     );
 
-    let mut edit_button = Button::new(fonts::primary_text(tr("Edit"), None)).padding([6, 16]);
+    let mut edit_button = Button::new(fonts::primary_text(tr("Edit"), None))
+        .padding([6, 16])
+        .style(primary_button_style(palette.clone(), 6.0));
     if state.selected.is_some() {
         edit_button = edit_button.on_press(Message::ConnectionsEdit);
     }
     left_controls = left_controls.push(edit_button);
 
-    let mut delete_button = Button::new(fonts::primary_text(tr("Delete"), None)).padding([6, 16]);
+    let mut delete_button = Button::new(fonts::primary_text(tr("Delete"), None))
+        .padding([6, 16])
+        .style(primary_button_style(palette.clone(), 6.0));
     if state.selected.is_some() {
         delete_button = delete_button.on_press(Message::ConnectionsDelete);
     }
     left_controls = left_controls.push(delete_button);
 
-    let mut connect_button = Button::new(fonts::primary_text(tr("Connect"), None)).padding([6, 16]);
+    let mut connect_button = Button::new(fonts::primary_text(tr("Connect"), None))
+        .padding([6, 16])
+        .style(primary_button_style(palette.clone(), 6.0));
     if state.selected.is_some() {
         connect_button = connect_button.on_press(Message::ConnectionsConnect);
     }
 
     let right_controls = Row::new()
         .spacing(8)
-        .push(Button::new(fonts::primary_text(tr("Cancel"), None)).padding([6, 16]).on_press(Message::ConnectionsCancel))
+        .push(
+            Button::new(fonts::primary_text(tr("Cancel"), None))
+                .padding([6, 16])
+                .style(primary_button_style(palette.clone(), 6.0))
+                .on_press(Message::ConnectionsCancel),
+        )
         .push(connect_button);
 
     let mut content = Column::new()
         .spacing(16)
-        .push(fonts::primary_text(tr("Connections"), Some(10.0)))
+        .push(fonts::primary_text(tr("Connections"), Some(10.0)).color(primary_text))
         .push(list);
 
     if let Some(feedback) = &state.feedback {
+        let error_color = Color::from_rgb8(0xd9, 0x53, 0x4f);
         let color = if feedback.starts_with(tr("Save error: ")) {
-            Color::from_rgb8(0xd9, 0x53, 0x4f)
+            error_color
         } else {
-            Color::from_rgb8(0x1e, 0x88, 0x3a)
+            accent_text
         };
-    content = content.push(fonts::primary_text(feedback.clone(), None).color(color));
+        content = content.push(fonts::primary_text(feedback.clone(), None).color(color));
     }
 
     if state.confirm_delete {
@@ -373,15 +398,20 @@ pub fn connections_view<'a>(
         let confirm_row = Row::new()
             .spacing(12)
             .align_y(Vertical::Center)
-            .push(fonts::primary_text(format!("{} \"{}\"?", tr("Delete"), name), None))
+            .push(
+                fonts::primary_text(format!("{} \"{}\"?", tr("Delete"), name), None)
+                    .color(primary_text),
+            )
             .push(
                 Button::new(fonts::primary_text(tr("Yes"), None))
                     .padding([4, 12])
+                    .style(primary_button_style(palette.clone(), 6.0))
                     .on_press(Message::ConnectionsDeleteConfirmed),
             )
             .push(
                 Button::new(fonts::primary_text(tr("No"), None))
                     .padding([4, 12])
+                    .style(primary_button_style(palette.clone(), 6.0))
                     .on_press(Message::ConnectionsDeleteCancelled),
             );
         content = content.push(confirm_row);
@@ -396,7 +426,10 @@ pub fn connections_view<'a>(
 
     content = content.push(controls_row);
 
-    let card = Container::new(content).padding(20).width(Length::Fixed(640.0)).style(pane_style);
+    let card = Container::new(content)
+        .padding(20)
+        .width(Length::Fixed(700.0))
+        .style(pane_style(palette.clone(), 6.0));
 
     Container::new(card)
         .width(Length::Fill)
@@ -410,39 +443,96 @@ pub fn connections_view<'a>(
         .into()
 }
 
-pub fn connection_form_view<'a>(state: &'a ConnectionFormState) -> Element<'a, Message> {
+fn subtle_button_style(
+    palette: ThemePalette,
+    radius: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| palette.subtle_button_style(radius, status)
+}
+
+fn primary_button_style(
+    palette: ThemePalette,
+    radius: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| palette.primary_button_style(radius, status)
+}
+
+fn disabled_primary_button_style(
+    palette: ThemePalette,
+    radius: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    let disabled_background = palette.subtle_buttons.active.to_color();
+    let disabled_text = palette.text_muted.to_color();
+    let border_color = palette.widget_border_color();
+    move |_, status| match status {
+        button::Status::Disabled => button::Style {
+            background: Some(disabled_background.into()),
+            text_color: disabled_text,
+            border: border::rounded(radius).width(1).color(border_color),
+            shadow: Shadow::default(),
+            ..Default::default()
+        },
+        _ => palette.primary_button_style(radius, status),
+    }
+}
+
+pub fn connection_form_view<'a>(
+    state: &'a ConnectionFormState,
+    palette: &ThemePalette,
+) -> Element<'a, Message> {
     let title = match state.mode {
         ConnectionFormMode::Create => tr("New connection"),
         ConnectionFormMode::Edit(_) => tr("Edit connection"),
     };
 
-    let bg_active = Color::from_rgb8(0xd6, 0xe8, 0xff);
-    let bg_inactive = Color::from_rgb8(0xf6, 0xf7, 0xfa);
-    let border_color = Color::from_rgb8(0xc2, 0xc8, 0xd3);
+    let palette = palette.clone();
+    let border_color = palette.widget_border_color();
+    let text_color = palette.text_primary.to_color();
+    let muted_text = palette.text_muted.to_color();
+    let accent_color = palette.primary_buttons.active.to_color();
+    let tab_active_bg = palette.subtle_buttons.hover.to_color();
+    let tab_inactive_bg = palette.subtle_buttons.active.to_color();
+    let error_color = Color::from_rgb8(0xd9, 0x53, 0x4f);
 
     let general_active = state.active_tab == ConnectionFormTab::General;
-    let mut general_button = Button::new(fonts::primary_text(tr("General"), None))
-            .padding([6, 16])
-            .style(move |_, _| button::Style {
-                background: Some((if general_active { bg_active } else { bg_inactive }).into()),
-                text_color: Color::BLACK,
-                border: border::rounded(6).width(1).color(border_color),
-                shadow: Shadow::default(),
-            });
+    let general_label_color = if general_active { text_color } else { muted_text };
+    let mut general_button = Button::new(
+        fonts::primary_text(tr("General"), None).color(general_label_color),
+    )
+    .padding([6, 16])
+    .style({
+        let border_color = border_color;
+        let active_bg = tab_active_bg;
+        let inactive_bg = tab_inactive_bg;
+        move |_, _| button::Style {
+            background: Some((if general_active { active_bg } else { inactive_bg }).into()),
+            text_color: general_label_color,
+            border: border::rounded(6).width(1).color(border_color),
+            shadow: Shadow::default(),
+        }
+    });
     if !general_active {
         general_button =
             general_button.on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::General));
     }
 
     let filter_active = state.active_tab == ConnectionFormTab::Filter;
-    let mut filter_button = Button::new(fonts::primary_text(tr("Database filter"), None))
-            .padding([6, 16])
-            .style(move |_, _| button::Style {
-                background: Some((if filter_active { bg_active } else { bg_inactive }).into()),
-                text_color: Color::BLACK,
-                border: border::rounded(6).width(1).color(border_color),
-                shadow: Shadow::default(),
-            });
+    let filter_label_color = if filter_active { text_color } else { muted_text };
+    let mut filter_button = Button::new(
+        fonts::primary_text(tr("Database filter"), None).color(filter_label_color),
+    )
+    .padding([6, 16])
+    .style({
+        let border_color = border_color;
+        let active_bg = tab_active_bg;
+        let inactive_bg = tab_inactive_bg;
+        move |_, _| button::Style {
+            background: Some((if filter_active { active_bg } else { inactive_bg }).into()),
+            text_color: filter_label_color,
+            border: border::rounded(6).width(1).color(border_color),
+            shadow: Shadow::default(),
+        }
+    });
     if !filter_active {
         filter_button =
             filter_button.on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::Filter));
@@ -470,11 +560,11 @@ pub fn connection_form_view<'a>(state: &'a ConnectionFormState) -> Element<'a, M
 
             Column::new()
                 .spacing(12)
-                .push(fonts::primary_text(tr("Name"), None))
+                .push(fonts::primary_text(tr("Name"), None).color(text_color))
                 .push(name_input)
-                .push(fonts::primary_text(tr("Address/Host/IP"), None))
+                .push(fonts::primary_text(tr("Address/Host/IP"), None).color(text_color))
                 .push(host_input)
-                .push(fonts::primary_text(tr("Port"), None))
+                .push(fonts::primary_text(tr("Port"), None).color(text_color))
                 .push(port_input)
                 .into()
         }
@@ -487,15 +577,17 @@ pub fn connection_form_view<'a>(state: &'a ConnectionFormState) -> Element<'a, M
                 .on_action(Message::ConnectionFormExcludeAction)
                 .height(Length::Fixed(130.0));
 
-            let add_system_filters = Button::new(fonts::primary_text(tr("Add filter for system databases"), None))
-            .padding([6, 16])
-            .on_press(Message::ConnectionFormAddSystemFilters);
+            let add_system_filters =
+                Button::new(fonts::primary_text(tr("Add filter for system databases"), None))
+                    .padding([6, 16])
+                    .style(primary_button_style(palette.clone(), 6.0))
+                    .on_press(Message::ConnectionFormAddSystemFilters);
 
-                Column::new()
+            Column::new()
                 .spacing(12)
-                .push(fonts::primary_text(tr("Include"), None))
+                .push(fonts::primary_text(tr("Include"), None).color(text_color))
                 .push(include_editor)
-                .push(fonts::primary_text(tr("Exclude"), None))
+                .push(fonts::primary_text(tr("Exclude"), None).color(text_color))
                 .push(exclude_editor)
                 .push(add_system_filters)
                 .into()
@@ -504,59 +596,61 @@ pub fn connection_form_view<'a>(state: &'a ConnectionFormState) -> Element<'a, M
 
     let mut content = Column::new()
         .spacing(16)
-        .push(fonts::primary_text(title, Some(10.0)))
+        .push(fonts::primary_text(title, Some(10.0)).color(text_color))
         .push(tabs_row)
         .push(tab_content);
 
     if let Some(error) = &state.validation_error {
-        content = content.push(fonts::primary_text(error.clone(), None).color(Color::from_rgb8(0xd9, 0x53, 0x4f)));
+        content = content.push(fonts::primary_text(error.clone(), None).color(error_color));
     }
 
     if let Some(feedback) = &state.test_feedback {
         let color = if feedback.is_success() {
-            Color::from_rgb8(0x1e, 0x88, 0x3a)
+            accent_color
         } else {
-            Color::from_rgb8(0xd9, 0x53, 0x4f)
+            error_color
         };
-    content = content.push(fonts::primary_text(feedback.message(), None).color(color));
+        content = content.push(fonts::primary_text(feedback.message(), None).color(color));
     }
 
     if state.testing {
-        content = content.push(fonts::primary_text(tr("Testing..."), None).color(Color::from_rgb8(0x1e, 0x88, 0x3a)));
+        content = content.push(
+            fonts::primary_text(tr("Testing..."), None).color(accent_color),
+        );
     }
 
     let mut test_button = Button::new(fonts::primary_text(tr("Test"), None)).padding([6, 16]);
     if !state.testing {
-        test_button = test_button.on_press(Message::ConnectionFormTest);
+        test_button =
+            test_button
+                .on_press(Message::ConnectionFormTest)
+                .style(primary_button_style(palette.clone(), 6.0));
     } else {
-        test_button = test_button.style(|_, _| button::Style {
-            background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-            text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-            border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-            shadow: Shadow::default(),
-        });
+        test_button = test_button.style(disabled_primary_button_style(palette.clone(), 6.0));
     }
 
     let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
         .padding([6, 16])
+        .style(primary_button_style(palette.clone(), 6.0))
         .on_press(Message::ConnectionFormCancel);
 
     let mut save_button = Button::new(fonts::primary_text(tr("Save"), None)).padding([6, 16]);
     if !state.testing {
-        save_button = save_button.on_press(Message::ConnectionFormSave);
+        save_button =
+            save_button
+                .on_press(Message::ConnectionFormSave)
+                .style(primary_button_style(palette.clone(), 6.0));
     } else {
-        save_button = save_button.style(|_, _| button::Style {
-            background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-            text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-            border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-            shadow: Shadow::default(),
-        });
+        save_button = save_button.style(disabled_primary_button_style(palette.clone(), 6.0));
     }
 
     let buttons = Row::new().spacing(12).push(cancel_button).push(test_button).push(save_button);
     content = content.push(buttons);
 
-    let card = Container::new(content).padding(16).width(Length::Fixed(560.0)).style(pane_style);
+    let card = Container::new(content)
+        .padding(16)
+        .width(Length::Fixed(560.0))
+        .style(pane_style(palette.clone(), 6.0));
 
     Container::new(card)
         .width(Length::Fill)
@@ -570,12 +664,17 @@ pub fn connection_form_view<'a>(state: &'a ConnectionFormState) -> Element<'a, M
         .into()
 }
 
-fn pane_style(theme: &Theme) -> widget::container::Style {
-    let palette = theme.extended_palette();
-
-    widget::container::Style {
-        background: Some(palette.background.weak.color.into()),
-        border: border::rounded(6).width(1).color(palette.primary.weak.color),
+fn pane_style(
+    palette: ThemePalette,
+    radius: f32,
+) -> impl Fn(&Theme) -> widget::container::Style {
+    let background = palette.widget_background_color();
+    let border_color = palette.widget_border_color();
+    let text_color = palette.text_primary.to_color();
+    move |_| widget::container::Style {
+        background: Some(background.into()),
+        border: border::rounded(radius).width(1).color(border_color),
+        text_color: Some(text_color),
         ..Default::default()
     }
 }

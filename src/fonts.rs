@@ -19,11 +19,7 @@ pub struct FontOption {
 
 impl FontOption {
     pub fn bundled() -> Self {
-        Self {
-            id: MONO_FONT_ID.to_string(),
-            name: MONO_FONT_LABEL.to_string(),
-            font: MONO_FONT,
-        }
+        Self { id: MONO_FONT_ID.to_string(), name: MONO_FONT_LABEL.to_string(), font: MONO_FONT }
     }
 
     pub fn new(id: String, name: String) -> Self {
@@ -78,45 +74,33 @@ fn fonts_lock() -> &'static RwLock<ActiveFonts> {
 }
 
 pub fn set_active_fonts(primary_id: &str, primary_size: f32, result_id: &str, result_size: f32) {
-    let primary_font = font_option_by_id(primary_id)
-        .map(|opt| opt.font)
-        .unwrap_or(MONO_FONT);
-    let result_font = font_option_by_id(result_id)
-        .map(|opt| opt.font)
-        .unwrap_or(MONO_FONT);
+    let primary_font = font_option_by_id(primary_id).map(|opt| opt.font).unwrap_or(MONO_FONT);
+    let result_font = font_option_by_id(result_id).map(|opt| opt.font).unwrap_or(MONO_FONT);
 
-    let mut guard = fonts_lock()
-        .write()
-        .expect("active fonts lock poisoned");
-    *guard = ActiveFonts {
-        primary_font,
-        primary_size,
-        result_font,
-        result_size,
-    };
+    let mut guard = fonts_lock().write().expect("active fonts lock poisoned");
+    *guard = ActiveFonts { primary_font, primary_size, result_font, result_size };
 }
 
 pub fn active_fonts() -> ActiveFonts {
-    fonts_lock()
-        .read()
-        .expect("active fonts lock poisoned")
-        .clone()
+    fonts_lock().read().expect("active fonts lock poisoned").clone()
 }
 
-pub fn primary_text<'a>(content: impl Into<String>, size_delta: Option<f32>) -> iced::widget::Text<'a> {
+pub fn primary_text<'a>(
+    content: impl Into<String>,
+    size_delta: Option<f32>,
+) -> iced::widget::Text<'a> {
     let fonts = active_fonts();
     let size = fonts.primary_size + size_delta.unwrap_or(0.0);
-    iced::widget::Text::new(content.into())
-        .font(fonts.primary_font)
-        .size(size)
+    iced::widget::Text::new(content.into()).font(fonts.primary_font).size(size)
 }
 
-pub fn result_text<'a>(content: impl Into<String>, size_delta: Option<f32>) -> iced::widget::Text<'a> {
+pub fn result_text<'a>(
+    content: impl Into<String>,
+    size_delta: Option<f32>,
+) -> iced::widget::Text<'a> {
     let fonts = active_fonts();
     let size = fonts.result_size + size_delta.unwrap_or(0.0);
-    iced::widget::Text::new(content.into())
-        .font(fonts.result_font)
-        .size(size)
+    iced::widget::Text::new(content.into()).font(fonts.result_font).size(size)
 }
 
 #[allow(dead_code)]

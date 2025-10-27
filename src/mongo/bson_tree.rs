@@ -2,15 +2,15 @@ use std::collections::HashSet;
 
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
-use iced::widget::{self, Button, Column, Container, Row, Scrollable, Space, button};
-use iced::{Color, Element, Length, Shadow, border};
+use iced::widget::{self, Button, Column, Container, Row, Scrollable, Space};
+use iced::{Color, Element, Length};
 use iced_aw::ContextMenu;
 use mongodb::bson::{Bson, Document};
 
 use crate::fonts;
 use crate::i18n::tr;
 use crate::mongo::shell;
-use crate::settings::AppSettings;
+use crate::settings::{AppSettings, ButtonColors, MenuColors, RgbaColor, TableColors, ThemePalette};
 use crate::{Message, TabId, TableContextAction, ValueEditContext};
 
 #[derive(Debug)]
@@ -18,32 +18,71 @@ pub struct BsonTree {
     roots: Vec<BsonNode>,
     expanded: HashSet<usize>,
     context: BsonTreeContext,
+    table_colors: TableColors,
+    menu_colors: MenuColors,
+    text_color: RgbaColor,
+    button_colors: ButtonColors,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BsonTreeOptions {
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
+    pub table_colors: TableColors,
+    pub menu_colors: MenuColors,
+    pub text_color: RgbaColor,
+    pub button_colors: ButtonColors,
 }
 
 impl BsonTreeOptions {
-    pub const fn new(
+    pub fn new(
         sort_fields_alphabetically: bool,
         sort_index_names_alphabetically: bool,
+        table_colors: TableColors,
+        menu_colors: MenuColors,
+        text_color: RgbaColor,
+        button_colors: ButtonColors,
     ) -> Self {
-        Self { sort_fields_alphabetically, sort_index_names_alphabetically }
+        Self {
+            sort_fields_alphabetically,
+            sort_index_names_alphabetically,
+            table_colors,
+            menu_colors,
+            text_color,
+            button_colors,
+        }
     }
 }
 
 impl Default for BsonTreeOptions {
     fn default() -> Self {
-        Self::new(false, false)
+        let palette = ThemePalette::light();
+        Self::new(
+            false,
+            false,
+            palette.table,
+            palette.menu,
+            palette.text_primary,
+            palette.subtle_buttons.clone(),
+        )
     }
 }
 
 impl From<&AppSettings> for BsonTreeOptions {
     fn from(settings: &AppSettings) -> Self {
-        Self::new(settings.sort_fields_alphabetically, settings.sort_index_names_alphabetically)
+        let palette = settings.active_palette();
+        let table_colors = palette.table.clone();
+        let menu_colors = palette.menu.clone();
+        let text_color = palette.text_primary;
+        let button_colors = palette.subtle_buttons.clone();
+        Self::new(
+            settings.sort_fields_alphabetically,
+            settings.sort_index_names_alphabetically,
+            table_colors,
+            menu_colors,
+            text_color,
+            button_colors,
+        )
     }
 }
 
@@ -62,6 +101,15 @@ impl TableContextMenu {
     ) -> Element<'a, Message> {
         ContextMenu::new(underlay, overlay).into()
     }
+}
+
+fn style_menu_button<'a>(
+    button: Button<'a, Message>,
+    colors: &MenuColors,
+    border_color: Color,
+) -> Button<'a, Message> {
+    let colors = colors.clone();
+    button.style(move |_, status| colors.button_style(6.0, border_color, status))
 }
 
 struct BsonRowEntry<'a> {
@@ -232,7 +280,15 @@ impl BsonTree {
 
         let expanded = HashSet::new();
 
-        Self { roots, expanded, context: BsonTreeContext::Default }
+        Self {
+            roots,
+            expanded,
+            context: BsonTreeContext::Default,
+            table_colors: options.table_colors.clone(),
+            menu_colors: options.menu_colors.clone(),
+            text_color: options.text_color,
+            button_colors: options.button_colors.clone(),
+        }
     }
 
     pub fn from_error(message: String) -> Self {
@@ -249,7 +305,15 @@ impl BsonTree {
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
 
-        Self { roots: vec![node], expanded, context: BsonTreeContext::Default }
+        Self {
+            roots: vec![node],
+            expanded,
+            context: BsonTreeContext::Default,
+            table_colors: options.table_colors.clone(),
+            menu_colors: options.menu_colors.clone(),
+            text_color: options.text_color,
+            button_colors: options.button_colors.clone(),
+        }
     }
 
     pub fn from_count(value: Bson, options: BsonTreeOptions) -> Self {
@@ -263,7 +327,15 @@ impl BsonTree {
         );
         let mut expanded = HashSet::new();
         expanded.insert(node.id);
-        Self { roots: vec![node], expanded, context: BsonTreeContext::Default }
+        Self {
+            roots: vec![node],
+            expanded,
+            context: BsonTreeContext::Default,
+            table_colors: options.table_colors.clone(),
+            menu_colors: options.menu_colors.clone(),
+            text_color: options.text_color,
+            button_colors: options.button_colors.clone(),
+        }
     }
 
     pub fn from_document(document: Document, options: BsonTreeOptions) -> Self {
@@ -284,7 +356,15 @@ impl BsonTree {
         expanded.insert(node.id);
         roots.push(node);
 
-        Self { roots, expanded, context: BsonTreeContext::Default }
+        Self {
+            roots,
+            expanded,
+            context: BsonTreeContext::Default,
+            table_colors: options.table_colors.clone(),
+            menu_colors: options.menu_colors.clone(),
+            text_color: options.text_color,
+            button_colors: options.button_colors.clone(),
+        }
     }
 
     pub fn from_indexes(values: &[Bson], options: BsonTreeOptions) -> Self {
@@ -337,7 +417,15 @@ impl BsonTree {
 
         let expanded = HashSet::new();
 
-        Self { roots, expanded, context: BsonTreeContext::Indexes }
+        Self {
+            roots,
+            expanded,
+            context: BsonTreeContext::Indexes,
+            table_colors: options.table_colors.clone(),
+            menu_colors: options.menu_colors.clone(),
+            text_color: options.text_color,
+            button_colors: options.button_colors.clone(),
+        }
     }
 
     pub fn is_indexes_view(&self) -> bool {
@@ -378,10 +466,11 @@ impl BsonTree {
         let mut rows = Vec::new();
         self.collect_rows(&mut rows, &self.roots, 0);
 
-        let row_color_a = Color::from_rgb8(0xfe, 0xfe, 0xfe);
-        let row_color_b = Color::from_rgb8(0xf9, 0xfd, 0xf9);
-        let header_bg = Color::from_rgb8(0xef, 0xf1, 0xf5);
-        let separator_color = Color::from_rgb8(0xd0, 0xd4, 0xda);
+        let row_color_a = self.table_colors.row_even.to_color();
+        let row_color_b = self.table_colors.row_odd.to_color();
+        let header_bg = self.table_colors.header_background.to_color();
+        let separator_color = self.table_colors.separator.to_color();
+        let text_color = self.text_color.to_color();
 
         let header_row = Row::new()
             .spacing(0)
@@ -389,7 +478,7 @@ impl BsonTree {
             .width(Length::Fill)
             .height(Length::Shrink)
             .push(
-                Container::new(fonts::result_text(tr("Key"), None))
+                Container::new(fonts::result_text(tr("Key"), None).color(text_color))
                     .width(Length::FillPortion(4))
                     .padding([6, 8]),
             )
@@ -404,7 +493,7 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(fonts::result_text(tr("Value"), None))
+                Container::new(fonts::result_text(tr("Value"), None).color(text_color))
                     .width(Length::FillPortion(5))
                     .padding([6, 8]),
             )
@@ -419,7 +508,7 @@ impl BsonTree {
                     }),
             )
             .push(
-                Container::new(fonts::result_text(tr("Type"), None))
+                Container::new(fonts::result_text(tr("Type"), None).color(text_color))
                     .width(Length::FillPortion(3))
                     .padding([6, 8]),
             );
@@ -445,13 +534,16 @@ impl BsonTree {
                     node.children().map(|children| !children.is_empty()).unwrap_or(false);
 
                 if has_children {
-                    let toggle = Button::new(fonts::result_text(indicator, None))
+                    let button_colors = self.button_colors.clone();
+                    let toggle = Button::new(fonts::result_text(indicator, None).color(text_color))
                         .padding([0, 4])
+                        .style(move |_, status| button_colors.style(4.0, status))
                         .on_press(Message::CollectionTreeToggle { tab_id, node_id: node.id });
                     key_row = key_row.push(toggle);
                 } else {
                     let disabled = Container::new(
-                        fonts::result_text(indicator, None).color(Color::from_rgb8(0xb5, 0xbc, 0xc6)),
+                        fonts::result_text(indicator, None)
+                            .color(Color::from_rgb8(0xb5, 0xbc, 0xc6)),
                     )
                     .padding([0, 4])
                     .width(Length::Fixed(18.0))
@@ -465,7 +557,10 @@ impl BsonTree {
 
             let key_label = node.display_key();
             key_row = key_row.push(
-                fonts::result_text(key_label.clone(), None).wrapping(Wrapping::Word).width(Length::Fill),
+                fonts::result_text(key_label.clone(), None)
+                    .color(text_color)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
             );
 
             let value_text = node.value_display().unwrap_or_default();
@@ -474,13 +569,19 @@ impl BsonTree {
             let key_cell = Container::new(key_row).width(Length::FillPortion(4)).padding([6, 8]);
 
             let value_cell = Container::new(
-                fonts::result_text(value_text.clone(), None).wrapping(Wrapping::Word).width(Length::Fill),
+                fonts::result_text(value_text.clone(), None)
+                    .color(text_color)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
             )
             .width(Length::FillPortion(5))
             .padding([6, 8]);
 
             let type_cell = Container::new(
-                fonts::result_text(type_text.clone(), None).wrapping(Wrapping::Word).width(Length::Fill),
+                fonts::result_text(type_text.clone(), None)
+                    .color(text_color)
+                    .wrapping(Wrapping::Word)
+                    .width(Length::Fill),
             )
             .width(Length::FillPortion(3))
             .padding([6, 8]);
@@ -539,11 +640,14 @@ impl BsonTree {
                 }
             });
 
+            let menu_colors = self.menu_colors.clone();
+            let menu_border = self.table_colors.separator.to_color();
+
             let row_with_menu = TableContextMenu::new(row_container, move || {
                 let mut menu = Column::new().spacing(4).padding([4, 6]);
 
                 if node.is_container() {
-                    let expand_button =
+                    let expand_button = style_menu_button(
                         Button::new(fonts::primary_text(tr("Expand Hierarchically"), None))
                             .padding([4, 12])
                             .width(Length::Shrink)
@@ -551,9 +655,12 @@ impl BsonTree {
                                 tab_id: menu_tab_id,
                                 node_id: menu_node_id,
                                 action: TableContextAction::ExpandHierarchy,
-                            });
+                            }),
+                        &menu_colors,
+                        menu_border,
+                    );
 
-                    let collapse_button =
+                    let collapse_button = style_menu_button(
                         Button::new(fonts::primary_text(tr("Collapse Hierarchically"), None))
                             .padding([4, 12])
                             .width(Length::Shrink)
@@ -561,38 +668,53 @@ impl BsonTree {
                                 tab_id: menu_tab_id,
                                 node_id: menu_node_id,
                                 action: TableContextAction::CollapseHierarchy,
-                            });
+                            }),
+                        &menu_colors,
+                        menu_border,
+                    );
 
                     menu = menu.push(expand_button);
                     menu = menu.push(collapse_button);
                 }
 
-                let copy_json = Button::new(fonts::primary_text(tr("Copy JSON"), None))
-                    .padding([4, 12])
-                    .width(Length::Shrink)
-                    .on_press(Message::TableContextMenu {
-                        tab_id: menu_tab_id,
-                        node_id: menu_node_id,
-                        action: TableContextAction::CopyJson,
-                    });
+                let copy_json = style_menu_button(
+                    Button::new(fonts::primary_text(tr("Copy JSON"), None))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::CopyJson,
+                        }),
+                    &menu_colors,
+                    menu_border,
+                );
 
-                let copy_key = Button::new(fonts::primary_text(tr("Copy Key"), None))
-                    .padding([4, 12])
-                    .width(Length::Shrink)
-                    .on_press(Message::TableContextMenu {
-                        tab_id: menu_tab_id,
-                        node_id: menu_node_id,
-                        action: TableContextAction::CopyKey,
-                    });
+                let copy_key = style_menu_button(
+                    Button::new(fonts::primary_text(tr("Copy Key"), None))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::CopyKey,
+                        }),
+                    &menu_colors,
+                    menu_border,
+                );
 
-                let copy_value = Button::new(fonts::primary_text(tr("Copy Value"), None))
-                    .padding([4, 12])
-                    .width(Length::Shrink)
-                    .on_press(Message::TableContextMenu {
-                        tab_id: menu_tab_id,
-                        node_id: menu_node_id,
-                        action: TableContextAction::CopyValue,
-                    });
+                let copy_value = style_menu_button(
+                    Button::new(fonts::primary_text(tr("Copy Value"), None))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::CopyValue,
+                        }),
+                    &menu_colors,
+                    menu_border,
+                );
 
                 let mut copy_path = Button::new(fonts::primary_text(tr("Copy Path"), None))
                     .padding([4, 12])
@@ -605,27 +727,33 @@ impl BsonTree {
                         action: TableContextAction::CopyPath,
                     });
                 }
+                let copy_path = style_menu_button(copy_path, &menu_colors, menu_border);
 
                 menu = menu.push(copy_json);
                 menu = menu.push(copy_key);
                 menu = menu.push(copy_value);
                 menu = menu.push(copy_path);
                 if value_edit_enabled {
-                    let edit_value = Button::new(fonts::primary_text(tr("Edit Value Only..."), None))
-                        .padding([4, 12])
-                        .width(Length::Shrink)
-                        .on_press(Message::TableContextMenu {
-                            tab_id: menu_tab_id,
-                            node_id: menu_node_id,
-                            action: TableContextAction::EditValue,
-                        });
+                    let edit_value = style_menu_button(
+                        Button::new(fonts::primary_text(tr("Edit Value Only..."), None))
+                            .padding([4, 12])
+                            .width(Length::Shrink)
+                            .on_press(Message::TableContextMenu {
+                                tab_id: menu_tab_id,
+                                node_id: menu_node_id,
+                                action: TableContextAction::EditValue,
+                            }),
+                        &menu_colors,
+                        menu_border,
+                    );
                     menu = menu.push(edit_value);
                 }
 
                 if let Some((index_name, hidden_state, ttl_enabled)) = index_context.clone() {
-                    let mut delete_button = Button::new(fonts::primary_text(tr("Delete Index"), None))
-                        .padding([4, 12])
-                        .width(Length::Shrink);
+                    let mut delete_button =
+                        Button::new(fonts::primary_text(tr("Delete Index"), None))
+                            .padding([4, 12])
+                            .width(Length::Shrink);
                     if index_name != "_id_" {
                         delete_button = delete_button.on_press(Message::TableContextMenu {
                             tab_id: menu_tab_id,
@@ -633,6 +761,7 @@ impl BsonTree {
                             action: TableContextAction::DeleteIndex,
                         });
                     }
+                    let delete_button = style_menu_button(delete_button, &menu_colors, menu_border);
                     menu = menu.push(delete_button);
 
                     let hidden = hidden_state.unwrap_or(false);
@@ -647,11 +776,13 @@ impl BsonTree {
                             action: TableContextAction::HideIndex,
                         });
                     }
+                    let hide_button = style_menu_button(hide_button, &menu_colors, menu_border);
                     menu = menu.push(hide_button);
 
-                    let mut unhide_button = Button::new(fonts::primary_text(tr("Unhide Index"), None))
-                        .padding([4, 12])
-                        .width(Length::Shrink);
+                    let mut unhide_button =
+                        Button::new(fonts::primary_text(tr("Unhide Index"), None))
+                            .padding([4, 12])
+                            .width(Length::Shrink);
                     if hidden {
                         unhide_button = unhide_button.on_press(Message::TableContextMenu {
                             tab_id: menu_tab_id,
@@ -659,39 +790,38 @@ impl BsonTree {
                             action: TableContextAction::UnhideIndex,
                         });
                     }
+                    let unhide_button = style_menu_button(unhide_button, &menu_colors, menu_border);
                     menu = menu.push(unhide_button);
 
                     if ttl_enabled {
-                        let edit_button = Button::new(fonts::primary_text(tr("Edit Index..."), None))
+                        let edit_button =
+                            Button::new(fonts::primary_text(tr("Edit Index..."), None))
+                                .padding([4, 12])
+                                .width(Length::Shrink)
+                                .on_press(Message::DocumentEditRequested {
+                                    tab_id: menu_tab_id,
+                                    node_id: menu_node_id,
+                                });
+                        let edit_button = style_menu_button(edit_button, &menu_colors, menu_border);
+                        menu = menu.push(edit_button);
+                    } else {
+                        let edit_button =
+                            Button::new(fonts::primary_text(tr("Edit Index..."), None))
+                                .padding([4, 12])
+                                .width(Length::Shrink);
+                        let edit_button = style_menu_button(edit_button, &menu_colors, menu_border);
+                        menu = menu.push(edit_button);
+                    }
+                } else if is_root_document {
+                    let edit_button =
+                        Button::new(fonts::primary_text(tr("Edit Document..."), None))
                             .padding([4, 12])
                             .width(Length::Shrink)
                             .on_press(Message::DocumentEditRequested {
                                 tab_id: menu_tab_id,
                                 node_id: menu_node_id,
                             });
-                        menu = menu.push(edit_button);
-                    } else {
-                        let edit_button = Button::new(fonts::primary_text(tr("Edit Index..."), None))
-                            .padding([4, 12])
-                            .width(Length::Shrink)
-                            .style(|_, _| button::Style {
-                                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-                                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-                                border: border::rounded(6)
-                                    .width(1)
-                                    .color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-                                shadow: Shadow::default(),
-                            });
-                        menu = menu.push(edit_button);
-                    }
-                } else if is_root_document {
-                    let edit_button = Button::new(fonts::primary_text(tr("Edit Document..."), None))
-                        .padding([4, 12])
-                        .width(Length::Shrink)
-                        .on_press(Message::DocumentEditRequested {
-                            tab_id: menu_tab_id,
-                            node_id: menu_node_id,
-                        });
+                    let edit_button = style_menu_button(edit_button, &menu_colors, menu_border);
                     menu = menu.push(edit_button);
                 }
 
@@ -733,6 +863,14 @@ impl BsonTree {
                 self.expand_recursive(child_id);
             }
         }
+    }
+
+    pub fn set_table_colors(&mut self, colors: TableColors) {
+        self.table_colors = colors;
+    }
+
+    pub fn set_menu_colors(&mut self, colors: MenuColors) {
+        self.menu_colors = colors;
     }
 
     pub fn collapse_recursive(&mut self, node_id: usize) {

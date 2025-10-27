@@ -34,25 +34,18 @@ fn language_lock() -> &'static RwLock<Language> {
 }
 
 pub fn init_language(language: Language) {
-    if CURRENT_LANGUAGE
-        .set(RwLock::new(language))
-        .is_err()
-    {
+    if CURRENT_LANGUAGE.set(RwLock::new(language)).is_err() {
         set_language(language);
     }
 }
 
 pub fn set_language(language: Language) {
-    let mut guard = language_lock()
-        .write()
-        .expect("language write lock poisoned");
+    let mut guard = language_lock().write().expect("language write lock poisoned");
     *guard = language;
 }
 
 fn current_language() -> Language {
-    *language_lock()
-        .read()
-        .expect("language read lock poisoned")
+    *language_lock().read().expect("language read lock poisoned")
 }
 
 fn russian_map() -> &'static HashMap<&'static str, &'static str> {
@@ -166,6 +159,7 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Exit", "Выйти"),
             ("Behavior", "Поведение"),
             ("Appearance", "Внешний вид"),
+            ("Color Theme", "Цветовое оформление"),
             ("Expand first result item", "Раскрывать первый элемент результата"),
             ("Query timeout (seconds)", "Таймаут запроса (секунды)"),
             ("Seconds", "Секунды"),
@@ -181,6 +175,26 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Query Result Font", "Шрифт результатов запросов"),
             ("Font Size", "Размер шрифта"),
             ("Theme", "Тема"),
+            ("Widget Surfaces", "Поверхности виджетов"),
+            ("Widget Background", "Фон виджетов"),
+            ("Widget Border", "Граница виджетов"),
+            ("Subtle Buttons", "Ненавязчивые кнопки"),
+            ("Primary Buttons", "Основные кнопки"),
+            ("Table Rows", "Строки таблицы"),
+            ("Even Row", "Чётная строка"),
+            ("Odd Row", "Нечётная строка"),
+            ("Header Background", "Фон заголовка"),
+            ("Separator", "Разделитель"),
+            ("Menu Items", "Пункты меню"),
+            ("Menu Background", "Фон меню"),
+            ("Menu Hover Background", "Фон меню при наведении"),
+            ("Menu Text", "Текст меню"),
+            ("Default Colors", "Цвета по умолчанию"),
+            ("Active", "Активное состояние"),
+            ("Hover", "Наведение"),
+            ("Pressed", "Нажатое состояние"),
+            ("Text", "Текст"),
+            ("Border", "Граница"),
             ("Apply", "Применить"),
             ("System Default", "Системный"),
             ("Monospace", "Моноширинный"),
