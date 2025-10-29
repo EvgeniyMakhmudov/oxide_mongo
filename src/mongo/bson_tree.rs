@@ -10,7 +10,9 @@ use mongodb::bson::{Bson, Document};
 use crate::fonts;
 use crate::i18n::tr;
 use crate::mongo::shell;
-use crate::settings::{AppSettings, ButtonColors, MenuColors, RgbaColor, TableColors, ThemePalette};
+use crate::settings::{
+    AppSettings, ButtonColors, MenuColors, RgbaColor, TableColors, ThemePalette,
+};
 use crate::{Message, TabId, TableContextAction, ValueEditContext};
 
 #[derive(Debug)]
@@ -1044,5 +1046,214 @@ impl BsonTree {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::tr;
+    use mongodb::bson::{doc, oid::ObjectId};
+
+    fn default_options() -> BsonTreeOptions {
+        BsonTreeOptions::new(
+            false,
+            false,
+            TableColors::default(),
+            MenuColors::default(),
+            RgbaColor::default(),
+            ButtonColors::default(),
+        )
+    }
+
+    fn single_document_tree(doc: Document) -> BsonTree {
+        BsonTree::from_values(&[Bson::Document(doc)], default_options())
+    }
+
+    fn find_child<'a>(node: &'a BsonNode, key: &str) -> &'a BsonNode {
+        match &node.kind {
+            BsonKind::Document(children) | BsonKind::Array(children) => children
+                .iter()
+                .find(|child| child.display_key.as_deref() == Some(key))
+                .unwrap_or_else(|| panic!("child '{}' not found", key)),
+            _ => panic!("node has no children"),
+        }
+    }
+
+    #[test]
+    fn placeholder_created_when_no_values() {
+        let tree = BsonTree::from_values(&[], default_options());
+        assert_eq!(tree.roots.len(), 1);
+        let root = &tree.roots[0];
+
+        assert_eq!(root.display_key(), tr("info"));
+        assert!(matches!(root.kind, BsonKind::Value { .. }));
+        assert_eq!(root.bson, Bson::String(tr("No documents found").to_string()));
+    }
+
+    #[test]
+    fn document_fields_sorted_when_option_enabled() {
+        let document = doc! { "c": 3, "a": 1, "b": 2 };
+        let options = BsonTreeOptions::new(
+            true,
+            false,
+            TableColors::default(),
+            MenuColors::default(),
+            RgbaColor::default(),
+            ButtonColors::default(),
+        );
+        let tree = BsonTree::from_values(&[Bson::Document(document.clone())], options);
+        let root = &tree.roots[0];
+
+        let child_keys: Vec<String> = match &root.kind {
+            BsonKind::Document(children) => {
+                children.iter().map(|node| node.display_key.clone().unwrap()).collect()
+            }
+            _ => panic!("expected document root"),
+        };
+
+        assert_eq!(child_keys, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn distinct_tree_expands_root() {
+        let tree = BsonTree::from_distinct(
+            String::from("tags"),
+            vec![Bson::String(String::from("alpha"))],
+            default_options(),
+        );
+
+        assert_eq!(tree.roots.len(), 1);
+        let root_id = tree.roots[0].id;
+        assert!(tree.expanded.contains(&root_id));
+        assert!(!tree.is_indexes_view());
+    }
+
+    #[test]
+    fn indexes_tree_exposes_metadata_helpers() {
+        let index_doc = doc! { "name": "email_1", "hidden": true };
+        let tree = BsonTree::from_indexes(&[Bson::Document(index_doc.clone())], default_options());
+
+        assert!(tree.is_indexes_view());
+        let root = &tree.roots[0];
+        let root_id = root.id;
+        assert_eq!(tree.node_index_name(root_id).as_deref(), Some("email_1"));
+        assert_eq!(tree.node_index_hidden(root_id), Some(true));
+    }
+
+    #[test]
+    fn toggle_expands_and_collapses_node() {
+        let id = ObjectId::new();
+        let tree_doc = doc! { "_id": id, "profile": { "age": 30 } };
+        let mut tree = single_document_tree(tree_doc);
+
+        let root = &tree.roots[0];
+        let profile_node = find_child(root, "profile");
+        let profile_id = profile_node.id;
+
+        assert!(!tree.expanded.contains(&profile_id));
+        tree.toggle(profile_id);
+        assert!(tree.expanded.contains(&profile_id));
+        tree.toggle(profile_id);
+        assert!(!tree.expanded.contains(&profile_id));
+    }
+
+    #[test]
+    fn collapse_recursive_removes_descendants() {
+        let id = ObjectId::new();
+        let tree_doc = doc! { "_id": id, "profile": { "address": { "city": "Paris" } } };
+        let mut tree = single_document_tree(tree_doc);
+
+        let profile_id = {
+            let root = &tree.roots[0];
+            find_child(root, "profile").id
+        };
+        let address_id = {
+            let root = &tree.roots[0];
+            let profile_node = find_child(root, "profile");
+            find_child(profile_node, "address").id
+        };
+
+        tree.expand_recursive(profile_id);
+        assert!(tree.expanded.contains(&profile_id));
+        assert!(tree.expanded.contains(&address_id));
+
+        tree.collapse_recursive(profile_id);
+        assert!(!tree.expanded.contains(&profile_id));
+        assert!(!tree.expanded.contains(&address_id));
+    }
+
+    #[test]
+    fn node_path_handles_array_indices() {
+        let id = ObjectId::new();
+        let tree_doc = doc! {
+            "_id": id,
+            "items": [ { "name": "first" } ]
+        };
+        let tree = single_document_tree(tree_doc);
+        let root = &tree.roots[0];
+        let items_node = find_child(root, "items");
+        let first_entry = match &items_node.kind {
+            BsonKind::Array(children) => &children[0],
+            _ => panic!("expected array"),
+        };
+        let name_node = find_child(first_entry, "name");
+
+        assert_eq!(tree.node_path(name_node.id).as_deref(), Some("items.0.name"));
+    }
+
+    #[test]
+    fn value_edit_context_requires_root_id() {
+        let doc_without_id = doc! { "profile": { "age": 30 } };
+        let tree = single_document_tree(doc_without_id);
+        let root = &tree.roots[0];
+        let profile_node = find_child(root, "profile");
+        let age_node = find_child(profile_node, "age");
+
+        assert!(tree.value_edit_context(age_node.id).is_none());
+    }
+
+    #[test]
+    fn from_count_labeled_correctly() {
+        let tree = BsonTree::from_count(Bson::Int64(10), default_options());
+        assert_eq!(tree.roots.len(), 1);
+        let root = &tree.roots[0];
+        assert_eq!(root.display_key(), tr("count"));
+        assert_eq!(root.path_key.as_deref(), Some(tr("count")));
+        assert_eq!(tree.node_value_display(root.id), Some("10".to_string()));
+    }
+
+    #[test]
+    fn value_edit_context_builds_filter_and_path() {
+        let id = ObjectId::new();
+        let document = doc! {
+            "_id": id,
+            "profile": { "age": 30, "name": "Alice" },
+            "active": true
+        };
+        let tree = BsonTree::from_values(&[Bson::Document(document.clone())], default_options());
+        let root = &tree.roots[0];
+
+        let profile_node = match &root.kind {
+            BsonKind::Document(children) => children
+                .iter()
+                .find(|node| node.display_key.as_deref() == Some("profile"))
+                .expect("profile field"),
+            _ => panic!("expected document root"),
+        };
+
+        let age_node = match &profile_node.kind {
+            BsonKind::Document(children) => children
+                .iter()
+                .find(|node| node.display_key.as_deref() == Some("age"))
+                .expect("age field"),
+            _ => panic!("expected profile document"),
+        };
+
+        let context = tree.value_edit_context(age_node.id).expect("context");
+        assert_eq!(context.path, "profile.age");
+        assert_eq!(context.filter, doc! { "_id": Bson::ObjectId(id) });
+        assert_eq!(context.current_value, Bson::Int32(30));
+        assert_eq!(tree.node_path(age_node.id).as_deref(), Some("profile.age"));
     }
 }

@@ -3592,3 +3592,211 @@ pub fn run_collection_query(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mongodb::bson::doc;
+    use serde_json::json;
+
+    fn parse(query: &str) -> QueryOperation {
+        parse_collection_query("testdb", "users", query).expect("query should parse")
+    }
+
+    #[test]
+    fn parses_simple_find_query() {
+        let operation = parse("db.users.find({ \"name\": \"Alice\" })");
+        match operation {
+            QueryOperation::Find { filter } => assert_eq!(filter, doc! { "name": "Alice" }),
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_count_documents_with_options() {
+        let operation = parse(
+            "db.users.countDocuments({ \"status\": \"active\" }, { \"limit\": 5, \"hint\": { \"name\": \"status_1\" } })",
+        );
+        match operation {
+            QueryOperation::CountDocuments { filter, options } => {
+                assert_eq!(filter, doc! { "status": "active" });
+                let parsed = options.expect("options expected");
+                assert_eq!(parsed.limit, Some(5));
+                match parsed.hint {
+                    Some(Hint::Keys(doc)) => assert_eq!(doc, doc! { "name": "status_1" }),
+                    other => panic!("unexpected hint: {:?}", other),
+                }
+                assert!(parsed.skip.is_none());
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_update_pipeline() {
+        let operation = parse(
+            "db.users.updateOne({ \"name\": \"Bob\" }, [ { \"$set\": { \"age\": 42 } }, { \"$unset\": \"temp\" } ])",
+        );
+        match operation {
+            QueryOperation::UpdateOne { filter, update, options } => {
+                assert_eq!(filter, doc! { "name": "Bob" });
+                let pipeline = match update {
+                    UpdateModificationsSpec::Pipeline(docs) => docs,
+                    other => panic!("expected pipeline, got {:?}", other),
+                };
+                assert_eq!(
+                    pipeline,
+                    vec![doc! { "$set": { "age": 42i64 } }, doc! { "$unset": "temp" }]
+                );
+                assert!(options.is_none());
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_shell_bson_helpers() {
+        let oid = QueryParser::parse_shell_bson_value("ObjectId(\"64d2f9f18d964a7848d35300\")")
+            .expect("valid object id");
+        assert_eq!(oid, Bson::ObjectId(ObjectId::from_str("64d2f9f18d964a7848d35300").unwrap()));
+
+        let date = QueryParser::parse_shell_bson_value("ISODate(\"2024-03-01T12:30:00Z\")")
+            .expect("valid ISO date");
+        match date {
+            Bson::DateTime(dt) => {
+                assert_eq!(dt, DateTime::parse_rfc3339_str("2024-03-01T12:30:00Z").unwrap())
+            }
+            other => panic!("expected datetime, got {:?}", other),
+        }
+
+        let number_long =
+            QueryParser::parse_shell_bson_value("NumberLong(42)").expect("valid NumberLong");
+        match number_long {
+            Bson::Int64(value) => assert_eq!(value, 42),
+            Bson::Int32(value) => assert_eq!(value, 42),
+            other => panic!("expected integer, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_insert_one_with_options() {
+        let operation = parse(
+            "db.users.insertOne({ \"name\": \"Zoe\" }, { \"writeConcern\": { \"w\": 2, \"j\": true, \"wtimeout\": 500 } })",
+        );
+
+        match operation {
+            QueryOperation::InsertOne { document, options } => {
+                assert_eq!(document, doc! { "name": "Zoe" });
+
+                let opts = options.expect("options expected");
+                let write_concern = opts.write_concern.expect("write concern parsed");
+                match write_concern.w {
+                    Some(Acknowledgment::Nodes(nodes)) => assert_eq!(nodes, 2),
+                    other => panic!("unexpected acknowledgment: {:?}", other),
+                }
+                assert_eq!(write_concern.journal, Some(true));
+                assert_eq!(write_concern.w_timeout, Some(Duration::from_millis(500)));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parse_update_options_supports_multiple_fields() {
+        let source = r#"{
+            "writeConcern": { "w": "majority" },
+            "upsert": true,
+            "arrayFilters": [ { "score": { "$gt": 5 } } ],
+            "collation": { "locale": "en" },
+            "hint": { "score": -1 },
+            "bypassDocumentValidation": false,
+            "let": { "threshold": 10 },
+            "comment": "touch",
+            "sort": { "score": -1 }
+        }"#;
+
+        let options = QueryParser::parse_update_options(source)
+            .expect("should parse")
+            .expect("options expected");
+
+        let write_concern = options.write_concern.expect("write concern");
+        assert!(matches!(write_concern.w, Some(Acknowledgment::Majority)));
+        assert_eq!(options.upsert, Some(true));
+        assert_eq!(options.array_filters, Some(vec![doc! { "score": { "$gt": 5i64 } }]));
+        let collation = options.collation.expect("collation expected");
+        assert_eq!(collation.locale, "en");
+        assert_eq!(options.hint, Some(Hint::Keys(doc! { "score": -1i64 })));
+        assert_eq!(options.bypass_document_validation, Some(false));
+        assert_eq!(options.let_vars, Some(doc! { "threshold": 10i64 }));
+        assert_eq!(options.comment, Some(Bson::String("touch".to_string())));
+        assert_eq!(options.sort, Some(doc! { "score": -1i64 }));
+    }
+
+    #[test]
+    fn parse_update_options_rejects_unknown_fields() {
+        assert!(QueryParser::parse_update_options("{ \"unexpected\": true }").is_err());
+    }
+
+    #[test]
+    fn parse_find_one_and_update_options_reads_all_supported_fields() {
+        let source = r#"{
+            "writeConcern": { "w": 1 },
+            "upsert": false,
+            "arrayFilters": [ { "elem.status": { "$ne": "done" } } ],
+            "bypassDocumentValidation": true,
+            "maxTimeMS": 1500,
+            "projection": { "name": 1 },
+            "returnDocument": "after",
+            "sort": { "age": -1 },
+            "collation": { "locale": "fr" },
+            "hint": "age_1",
+            "let": { "var": 1 },
+            "comment": { "note": "keep" }
+        }"#;
+
+        let options = QueryParser::parse_find_one_and_update_options(source)
+            .expect("should parse")
+            .expect("options expected");
+
+        let write_concern = options.write_concern.expect("writeConcern expected");
+        assert!(matches!(write_concern.w, Some(Acknowledgment::Nodes(1))));
+        assert_eq!(options.upsert, Some(false));
+        assert_eq!(options.array_filters, Some(vec![doc! { "elem.status": { "$ne": "done" } }]));
+        assert_eq!(options.bypass_document_validation, Some(true));
+        assert_eq!(options.max_time, Some(Duration::from_millis(1500)));
+        assert_eq!(options.projection, Some(doc! { "name": 1i64 }));
+        assert!(matches!(options.return_document, Some(ReturnDocument::After)));
+        assert_eq!(options.sort, Some(doc! { "age": -1i64 }));
+        let collation = options.collation.unwrap();
+        assert_eq!(collation.locale, "fr");
+        assert_eq!(options.hint, Some(Hint::Name("age_1".to_string())));
+        assert_eq!(options.let_vars, Some(doc! { "var": 1i64 }));
+        assert_eq!(options.comment, Some(Bson::Document(doc! { "note": "keep" })));
+    }
+
+    #[test]
+    fn parse_write_concern_rejects_invalid_types() {
+        let value = json!({ "w": true });
+        assert!(QueryParser::parse_write_concern_value(&value).is_err());
+    }
+
+    #[test]
+    fn parses_database_stats_with_numeric_scale() {
+        let parser = QueryParser { db_name: "analytics", collection: "ignored" };
+        let operation = parser.parse_query("db.stats(2048)").expect("stats should parse");
+
+        match operation {
+            QueryOperation::DatabaseCommand { db, command } => {
+                assert_eq!(db, "analytics");
+                assert_eq!(command.get_i32("dbStats"), Ok(1));
+                match command.get("scale") {
+                    Some(Bson::Int32(value)) => assert_eq!(*value, 2048),
+                    Some(Bson::Int64(value)) => assert_eq!(*value, 2048),
+                    Some(Bson::Double(value)) => assert_eq!(*value, 2048.0),
+                    other => panic!("unexpected scale representation: {:?}", other),
+                }
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+}

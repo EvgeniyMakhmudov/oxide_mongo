@@ -4162,15 +4162,13 @@ impl App {
                 let is_active = active_id == Some(tab.id);
 
                 let title_label =
-                    Container::new(fonts::primary_text(tab.title.clone(), None))
-                        .padding([4, 12]);
+                    Container::new(fonts::primary_text(tab.title.clone(), None)).padding([4, 12]);
 
                 let title_area = mouse_area(title_label).on_press(Message::TabSelected(tab.id));
 
-                let close_button =
-                    Button::new(fonts::primary_text(tr("×"), None))
-                        .padding([4, 8])
-                        .on_press(Message::TabClosed(tab.id));
+                let close_button = Button::new(fonts::primary_text(tr("×"), None))
+                    .padding([4, 8])
+                    .on_press(Message::TabClosed(tab.id));
 
                 let tab_inner = Row::new()
                     .spacing(4)

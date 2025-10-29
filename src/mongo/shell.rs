@@ -240,37 +240,43 @@ fn shell_indent(level: usize) -> String {
 pub fn split_arguments(args: &str) -> Vec<String> {
     let mut result = Vec::new();
     let mut current = String::new();
-    let mut depth = 0i32;
-    let mut in_string = false;
+    let mut string_delim: Option<char> = None;
     let mut escape = false;
+    let mut stack: Vec<char> = Vec::new();
 
     for ch in args.chars() {
-        if in_string {
+        if let Some(delim) = string_delim {
             current.push(ch);
             if escape {
                 escape = false;
-            } else if ch == '\\' {
-                escape = true;
-            } else if ch == '"' {
-                in_string = false;
+                continue;
+            }
+            match ch {
+                '\\' => escape = true,
+                c if c == delim => string_delim = None,
+                _ => {}
             }
             continue;
         }
 
         match ch {
-            '"' => {
-                in_string = true;
+            '"' | '\'' => {
+                string_delim = Some(ch);
                 current.push(ch);
             }
-            '{' | '[' => {
-                depth += 1;
+            '(' | '{' | '[' => {
+                stack.push(ch);
                 current.push(ch);
             }
-            '}' | ']' => {
-                depth -= 1;
+            ')' | '}' | ']' => {
+                if let Some(open) = stack.pop() {
+                    if !matches!((open, ch), ('(', ')') | ('{', '}') | ('[', ']')) {
+                        stack.clear();
+                    }
+                }
                 current.push(ch);
             }
-            ',' if depth == 0 => {
+            ',' if stack.is_empty() => {
                 result.push(current.trim().to_string());
                 current.clear();
             }
@@ -1021,7 +1027,8 @@ fn build_special_bson(identifier: &str, parts: &[String]) -> Result<Bson, String
 }
 
 fn bson_to_extended_json(value: Bson) -> Result<String, String> {
-    serde_json::to_string(&value).map_err(|error| format!("JSON serialization error: {error}"))
+    let extended = value.into_relaxed_extjson();
+    serde_json::to_string(&extended).map_err(|error| format!("JSON serialization error: {error}"))
 }
 
 pub fn parse_shell_bson_value(source: &str) -> Result<Bson, String> {
@@ -1266,5 +1273,402 @@ pub fn bson_type_name(bson: &Bson) -> &'static str {
         Bson::MinKey => "MinKey",
         Bson::MaxKey => "MaxKey",
         Bson::Symbol(_) => "Symbol",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+    use mongodb::bson::{
+        Binary, DateTime, Decimal128, JavaScriptCodeWithScope, Regex, Timestamp as BsonTimestamp,
+        doc, oid::ObjectId,
+    };
+    use std::str::FromStr;
+    use uuid::Uuid;
+
+    // --- Tests for `split_arguments` ---
+
+    #[test]
+    fn test_split_arguments() {
+        assert_eq!(split_arguments("1, 2, 3"), vec!["1", "2", "3"]);
+        assert_eq!(split_arguments("\"hello\", \"world\""), vec!["\"hello\"", "\"world\""]);
+        assert_eq!(split_arguments("{a: 1}, [1, 2]"), vec!["{a: 1}", "[1, 2]"]);
+        assert_eq!(split_arguments("{a: 1, b: 2}, [1, 2]"), vec!["{a: 1, b: 2}", "[1, 2]"]);
+        assert_eq!(split_arguments("0, \"base64string\""), vec!["0", "\"base64string\""]);
+        assert_eq!(split_arguments(""), Vec::<String>::new());
+        assert_eq!(split_arguments("   "), Vec::<String>::new());
+        assert_eq!(split_arguments("hello"), vec!["hello"]);
+        assert_eq!(split_arguments("\"a,b\", \"c,d\""), vec!["\"a,b\"", "\"c,d\""]);
+        assert_eq!(
+            split_arguments("function() { return 1, 2; }"),
+            vec!["function() { return 1, 2; }"]
+        );
+        assert_eq!(
+            split_arguments("Code(\"return a;\", { a: 1 })"),
+            vec!["Code(\"return a;\", { a: 1 })"]
+        );
+    }
+
+    #[test]
+    fn test_split_arguments_complex_cases() {
+        assert_eq!(
+            split_arguments(
+                "'text, with comma', Array(1, 2), function() { return { nested: true }; }"
+            ),
+            vec!["'text, with comma'", "Array(1, 2)", "function() { return { nested: true }; }",]
+        );
+
+        assert_eq!(
+            split_arguments("Code('fn()', { inner: [1, 2] }), new Date(2020, 0, 1)"),
+            vec!["Code('fn()', { inner: [1, 2] })", "new Date(2020, 0, 1)",]
+        );
+    }
+
+    // --- Tests for `format_bson_shell` (format in string) ---
+
+    #[test]
+    fn test_format_bson_shell_scalars() {
+        assert_eq!(format_bson_shell(&Bson::String("hello".to_string())), "\"hello\"");
+        assert_eq!(format_bson_shell(&Bson::Int32(123)), "123");
+        assert_eq!(format_bson_shell(&Bson::Int64(456)), "456");
+        assert_eq!(format_bson_shell(&Bson::Boolean(true)), "true");
+        assert_eq!(format_bson_shell(&Bson::Null), "null");
+        assert_eq!(format_bson_shell(&Bson::Double(123.45)), "123.45");
+        assert_eq!(format_bson_shell(&Bson::Double(f64::NAN)), "NaN");
+        assert_eq!(format_bson_shell(&Bson::Double(f64::INFINITY)), "Infinity");
+        assert_eq!(format_bson_shell(&Bson::Double(f64::NEG_INFINITY)), "-Infinity");
+    }
+
+    #[test]
+    fn test_format_bson_shell_special_types() {
+        let oid = ObjectId::from_str("605c7d5c5b5d7b5d7b5d7b5d").unwrap();
+        assert_eq!(
+            format_bson_shell(&Bson::ObjectId(oid)),
+            "ObjectId(\"605c7d5c5b5d7b5d7b5d7b5d\")"
+        );
+
+        let dt = DateTime::from_millis(1616671580000); // 2021-03-25T11:26:20Z
+        assert_eq!(format_bson_shell(&Bson::DateTime(dt)), "ISODate(\"2021-03-25T11:26:20Z\")");
+
+        let dec = Decimal128::from_str("123.456").unwrap();
+        assert_eq!(format_bson_shell(&Bson::Decimal128(dec)), "NumberDecimal(\"123.456\")");
+
+        let uuid_str = "d3f4b7a0-2b7e-4b7e-8b7e-d3f4b7a02b7e";
+        let uuid = Uuid::parse_str(uuid_str).unwrap();
+        let bin =
+            Bson::Binary(Binary { subtype: BinarySubtype::Uuid, bytes: uuid.as_bytes().to_vec() });
+        assert_eq!(format_bson_shell(&bin), format!("UUID(\"{uuid_str}\")"));
+
+        let bin_generic =
+            Bson::Binary(Binary { subtype: BinarySubtype::Generic, bytes: vec![0, 1, 2, 3] });
+        assert_eq!(format_bson_shell(&bin_generic), "BinData(0, \"AAECAw==\")");
+
+        let regex =
+            Bson::RegularExpression(Regex { pattern: "foo".to_string(), options: "i".to_string() });
+        assert_eq!(format_bson_shell(&regex), "RegExp(\"foo\", \"i\")");
+
+        let ts = Bson::Timestamp(BsonTimestamp { time: 12345, increment: 67890 });
+        assert_eq!(format_bson_shell(&ts), "Timestamp(12345, 67890)");
+
+        assert_eq!(format_bson_shell(&Bson::MinKey), "MinKey()");
+        assert_eq!(format_bson_shell(&Bson::MaxKey), "MaxKey()");
+        assert_eq!(format_bson_shell(&Bson::Undefined), "undefined");
+    }
+
+    #[test]
+    fn test_format_bson_shell_containers() {
+        let doc = doc! { "a": 1, "b": "hello" };
+        let expected_doc = "{\n    \"a\": 1,\n    \"b\": \"hello\"\n}";
+        assert_eq!(format_bson_shell(&Bson::Document(doc)), expected_doc);
+
+        let arr = Bson::Array(vec![Bson::Int32(1), Bson::String("foo".to_string())]);
+        let expected_arr = "[\n    1,\n    \"foo\"\n]";
+        assert_eq!(format_bson_shell(&arr), expected_arr);
+
+        let nested_doc = doc! {
+            "a": 1,
+            "nested": {
+                "b": true,
+                "c": [1, 2]
+            }
+        };
+        // Примечание: форматирование с отступами чувствительно к пробелам
+        let expected_nested = "{\n    \"a\": 1,\n    \"nested\": {\n        \"b\": true,\n        \"c\": [\n            1,\n            2\n        ]\n    }\n}";
+        assert_eq!(format_bson_shell(&Bson::Document(nested_doc)), expected_nested);
+
+        assert_eq!(format_bson_shell(&Bson::Document(doc! {})), "{}");
+        assert_eq!(format_bson_shell(&Bson::Array(vec![])), "[]");
+    }
+
+    // --- Tests for `parse_shell_bson_value` (Парсинг из строки) ---
+
+    #[test]
+    fn test_parse_shell_bson_primitives() {
+        assert_eq!(parse_shell_bson_value("123").unwrap(), Bson::Int32(123));
+        assert_eq!(
+            parse_shell_bson_value("9223372036854775807").unwrap(),
+            Bson::Int64(9223372036854775807)
+        );
+        assert_eq!(parse_shell_bson_value("123.45").unwrap(), Bson::Double(123.45));
+        assert_eq!(parse_shell_bson_value("\"hello\"").unwrap(), Bson::String("hello".to_string()));
+        assert_eq!(parse_shell_bson_value("'hello'").unwrap(), Bson::String("hello".to_string()));
+        assert_eq!(
+            parse_shell_bson_value("'hello \\' world'").unwrap(),
+            Bson::String("hello ' world".to_string())
+        );
+        assert_eq!(parse_shell_bson_value("'\\x41'").unwrap(), Bson::String("A".to_string()));
+        assert_eq!(parse_shell_bson_value("true").unwrap(), Bson::Boolean(true));
+        assert_eq!(parse_shell_bson_value("null").unwrap(), Bson::Null);
+        assert_eq!(parse_shell_bson_value("undefined").unwrap(), Bson::Undefined);
+        assert_eq!(parse_shell_bson_value("Infinity").unwrap(), Bson::Double(f64::INFINITY));
+        assert_eq!(parse_shell_bson_value("-Infinity").unwrap(), Bson::Double(f64::NEG_INFINITY));
+        // f64::NAN != f64::NAN, поэтому проверяем через is_nan()
+        assert!(parse_shell_bson_value("NaN").unwrap().as_f64().unwrap().is_nan());
+    }
+
+    #[test]
+    fn test_parse_shell_bson_regex_literal() {
+        let expected =
+            Bson::RegularExpression(Regex { pattern: "foo".to_string(), options: "i".to_string() });
+        assert_eq!(parse_shell_bson_value("/foo/i").unwrap(), expected);
+
+        let expected_no_opts =
+            Bson::RegularExpression(Regex { pattern: "bar".to_string(), options: "".to_string() });
+        assert_eq!(parse_shell_bson_value("/bar/").unwrap(), expected_no_opts);
+
+        // Парсер должен падать на неоднозначных выражениях, т.к. он не полный JS-парсер
+        assert!(parse_shell_bson_value("1 / 2").is_err(), "Должен упасть парсинг '1 / 2'");
+
+        // Проверка корректного парсинга в контексте
+        assert_eq!(
+            parse_shell_bson_value("{ \"a\": /foo/i }").unwrap(),
+            // Вот исправление: оборачиваем doc! в Bson::Document()
+            Bson::Document(
+                doc! { "a": Bson::RegularExpression(Regex { pattern: "foo".to_string(), options: "i".to_string() }) }
+            )
+        );
+        assert_eq!(
+            parse_shell_bson_value("[ /foo/i ]").unwrap(),
+            Bson::Array(vec![Bson::RegularExpression(Regex {
+                pattern: "foo".to_string(),
+                options: "i".to_string()
+            })])
+        );
+    }
+
+    #[test]
+    fn test_parse_shell_bson_function_literal() {
+        let code = "function(a, b) { return a + b; }";
+        let expected = Bson::JavaScriptCode(code.to_string());
+        assert_eq!(parse_shell_bson_value(code).unwrap(), expected);
+
+        let complex_code = "function () { var x = 'a{}b'; return x; }";
+        let expected_complex = Bson::JavaScriptCode(complex_code.to_string());
+        assert_eq!(parse_shell_bson_value(complex_code).unwrap(), expected_complex);
+    }
+
+    #[test]
+    fn test_parse_shell_bson_constructors() {
+        let oid_str = "605c7d5c5b5d7b5d7b5d7b5d";
+        let oid = ObjectId::from_str(oid_str).unwrap();
+        assert_eq!(
+            parse_shell_bson_value(&format!("ObjectId(\"{oid_str}\")")).unwrap(),
+            Bson::ObjectId(oid)
+        );
+        // Проверка с 'new'
+        assert_eq!(
+            parse_shell_bson_value(&format!("new ObjectId(\"{oid_str}\")")).unwrap(),
+            Bson::ObjectId(oid)
+        );
+
+        let dt_str = "2021-03-25T11:26:20Z";
+        let dt = DateTime::from_millis(1616671580000);
+        assert_eq!(
+            parse_shell_bson_value(&format!("ISODate(\"{dt_str}\")")).unwrap(),
+            Bson::DateTime(dt)
+        );
+        assert_eq!(parse_shell_bson_value("Date(1616671580000)").unwrap(), Bson::DateTime(dt));
+        // Проверка Date(y, m, d) (в JS месяцы 0-индексированные)
+        let dt_comp = Utc.with_ymd_and_hms(2021, 3, 25, 0, 0, 0).single().unwrap();
+        assert_eq!(
+            parse_shell_bson_value("Date(2021, 2, 25)").unwrap(),
+            Bson::DateTime(DateTime::from_millis(dt_comp.timestamp_millis()))
+        );
+
+        let dec = Decimal128::from_str("123.456").unwrap();
+        assert_eq!(
+            parse_shell_bson_value("NumberDecimal(\"123.456\")").unwrap(),
+            Bson::Decimal128(dec)
+        );
+        // Парсер также должен обрабатывать числа
+        assert_eq!(
+            parse_shell_bson_value("NumberDecimal(123.456)").unwrap(),
+            Bson::Decimal128(dec)
+        );
+
+        let long_val = 9223372036854775807i64;
+        assert_eq!(
+            parse_shell_bson_value(&format!("NumberLong(\"{long_val}\")")).unwrap(),
+            Bson::Int64(long_val)
+        );
+        assert_eq!(
+            parse_shell_bson_value("NumberLong(9223372036854775807)").unwrap(),
+            Bson::Int64(long_val)
+        );
+        assert_eq!(parse_shell_bson_value("NumberInt(\"123\")").unwrap(), Bson::Int32(123));
+
+        let uuid_str = "d3f4b7a0-2b7e-4b7e-8b7e-d3f4b7a02b7e";
+        let uuid = Uuid::parse_str(uuid_str).unwrap();
+        let uuid_bin =
+            Bson::Binary(Binary { subtype: BinarySubtype::Uuid, bytes: uuid.as_bytes().to_vec() });
+        assert_eq!(parse_shell_bson_value(&format!("UUID(\"{uuid_str}\")")).unwrap(), uuid_bin);
+
+        let bin_generic =
+            Bson::Binary(Binary { subtype: BinarySubtype::Generic, bytes: vec![0, 1, 2, 3] });
+        assert_eq!(parse_shell_bson_value("BinData(0, \"AAECAw==\")").unwrap(), bin_generic);
+        assert_eq!(parse_shell_bson_value("HexData(0, \"00010203\")").unwrap(), bin_generic);
+        // Проверка HexData с пробелами
+        assert_eq!(parse_shell_bson_value("HexData(0, \"00 01 02 03\")").unwrap(), bin_generic);
+
+        let ts = Bson::Timestamp(BsonTimestamp { time: 12345, increment: 67890 });
+        assert_eq!(parse_shell_bson_value("Timestamp(12345, 67890)").unwrap(), ts);
+
+        let regex =
+            Bson::RegularExpression(Regex { pattern: "foo".to_string(), options: "i".to_string() });
+        assert_eq!(parse_shell_bson_value("RegExp(\"foo\", \"i\")").unwrap(), regex);
+
+        let code = Bson::JavaScriptCode("function() {}".to_string());
+        assert_eq!(parse_shell_bson_value("Code(\"function() {}\")").unwrap(), code);
+
+        let code_ws = Bson::JavaScriptCodeWithScope(JavaScriptCodeWithScope {
+            code: "return a;".to_string(),
+            scope: doc! { "a": 1 },
+        });
+        assert_eq!(parse_shell_bson_value("Code(\"return a;\", { \"a\": 1 })").unwrap(), code_ws);
+
+        assert_eq!(parse_shell_bson_value("MinKey()").unwrap(), Bson::MinKey);
+        assert_eq!(parse_shell_bson_value("MaxKey()").unwrap(), Bson::MaxKey);
+    }
+
+    #[test]
+    fn test_parse_shell_bson_additional_constructors() {
+        let dt_source = "2024-01-01T00:00:00Z";
+        let dt = DateTime::parse_rfc3339_str(dt_source).unwrap();
+        match parse_shell_bson_value(&format!("ObjectId.fromDate(ISODate(\"{dt_source}\"))"))
+            .unwrap()
+        {
+            Bson::ObjectId(oid) => assert_eq!(oid.timestamp(), dt),
+            other => panic!("expected ObjectId, got {:?}", other),
+        }
+
+        assert_eq!(parse_shell_bson_value("Number(\"42.5\")").unwrap(), Bson::Double(42.5));
+
+        assert_eq!(parse_shell_bson_value("Boolean('true')").unwrap(), Bson::Boolean(true));
+
+        assert_eq!(
+            parse_shell_bson_value("Array(1, 2, 3)").unwrap(),
+            Bson::Array(vec![Bson::Int32(1), Bson::Int32(2), Bson::Int32(3)])
+        );
+
+        assert_eq!(
+            parse_shell_bson_value("Object({ \"a\": 1 })").unwrap(),
+            Bson::Document(doc! { "a": 1 })
+        );
+    }
+
+    #[test]
+    fn test_parse_shell_bson_constructor_errors() {
+        assert!(parse_shell_bson_value("HexData(0, \"001\")").is_err());
+        assert!(parse_shell_bson_value("BinData(300, \"AA==\")").is_err());
+        assert!(parse_shell_bson_value("Timestamp(\"foo\", 1)").is_err());
+        assert!(parse_shell_bson_value("Boolean(\"not bool\")").is_err());
+        assert!(parse_shell_bson_value("DBRef(\"coll\")").is_err());
+        assert!(parse_shell_bson_value("Object('not object')").is_err());
+    }
+
+    // --- Tests for `parse_shell_document` и `parse_shell_array` ---
+
+    #[test]
+    fn test_parse_shell_document_and_array() {
+        let doc_str = "{ \"a\": 1, \"b\": \"hello\", \"c\": ISODate(\"2021-03-25T11:26:20Z\") }";
+        let dt = DateTime::from_millis(1616671580000);
+        let expected_doc = doc! {
+            "a": 1,
+            "b": "hello",
+            "c": Bson::DateTime(dt)
+        };
+        assert_eq!(parse_shell_document(doc_str).unwrap(), Bson::Document(expected_doc));
+
+        // Должен упасть, если это не документ
+        assert!(parse_shell_document("[1, 2]").is_err());
+
+        let arr_str = "[1, \"hello\", /foo/i, { \"a\": MinKey() }]";
+        let expected_arr = Bson::Array(vec![
+            Bson::Int32(1),
+            Bson::String("hello".to_string()),
+            Bson::RegularExpression(Regex { pattern: "foo".to_string(), options: "i".to_string() }),
+            Bson::Document(doc! { "a": Bson::MinKey }),
+        ]);
+        assert_eq!(parse_shell_array(arr_str).unwrap(), expected_arr);
+
+        // Должен упасть, если это не массив
+        assert!(parse_shell_array("{ \"a\": 1 }").is_err());
+    }
+
+    // --- Tests for утилит ---
+
+    #[test]
+    fn test_bson_type_name() {
+        assert_eq!(bson_type_name(&Bson::Int32(1)), "Int32");
+        assert_eq!(bson_type_name(&Bson::String("s".to_string())), "String");
+        assert_eq!(bson_type_name(&Bson::Document(doc! {})), "Document");
+        assert_eq!(bson_type_name(&Bson::Array(vec![])), "Array");
+        assert_eq!(bson_type_name(&Bson::ObjectId(ObjectId::new())), "ObjectId");
+        assert_eq!(bson_type_name(&Bson::Null), "Null");
+
+        let uuid = Uuid::new_v4();
+        let uuid_bin =
+            Bson::Binary(Binary { subtype: BinarySubtype::Uuid, bytes: uuid.as_bytes().to_vec() });
+        assert_eq!(bson_type_name(&uuid_bin), "UUID");
+
+        let generic_bin = Bson::Binary(Binary { subtype: BinarySubtype::Generic, bytes: vec![1] });
+        assert_eq!(bson_type_name(&generic_bin), "Binary");
+    }
+
+    #[test]
+    fn test_format_bson_scalar() {
+        // Эти тесты предполагают, что ваша функция `tr` возвращает
+        // входную строку (например, tr("String") -> "String").
+        // Если у вас настроены переводы, эти тесты могут упасть,
+        // и вам нужно будет поправить ожидаемые строки.
+        assert_eq!(
+            format_bson_scalar(&Bson::String("hello".to_string())),
+            ("hello".to_string(), "String".to_string())
+        );
+        assert_eq!(format_bson_scalar(&Bson::Int32(123)), ("123".to_string(), "Int32".to_string()));
+        assert_eq!(
+            format_bson_scalar(&Bson::Boolean(true)),
+            ("true".to_string(), "Boolean".to_string())
+        );
+        assert_eq!(format_bson_scalar(&Bson::Null), ("null".to_string(), "Null".to_string()));
+
+        let oid = ObjectId::from_str("605c7d5c5b5d7b5d7b5d7b5d").unwrap();
+        assert_eq!(
+            format_bson_scalar(&Bson::ObjectId(oid)),
+            ("ObjectId(\"605c7d5c5b5d7b5d7b5d7b5d\")".to_string(), "ObjectId".to_string())
+        );
+
+        let dt = DateTime::from_millis(1616671580000); // 2021-03-25T11:26:20Z
+        assert_eq!(
+            format_bson_scalar(&Bson::DateTime(dt)),
+            ("2021-03-25T11:26:20Z".to_string(), "DateTime".to_string())
+        );
+
+        let bin = Bson::Binary(Binary { subtype: BinarySubtype::Generic, bytes: vec![0, 1, 2] });
+        assert_eq!(
+            format_bson_scalar(&bin),
+            ("Binary(len=3, subtype=Generic)".to_string(), "Binary".to_string())
+        );
     }
 }

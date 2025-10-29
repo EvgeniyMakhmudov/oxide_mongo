@@ -288,3 +288,88 @@ impl ValueEditKind {
         None
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_infer(input: &str, expected: ValueEditKind) {
+        assert_eq!(ValueEditKind::infer(input), Some(expected));
+    }
+
+    #[test]
+    fn infer_handles_basic_literals() {
+        assert_infer("42", ValueEditKind::Int32);
+        assert_infer("NumberLong(9007199254740991)", ValueEditKind::Int64);
+        assert_infer("NumberDouble(3.14)", ValueEditKind::Double);
+        assert_infer("NumberDecimal(\"1.23\")", ValueEditKind::Decimal128);
+        assert_infer("true", ValueEditKind::Boolean);
+        assert_infer("ISODate(\"2024-01-01T00:00:00Z\")", ValueEditKind::DateTime);
+        assert_infer("ObjectId(\"64d2f9f18d964a7848d35300\")", ValueEditKind::ObjectId);
+        assert_infer("null", ValueEditKind::Null);
+        assert_infer("{ \"name\": \"Alice\" }", ValueEditKind::Document);
+        assert_infer("[1, 2, 3]", ValueEditKind::Array);
+    }
+
+    #[test]
+    fn infer_falls_back_to_string() {
+        assert_eq!(ValueEditKind::infer("  hello  "), Some(ValueEditKind::String));
+    }
+
+    #[test]
+    fn parse_respects_explicit_kind() {
+        let string_value = ValueEditKind::String.parse("'text'").unwrap();
+        assert_eq!(string_value, Bson::String(String::from("text")));
+
+        let int32_value = ValueEditKind::Int32.parse("NumberInt(123)").unwrap();
+        assert_eq!(int32_value, Bson::Int32(123));
+
+        let int64_value = ValueEditKind::Int64.parse("NumberLong(12345678900)").unwrap();
+        assert_eq!(int64_value, Bson::Int64(12_345_678_900));
+
+        let double_value = ValueEditKind::Double.parse("NumberDouble(3.14)").unwrap();
+        assert_eq!(double_value, Bson::Double(3.14));
+
+        let decimal_value = ValueEditKind::Decimal128.parse("NumberDecimal(\"1.23\")").unwrap();
+        assert_eq!(decimal_value, Bson::Decimal128(Decimal128::from_str("1.23").unwrap()));
+
+        let date_value =
+            ValueEditKind::DateTime.parse("ISODate(\"2024-01-01T00:00:00Z\")").unwrap();
+        assert_eq!(
+            date_value,
+            Bson::DateTime(DateTime::parse_rfc3339_str("2024-01-01T00:00:00Z").unwrap())
+        );
+
+        let object_id_value =
+            ValueEditKind::ObjectId.parse("ObjectId(\"64d2f9f18d964a7848d35300\")").unwrap();
+        assert_eq!(
+            object_id_value,
+            Bson::ObjectId(ObjectId::parse_str("64d2f9f18d964a7848d35300").unwrap())
+        );
+
+        let document_source = "{ \"name\": \"Alice\" }";
+        let document_value = ValueEditKind::Document.parse(document_source).unwrap();
+        assert_eq!(document_value, shell::parse_shell_document(document_source).unwrap());
+
+        let array_value = ValueEditKind::Array.parse("[1, 2]").unwrap();
+        assert_eq!(array_value, shell::parse_shell_array("[1, 2]").unwrap());
+    }
+
+    #[test]
+    fn parse_reports_errors_for_invalid_input() {
+        let err = ValueEditKind::Int32.parse("abc").unwrap_err();
+        assert!(err.contains("32-bit"));
+
+        let err = ValueEditKind::ObjectId.parse("ObjectId(\"1234\")").unwrap_err();
+        assert!(err.contains("ObjectId"));
+
+        let err = ValueEditKind::Decimal128.parse("NumberDecimal(\"not-a-number\")").unwrap_err();
+        assert!(err.contains("Decimal128"));
+
+        let err = ValueEditKind::Binary.parse("abc").unwrap_err();
+        assert!(err.contains("not implemented"));
+
+        let err = ValueEditKind::Int64.parse("NumberLong(text)").unwrap_err();
+        assert!(err.contains("64-bit"));
+    }
+}

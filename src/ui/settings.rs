@@ -297,24 +297,12 @@ impl SettingsWindowState {
             ThemeChoice::SolarizedDark => {
                 self.theme_solarized_dark = ThemePalette::solarized_dark()
             }
-            ThemeChoice::NordLight => {
-                self.theme_nord_light = ThemePalette::nord_light()
-            }
-            ThemeChoice::NordDark => {
-                self.theme_nord_dark = ThemePalette::nord_dark()
-            }
-            ThemeChoice::GruvboxLight => {
-                self.theme_gruvbox_light = ThemePalette::gruvbox_light()
-            }
-            ThemeChoice::GruvboxDark => {
-                self.theme_gruvbox_dark = ThemePalette::gruvbox_dark()
-            }
-            ThemeChoice::OneLight => {
-                self.theme_one_light = ThemePalette::one_light()
-            }
-            ThemeChoice::OneDark => {
-                self.theme_one_dark = ThemePalette::one_dark()
-            }
+            ThemeChoice::NordLight => self.theme_nord_light = ThemePalette::nord_light(),
+            ThemeChoice::NordDark => self.theme_nord_dark = ThemePalette::nord_dark(),
+            ThemeChoice::GruvboxLight => self.theme_gruvbox_light = ThemePalette::gruvbox_light(),
+            ThemeChoice::GruvboxDark => self.theme_gruvbox_dark = ThemePalette::gruvbox_dark(),
+            ThemeChoice::OneLight => self.theme_one_light = ThemePalette::one_light(),
+            ThemeChoice::OneDark => self.theme_one_dark = ThemePalette::one_dark(),
             ThemeChoice::System => self.theme_light = ThemePalette::light(),
         }
         self.active_color_picker = None;
