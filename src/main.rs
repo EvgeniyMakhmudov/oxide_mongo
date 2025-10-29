@@ -21,14 +21,7 @@ use iced::widget::{
     pane_grid, text_input,
 };
 use iced::window;
-use iced::{
-    Color, Element, Font, Length, Renderer, Shadow, Subscription, Task, Theme, application,
-    clipboard,
-};
-use iced_aw::{
-    ContextMenu,
-    menu::{Item as MenuItemWidget, Menu, MenuBar},
-};
+use iced::{Color, Element, Font, Length, Subscription, Task, Theme, application, clipboard};
 use iced_fonts::REQUIRED_FONT_BYTES;
 use mongodb::bson::{self, Bson, Document, doc};
 use mongodb::options::ReturnDocument;
@@ -52,9 +45,14 @@ use ui::connections::{
     ConnectionsWindowState, ListClick, TestFeedback, connection_form_view, connections_view,
     load_connections_from_disk, save_connections_to_disk,
 };
+use ui::menues::{
+    self, CollectionContextAction, ConnectionContextAction, DatabaseContextAction, MenuEntry,
+    TopMenu,
+};
+use ui::modal::{error_accent_color, modal_layout, success_accent_color};
 use ui::settings::{SettingsTab, SettingsWindowState, ThemeColorField, settings_view};
-type TabId = u32;
-type ClientId = u32;
+pub(crate) type TabId = u32;
+pub(crate) type ClientId = u32;
 
 pub(crate) const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const DEFAULT_RESULT_LIMIT: i64 = 50;
@@ -130,7 +128,7 @@ impl SettingsErrorModalState {
 }
 
 #[derive(Debug, Clone)]
-enum Message {
+pub(crate) enum Message {
     MenuItemSelected(TopMenu, MenuEntry),
     TabSelected(TabId),
     TabClosed(TabId),
@@ -331,19 +329,6 @@ enum Message {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TopMenu {
-    File,
-    View,
-    Windows,
-    Help,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MenuEntry {
-    Action(&'static str),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TableContextAction {
     CopyJson,
     CopyKey,
@@ -355,34 +340,6 @@ enum TableContextAction {
     UnhideIndex,
     ExpandHierarchy,
     CollapseHierarchy,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ConnectionContextAction {
-    CreateDatabase,
-    Refresh,
-    ServerStatus,
-    Close,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CollectionContextAction {
-    OpenEmptyTab,
-    ViewDocuments,
-    DeleteTemplate,
-    DeleteAllDocuments,
-    DeleteCollection,
-    RenameCollection,
-    Stats,
-    Indexes,
-    CreateIndex,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DatabaseContextAction {
-    Refresh,
-    Stats,
-    Drop,
 }
 
 #[derive(Debug, Clone)]
@@ -3010,7 +2967,7 @@ impl App {
     }
 
     fn main_view(&self) -> Element<Message> {
-        let menu_bar = self.build_menu_bar();
+        let menu_bar = menues::build_menu_bar(self.active_palette());
 
         let content_grid =
             pane_grid::PaneGrid::new(&self.panes, |_, pane_state, _| match pane_state {
@@ -3090,13 +3047,10 @@ impl App {
 
     fn settings_error_modal_view(&self, state: &SettingsErrorModalState) -> Element<Message> {
         let palette = self.active_palette();
-        let card_bg = palette.widget_background_color();
-        let card_border = palette.widget_border_color();
-        let text_color = palette.text_primary.to_color();
-        let message_color = palette.text_primary.to_color();
-        let title = fonts::primary_text(tr("Settings Error"), Some(6.0)).color(text_color);
-
-        let message = fonts::primary_text(state.message.clone(), None).color(message_color);
+        let title = fonts::primary_text(tr("Settings Error"), Some(6.0))
+            .color(palette.text_primary.to_color());
+        let message =
+            fonts::primary_text(state.message.clone(), None).color(palette.text_primary.to_color());
 
         let exit_button = Button::new(fonts::primary_text(tr("Exit"), None))
             .padding([6, 16])
@@ -3110,39 +3064,26 @@ impl App {
             Button::new(fonts::primary_text(tr("Continue with default settings"), None))
                 .padding([6, 16])
                 .on_press(Message::SettingsLoadErrorUseDefaults)
-                .style(move |_, status| palette.primary_button_style(6.0, status));
+                .style({
+                    let palette = palette.clone();
+                    move |_, status| palette.primary_button_style(6.0, status)
+                });
 
         let buttons = Row::new().spacing(12).push(exit_button).push(continue_button);
 
-        let column = Column::new().spacing(16).push(title).push(message).push(buttons);
+        let content: Element<Message> =
+            Column::new().spacing(16).push(title).push(message).push(buttons).into();
 
-        let modal =
-            Container::new(column).padding(24).width(Length::Fixed(520.0)).style(move |_| {
-                container::Style {
-                    background: Some(card_bg.into()),
-                    border: border::rounded(12).width(1).color(card_border),
-                    shadow: Shadow {
-                        color: Color::from_rgba8(0, 0, 0, 0.18),
-                        offset: iced::Vector::new(0.0, 8.0),
-                        blur_radius: 24.0,
-                    },
-                    ..Default::default()
-                }
-            });
-
-        Container::new(modal)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-                ..Default::default()
-            })
-            .into()
+        modal_layout(palette, content, Length::Fixed(520.0), 24, 12.0)
     }
 
     fn collection_modal_view(&self, state: &CollectionModalState) -> Element<Message> {
+        let palette = self.active_palette();
+        let text_primary = palette.text_primary.to_color();
+        let muted_color = palette.text_muted.to_color();
+        let error_color = error_accent_color(&palette);
+        let accent_color = success_accent_color(&palette);
+
         let (title, warning, prompt, placeholder, confirm_label) = match state.kind {
             CollectionModalKind::DeleteAllDocuments => (
                 tr("Delete All Documents"),
@@ -3210,13 +3151,11 @@ impl App {
 
         let mut column = Column::new()
             .spacing(16)
-            .push(fonts::primary_text(title, Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
-            .push(fonts::primary_text(warning, None).color(Color::from_rgb8(0x31, 0x38, 0x4a)));
+            .push(fonts::primary_text(title, Some(6.0)).color(text_primary))
+            .push(fonts::primary_text(warning, None).color(muted_color));
 
         if let Some(prompt) = prompt {
-            column = column.push(
-                fonts::primary_text(prompt, Some(-1.0)).color(Color::from_rgb8(0x55, 0x5f, 0x73)),
-            );
+            column = column.push(fonts::primary_text(prompt, Some(-1.0)).color(muted_color));
         }
 
         let input_field = text_input(placeholder, &state.input)
@@ -3227,33 +3166,35 @@ impl App {
         column = column.push(input_field);
 
         if let Some(error) = &state.error {
-            column = column.push(
-                fonts::primary_text(error.clone(), Some(-1.0))
-                    .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-            );
+            column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(error_color));
         }
 
         if state.processing {
-            column = column.push(
-                fonts::primary_text(tr("Processing..."), Some(-1.0))
-                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-            );
+            column = column
+                .push(fonts::primary_text(tr("Processing..."), Some(-1.0)).color(accent_color));
         }
 
         let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
             .padding([6, 16])
-            .on_press(Message::CollectionModalCancel);
+            .on_press(Message::CollectionModalCancel)
+            .style({
+                let palette = palette.clone();
+                move |_, status| palette.subtle_button_style(6.0, status)
+            });
 
         let mut confirm_button =
             Button::new(fonts::primary_text(confirm_label, None)).padding([6, 16]);
         if confirm_ready {
-            confirm_button = confirm_button.on_press(Message::CollectionModalConfirm);
+            confirm_button = confirm_button
+                .style({
+                    let palette = palette.clone();
+                    move |_, status| palette.primary_button_style(6.0, status)
+                })
+                .on_press(Message::CollectionModalConfirm);
         } else {
-            confirm_button = confirm_button.style(|_, _| button::Style {
-                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-                shadow: Shadow::default(),
+            confirm_button = confirm_button.style({
+                let palette = palette.clone();
+                move |_, _| palette.primary_button_style(6.0, button::Status::Disabled)
             });
         }
 
@@ -3261,32 +3202,17 @@ impl App {
 
         column = column.push(buttons);
 
-        let modal = Container::new(column).padding(24).width(Length::Fixed(420.0)).style(|_| {
-            container::Style {
-                background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
-                border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-                shadow: Shadow {
-                    color: Color::from_rgba8(0, 0, 0, 0.18),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
-                ..Default::default()
-            }
-        });
-
-        Container::new(modal)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-                ..Default::default()
-            })
-            .into()
+        let content: Element<Message> = column.into();
+        modal_layout(palette, content, Length::Fixed(420.0), 24, 12.0)
     }
 
     fn database_modal_view(&self, state: &DatabaseModalState) -> Element<Message> {
+        let palette = self.active_palette();
+        let text_primary = palette.text_primary.to_color();
+        let muted_color = palette.text_muted.to_color();
+        let error_color = error_accent_color(&palette);
+        let accent_color = success_accent_color(&palette);
+
         let base = match &state.mode {
             DatabaseModalMode::Drop { db_name } => {
                 let warning = tr_format(
@@ -3302,18 +3228,9 @@ impl App {
 
                 let mut column = Column::new()
                     .spacing(16)
-                    .push(
-                        fonts::primary_text(tr("Delete Database"), Some(6.0))
-                            .color(Color::from_rgb8(0x17, 0x1a, 0x20)),
-                    )
-                    .push(
-                        fonts::primary_text(warning, None)
-                            .color(Color::from_rgb8(0x31, 0x38, 0x4a)),
-                    )
-                    .push(
-                        fonts::primary_text(prompt, Some(-1.0))
-                            .color(Color::from_rgb8(0x55, 0x5f, 0x73)),
-                    );
+                    .push(fonts::primary_text(tr("Delete Database"), Some(6.0)).color(text_primary))
+                    .push(fonts::primary_text(warning, None).color(muted_color))
+                    .push(fonts::primary_text(prompt, Some(-1.0)).color(muted_color));
 
                 let input_field = text_input(tr("Database name"), &state.input)
                     .padding([6, 10])
@@ -3323,36 +3240,38 @@ impl App {
                 column = column.push(input_field);
 
                 if let Some(error) = &state.error {
-                    column = column.push(
-                        fonts::primary_text(error.clone(), Some(-1.0))
-                            .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-                    );
+                    column = column
+                        .push(fonts::primary_text(error.clone(), Some(-1.0)).color(error_color));
                 }
 
                 if state.processing {
                     column = column.push(
-                        fonts::primary_text(tr("Processing..."), Some(-1.0))
-                            .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+                        fonts::primary_text(tr("Processing..."), Some(-1.0)).color(accent_color),
                     );
                 }
 
                 let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
                     .padding([6, 16])
-                    .on_press(Message::DatabaseModalCancel);
+                    .on_press(Message::DatabaseModalCancel)
+                    .style({
+                        let palette = palette.clone();
+                        move |_, status| palette.subtle_button_style(6.0, status)
+                    });
 
                 let mut confirm_button =
                     Button::new(fonts::primary_text(tr("Confirm Deletion"), None)).padding([6, 16]);
 
                 if confirm_ready {
-                    confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
+                    confirm_button = confirm_button
+                        .style({
+                            let palette = palette.clone();
+                            move |_, status| palette.primary_button_style(6.0, status)
+                        })
+                        .on_press(Message::DatabaseModalConfirm);
                 } else {
-                    confirm_button = confirm_button.style(|_, _| button::Style {
-                        background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-                        text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-                        border: border::rounded(6)
-                            .width(1)
-                            .color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-                        shadow: Shadow::default(),
+                    confirm_button = confirm_button.style({
+                        let palette = palette.clone();
+                        move |_, _| palette.primary_button_style(6.0, button::Status::Disabled)
                     });
                 }
 
@@ -3368,10 +3287,10 @@ impl App {
 
                 let mut column = Column::new()
                     .spacing(16)
-                    .push(fonts::primary_text(tr("Create Database"), Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20)))
+                    .push(fonts::primary_text(tr("Create Database"), Some(6.0)).color(text_primary))
                     .push(fonts::primary_text(tr(
                             "MongoDB creates a database only when the first collection is created. Provide the database name and the first collection to create immediately."
-                        ), Some(-1.0)).color(Color::from_rgb8(0x55, 0x5f, 0x73)));
+                        ), Some(-1.0)).color(muted_color));
 
                 let input_field = text_input(tr("Database name"), &state.input)
                     .padding([6, 10])
@@ -3387,36 +3306,39 @@ impl App {
                 column = column.push(input_field).push(collection_field);
 
                 if let Some(error) = &state.error {
-                    column = column.push(
-                        fonts::primary_text(error.clone(), Some(-1.0))
-                            .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-                    );
+                    column = column
+                        .push(fonts::primary_text(error.clone(), Some(-1.0)).color(error_color));
                 }
 
                 if state.processing {
                     column = column.push(
                         fonts::primary_text(tr("Creating database..."), Some(-1.0))
-                            .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
+                            .color(accent_color),
                     );
                 }
 
                 let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
                     .padding([6, 16])
-                    .on_press(Message::DatabaseModalCancel);
+                    .on_press(Message::DatabaseModalCancel)
+                    .style({
+                        let palette = palette.clone();
+                        move |_, status| palette.subtle_button_style(6.0, status)
+                    });
 
                 let mut confirm_button =
                     Button::new(fonts::primary_text(tr("Create"), None)).padding([6, 16]);
 
                 if confirm_ready {
-                    confirm_button = confirm_button.on_press(Message::DatabaseModalConfirm);
+                    confirm_button = confirm_button
+                        .style({
+                            let palette = palette.clone();
+                            move |_, status| palette.primary_button_style(6.0, status)
+                        })
+                        .on_press(Message::DatabaseModalConfirm);
                 } else {
-                    confirm_button = confirm_button.style(|_, _| button::Style {
-                        background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-                        text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-                        border: border::rounded(6)
-                            .width(1)
-                            .color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-                        shadow: Shadow::default(),
+                    confirm_button = confirm_button.style({
+                        let palette = palette.clone();
+                        move |_, _| palette.primary_button_style(6.0, button::Status::Disabled)
                     });
                 }
 
@@ -3427,32 +3349,17 @@ impl App {
             }
         };
 
-        let modal = Container::new(base).padding(24).width(Length::Fixed(420.0)).style(|_| {
-            container::Style {
-                background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
-                border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-                shadow: Shadow {
-                    color: Color::from_rgba8(0, 0, 0, 0.18),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
-                ..Default::default()
-            }
-        });
-
-        Container::new(modal)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-                ..Default::default()
-            })
-            .into()
+        let content: Element<Message> = base.into();
+        modal_layout(palette, content, Length::Fixed(420.0), 24, 12.0)
     }
 
     fn document_modal_view<'a>(&self, state: &'a DocumentModalState) -> Element<'a, Message> {
+        let palette = self.active_palette();
+        let text_primary = palette.text_primary.to_color();
+        let muted_color = palette.text_muted.to_color();
+        let error_color = error_accent_color(&palette);
+        let accent_color = success_accent_color(&palette);
+
         let (title_text, hint_text, saving_text) = match &state.kind {
             DocumentModalKind::CollectionDocument { .. } => (
                 tr("Edit Document"),
@@ -3470,11 +3377,9 @@ impl App {
             ),
         };
 
-        let title =
-            fonts::primary_text(title_text, Some(6.0)).color(Color::from_rgb8(0x17, 0x1a, 0x20));
+        let title = fonts::primary_text(title_text, Some(6.0)).color(text_primary);
 
-        let hint =
-            fonts::primary_text(hint_text, Some(-1.0)).color(Color::from_rgb8(0x55, 0x5f, 0x73));
+        let hint = fonts::primary_text(hint_text, Some(-1.0)).color(muted_color);
 
         let editor = text_editor::TextEditor::new(&state.editor)
             .font(MONO_FONT)
@@ -3484,79 +3389,61 @@ impl App {
 
         let editor_scroll = Scrollable::new(editor).width(Length::Fill).height(Length::Fill);
 
-        let editor_container = Container::new(editor_scroll)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .style(|_| container::Style {
-                border: border::rounded(8).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-                background: Some(Color::from_rgb8(0xf6, 0xf7, 0xfa).into()),
-                ..Default::default()
+        let editor_container =
+            Container::new(editor_scroll).width(Length::Fill).height(Length::Fill).style({
+                let palette = palette.clone();
+                move |_| container::Style {
+                    border: border::rounded(8).width(1).color(palette.widget_border_color()),
+                    background: Some(palette.widget_background_color().into()),
+                    ..Default::default()
+                }
             });
 
         let mut column = Column::new().spacing(16).push(title).push(hint).push(editor_container);
 
         if let Some(error) = &state.error {
-            column = column.push(
-                fonts::primary_text(error.clone(), Some(-1.0))
-                    .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-            );
+            column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(error_color));
         }
 
         if state.processing {
-            column = column.push(
-                fonts::primary_text(saving_text, Some(-1.0))
-                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-            );
+            column = column.push(fonts::primary_text(saving_text, Some(-1.0)).color(accent_color));
         }
 
         let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
             .padding([6, 16])
             .on_press(Message::DocumentModalCancel)
-            .style(|_, _| button::Style {
-                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-                shadow: Shadow::default(),
-                ..Default::default()
+            .style({
+                let palette = palette.clone();
+                move |_, status| palette.subtle_button_style(6.0, status)
             });
 
         let mut save_button = Button::new(fonts::primary_text(tr("Save"), None)).padding([6, 16]);
         if state.processing {
-            save_button = save_button.style(|_, _| button::Style {
-                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-                shadow: Shadow::default(),
+            save_button = save_button.style({
+                let palette = palette.clone();
+                move |_, _| palette.primary_button_style(6.0, button::Status::Disabled)
             });
         } else {
-            save_button = save_button.on_press(Message::DocumentModalSave);
+            save_button = save_button
+                .style({
+                    let palette = palette.clone();
+                    move |_, status| palette.primary_button_style(6.0, status)
+                })
+                .on_press(Message::DocumentModalSave);
         }
 
         let buttons = Row::new().spacing(12).push(cancel_button).push(save_button);
         column = column.push(buttons);
-
-        let modal = Container::new(column).padding(24).style(|_| container::Style {
-            background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
-            border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-            shadow: Shadow {
-                color: Color::from_rgba8(0, 0, 0, 0.18),
-                offset: iced::Vector::new(0.0, 8.0),
-                blur_radius: 24.0,
-            },
-            ..Default::default()
-        });
-
-        Container::new(modal)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-                ..Default::default()
-            })
-            .into()
+        let content: Element<Message> = column.into();
+        modal_layout(palette, content, Length::Fixed(600.0), 24, 12.0)
     }
 
     fn value_edit_modal_view<'a>(&self, state: &'a ValueEditModalState) -> Element<'a, Message> {
+        let palette = self.active_palette();
+        let text_primary = palette.text_primary.to_color();
+        let muted_color = palette.text_muted.to_color();
+        let error_color = error_accent_color(&palette);
+        let accent_color = success_accent_color(&palette);
         let fonts_state = fonts::active_fonts();
         let bold_font = Font { weight: Weight::Bold, ..fonts_state.primary_font };
 
@@ -3586,24 +3473,30 @@ impl App {
         let value_editor = Container::new(editor_scroll)
             .width(Length::FillPortion(5))
             .height(Length::Fixed(220.0))
-            .style(|_| container::Style {
-                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-                background: Some(Color::from_rgb8(0xf6, 0xf7, 0xfa).into()),
-                ..Default::default()
+            .style({
+                let palette = palette.clone();
+                move |_| container::Style {
+                    border: border::rounded(6).width(1).color(palette.widget_border_color()),
+                    background: Some(palette.widget_background_color().into()),
+                    ..Default::default()
+                }
             });
 
         let type_indicator = Container::new(
             fonts::primary_text(state.value_label.clone(), None)
-                .color(Color::from_rgb8(0x17, 0x1a, 0x20))
+                .color(text_primary)
                 .wrapping(Wrapping::Word)
                 .width(Length::Fill),
         )
         .padding([6, 10])
         .width(Length::FillPortion(2))
-        .style(|_| container::Style {
-            border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-            background: Some(Color::from_rgb8(0xf6, 0xf7, 0xfa).into()),
-            ..Default::default()
+        .style({
+            let palette = palette.clone();
+            move |_| container::Style {
+                border: border::rounded(6).width(1).color(palette.widget_border_color()),
+                background: Some(palette.widget_background_color().into()),
+                ..Default::default()
+            }
         });
 
         let inputs_row = Row::new().spacing(12).push(value_editor);
@@ -3612,7 +3505,7 @@ impl App {
             .spacing(4)
             .push(
                 fonts::primary_text(tr("Value Type"), None)
-                    .color(Color::from_rgb8(0x55, 0x5f, 0x73))
+                    .color(muted_color)
                     .wrapping(Wrapping::Word)
                     .width(Length::Shrink),
             )
@@ -3624,38 +3517,35 @@ impl App {
             Column::new().spacing(16).push(description).push(inputs_row).push(type_row);
 
         if let Some(error) = &state.error {
-            column = column.push(
-                fonts::primary_text(error.clone(), Some(-1.0))
-                    .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
-            );
+            column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(error_color));
         }
 
         if state.processing {
-            column = column.push(
-                fonts::primary_text(tr("Saving value..."), Some(-1.0))
-                    .color(Color::from_rgb8(0x36, 0x71, 0xc9)),
-            );
+            column = column
+                .push(fonts::primary_text(tr("Saving value..."), Some(-1.0)).color(accent_color));
         }
 
         let cancel_button = Button::new(fonts::primary_text(tr("Cancel"), None))
             .padding([6, 16])
             .on_press(Message::ValueEditModalCancel)
-            .style(|_, _| button::Style {
-                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-                shadow: Shadow::default(),
-                ..Default::default()
+            .style({
+                let palette = palette.clone();
+                move |_, status| palette.subtle_button_style(6.0, status)
             });
 
         let mut save_button = Button::new(fonts::primary_text(tr("Save"), None)).padding([6, 16]);
         if state.processing {
-            save_button = save_button.style(|_, _| button::Style {
-                background: Some(Color::from_rgb8(0xe3, 0xe6, 0xeb).into()),
-                text_color: Color::from_rgb8(0x8a, 0x93, 0xa3),
-                border: border::rounded(6).width(1).color(Color::from_rgb8(0xd7, 0xdb, 0xe2)),
-                shadow: Shadow::default(),
+            save_button = save_button.style({
+                let palette = palette.clone();
+                move |_, _| palette.primary_button_style(6.0, button::Status::Disabled)
             });
         } else {
-            save_button = save_button.on_press(Message::ValueEditModalSave);
+            save_button = save_button
+                .style({
+                    let palette = palette.clone();
+                    move |_, status| palette.primary_button_style(6.0, status)
+                })
+                .on_press(Message::ValueEditModalSave);
         }
 
         let buttons = Row::new()
@@ -3665,29 +3555,8 @@ impl App {
             .push(save_button);
         column = column.push(buttons);
 
-        let modal = Container::new(column).padding(24).width(Length::Fixed(480.0)).style(|_| {
-            container::Style {
-                background: Some(Color::from_rgb8(0xff, 0xff, 0xff).into()),
-                border: border::rounded(12).width(1).color(Color::from_rgb8(0xd0, 0xd5, 0xdc)),
-                shadow: Shadow {
-                    color: Color::from_rgba8(0, 0, 0, 0.18),
-                    offset: iced::Vector::new(0.0, 8.0),
-                    blur_radius: 24.0,
-                },
-                ..Default::default()
-            }
-        });
-
-        Container::new(modal)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center_x(Length::Fill)
-            .center_y(Length::Fill)
-            .style(|_| container::Style {
-                background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-                ..Default::default()
-            })
-            .into()
+        let content: Element<Message> = column.into();
+        modal_layout(palette, content, Length::Fixed(480.0), 24, 12.0)
     }
 
     fn theme(&self) -> Theme {
@@ -3768,41 +3637,12 @@ impl App {
         let context_client_id = client.id;
         let is_ready = matches!(client.status, ConnectionStatus::Ready);
 
-        let menu_palette = palette.clone();
-        let menu = ContextMenu::new(base_button, move || {
-            let mut menu = Column::new().spacing(2).padding([4, 6]);
-            let make_button =
-                |label: &str, action: ConnectionContextAction, enabled: bool| -> Element<Message> {
-                    let mut button =
-                        Button::new(fonts::primary_text(label.to_owned(), None)).padding([4, 8]);
-                    if enabled {
-                        button = button.on_press(Message::ConnectionContextMenu {
-                            client_id: context_client_id,
-                            action,
-                        });
-                    }
-                    let palette_for_style = menu_palette.clone();
-                    let button = button
-                        .style(move |_, status| palette_for_style.menu_button_style(6.0, status));
-                    Element::from(button)
-                };
-
-            menu = menu.push(make_button(
-                tr("Create Database"),
-                ConnectionContextAction::CreateDatabase,
-                is_ready,
-            ));
-            menu =
-                menu.push(make_button(tr("Refresh"), ConnectionContextAction::Refresh, is_ready));
-            menu = menu.push(make_button(
-                tr("Server Status"),
-                ConnectionContextAction::ServerStatus,
-                is_ready,
-            ));
-            menu = menu.push(make_button(tr("Close"), ConnectionContextAction::Close, true));
-
-            menu.into()
-        });
+        let menu = menues::connection_context_menu(
+            base_button,
+            palette.clone(),
+            context_client_id,
+            is_ready,
+        );
 
         let mut column = Column::new().spacing(4).push(menu);
 
@@ -3863,48 +3703,12 @@ impl App {
         );
 
         let db_name_owned = database.name.clone();
-        let menu_palette = palette.clone();
-        let menu = ContextMenu::new(base_button, move || {
-            let mut menu = Column::new().spacing(2).padding([4, 6]);
-
-            let make_button = |label: &str, message: Message| -> Element<Message> {
-                let palette_for_style = menu_palette.clone();
-                let button = Button::new(fonts::primary_text(label.to_owned(), None))
-                    .padding([4, 8])
-                    .on_press(message)
-                    .style(move |_, status| palette_for_style.menu_button_style(6.0, status));
-                Element::from(button)
-            };
-
-            menu = menu.push(make_button(
-                tr("Refresh"),
-                Message::DatabaseContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    action: DatabaseContextAction::Refresh,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Statistics"),
-                Message::DatabaseContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    action: DatabaseContextAction::Stats,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Drop Database"),
-                Message::DatabaseContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    action: DatabaseContextAction::Drop,
-                },
-            ));
-
-            menu.into()
-        });
+        let menu = menues::database_context_menu(
+            base_button,
+            palette.clone(),
+            client_id,
+            db_name_owned.clone(),
+        );
 
         let mut column = Column::new().spacing(4).push(menu);
 
@@ -3993,112 +3797,13 @@ impl App {
             }),
         );
 
-        let menu_palette = palette.clone();
-        ContextMenu::new(base_button, move || {
-            let mut menu = Column::new().spacing(2).padding([4, 6]);
-
-            let make_button = |label: &str, message: Message| -> Element<Message> {
-                let palette_for_style = menu_palette.clone();
-                let button = Button::new(fonts::primary_text(label.to_owned(), None))
-                    .padding([4, 8])
-                    .on_press(message)
-                    .style(move |_, status| palette_for_style.menu_button_style(6.0, status));
-                Element::from(button)
-            };
-
-            menu = menu.push(make_button(
-                tr("Open Empty Tab"),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::OpenEmptyTab,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("View Documents"),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::ViewDocuments,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Delete Documents..."),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::DeleteTemplate,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Delete All Documents..."),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::DeleteAllDocuments,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Rename Collection..."),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::RenameCollection,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Drop Collection..."),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::DeleteCollection,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Statistics"),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::Stats,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Create Index"),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::CreateIndex,
-                },
-            ));
-
-            menu = menu.push(make_button(
-                tr("Indexes"),
-                Message::CollectionContextMenu {
-                    client_id,
-                    db_name: db_name_owned.clone(),
-                    collection: collection_name.clone(),
-                    action: CollectionContextAction::Indexes,
-                },
-            ));
-
-            menu.into()
-        })
-        .into()
+        menues::collection_context_menu(
+            base_button,
+            palette.clone(),
+            client_id,
+            db_name_owned,
+            collection_name,
+        )
     }
 
     fn sidebar_button<'a>(
@@ -4236,74 +3941,6 @@ impl App {
                 })
                 .into()
         }
-    }
-
-    fn build_menu_bar(&self) -> MenuBar<'_, Message, Theme, Renderer> {
-        let palette = self.active_palette();
-
-        let connections_button = button(fonts::primary_text(tr("Connections"), Some(1.0)))
-            .padding([6, 12])
-            .on_press(Message::MenuItemSelected(TopMenu::File, MenuEntry::Action("Connections")))
-            .style({
-                let palette = palette.clone();
-                move |_, status| palette.menu_button_style(6.0, status)
-            });
-
-        let settings_button = button(fonts::primary_text(tr("Settings"), Some(1.0)))
-            .padding([6, 12])
-            .on_press(Message::SettingsOpen)
-            .style(move |_, status| palette.menu_button_style(6.0, status));
-
-        let mut roots = Vec::new();
-        roots.push(MenuItemWidget::new(connections_button));
-        roots.push(MenuItemWidget::new(settings_button));
-        roots.push(self.menu_root(
-            TopMenu::View,
-            &[MenuEntry::Action("Explorer"), MenuEntry::Action("Refresh")],
-        ));
-        roots.push(self.menu_root(
-            TopMenu::Windows,
-            &[MenuEntry::Action("Cascade"), MenuEntry::Action("Tile")],
-        ));
-        roots.push(self.menu_root(
-            TopMenu::Help,
-            &[MenuEntry::Action("Documentation"), MenuEntry::Action("About")],
-        ));
-
-        MenuBar::new(roots).width(Length::Fill)
-    }
-
-    fn menu_root(
-        &self,
-        menu: TopMenu,
-        entries: &[MenuEntry],
-    ) -> MenuItemWidget<'_, Message, Theme, Renderer> {
-        let palette = self.active_palette();
-        let label = fonts::primary_text(tr(menu.label()), Some(1.0));
-        let root_palette = palette.clone();
-        let root_button = button(label)
-            .padding([6, 12])
-            .style(move |_, status| root_palette.menu_button_style(6.0, status));
-
-        let menu_widget = Menu::new(
-            entries
-                .iter()
-                .map(move |entry| {
-                    let entry_label = fonts::primary_text(entry.label(), None);
-                    let entry_palette = palette.clone();
-                    let entry_button = button(entry_label)
-                        .on_press(Message::MenuItemSelected(menu, *entry))
-                        .padding([6, 12])
-                        .width(Length::Fill)
-                        .style(move |_, status| entry_palette.menu_button_style(6.0, status));
-                    MenuItemWidget::new(entry_button)
-                })
-                .collect(),
-        )
-        .offset(4.0)
-        .max_width(180.0);
-
-        MenuItemWidget::with_menu(root_button, menu_widget)
     }
 
     fn open_collection_tab(
@@ -4831,25 +4468,6 @@ impl TabData {
 
     fn view(&self) -> Element<Message> {
         self.collection.view(self.id)
-    }
-}
-
-impl TopMenu {
-    fn label(self) -> &'static str {
-        match self {
-            TopMenu::File => "Connections",
-            TopMenu::View => "View",
-            TopMenu::Windows => "Windows",
-            TopMenu::Help => "Help",
-        }
-    }
-}
-
-impl MenuEntry {
-    fn label(self) -> &'static str {
-        match self {
-            MenuEntry::Action(label) => label,
-        }
     }
 }
 

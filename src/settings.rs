@@ -1,6 +1,6 @@
 use crate::fonts;
 use crate::i18n::Language;
-use iced::widget::{self, button};
+use iced::widget::button;
 use iced::{Color, Shadow, border};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -633,15 +633,6 @@ impl ThemePalette {
             text_color: self.menu.text.to_color(),
             border: border::rounded(radius).width(1).color(self.widget_border_color()),
             shadow: Shadow::default(),
-            ..Default::default()
-        }
-    }
-
-    pub fn container_style(&self, radius: f32) -> widget::container::Style {
-        widget::container::Style {
-            background: Some(self.widget_background_color().into()),
-            border: border::rounded(radius).width(1).color(self.widget_border_color()),
-            text_color: Some(self.text_primary.to_color()),
             ..Default::default()
         }
     }

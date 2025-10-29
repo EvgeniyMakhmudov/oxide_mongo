@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::text::Wrapping;
 use iced::widget::{self, Button, Column, Container, Row, Scrollable, Space};
-use iced::{Color, Element, Length};
+use iced::{Color, Element, Length, Shadow, Vector, border};
 use iced_aw::ContextMenu;
 use mongodb::bson::{Bson, Document};
 
@@ -112,6 +112,33 @@ fn style_menu_button<'a>(
 ) -> Button<'a, Message> {
     let colors = colors.clone();
     button.style(move |_, status| colors.button_style(6.0, border_color, status))
+}
+
+fn menu_item_container<'a>(
+    content: Element<'a, Message>,
+    colors: &MenuColors,
+    border_color: Color,
+) -> Element<'a, Message> {
+    let background = colors.background.to_color();
+    let luminance = 0.2126 * background.r + 0.7152 * background.g + 0.0722 * background.b;
+    let shadow_color = if luminance > 0.5 {
+        Color::from_rgba(0.0, 0.0, 0.0, 0.75)
+    } else {
+        Color::from_rgba(1.0, 1.0, 1.0, 0.30)
+    };
+
+    Container::new(content)
+        .style(move |_| widget::container::Style {
+            background: Some(background.into()),
+            border: border::rounded(6.0).width(1).color(border_color),
+            shadow: Shadow {
+                color: shadow_color,
+                offset: Vector::new(0.0, 3.0),
+                blur_radius: 12.0,
+            },
+            ..Default::default()
+        })
+        .into()
 }
 
 struct BsonRowEntry<'a> {
@@ -646,7 +673,7 @@ impl BsonTree {
             let menu_border = self.table_colors.separator.to_color();
 
             let row_with_menu = TableContextMenu::new(row_container, move || {
-                let mut menu = Column::new().spacing(4).padding([4, 6]);
+                let mut menu = Column::new().spacing(6).padding([4, 6]);
 
                 if node.is_container() {
                     let expand_button = style_menu_button(
@@ -675,8 +702,16 @@ impl BsonTree {
                         menu_border,
                     );
 
-                    menu = menu.push(expand_button);
-                    menu = menu.push(collapse_button);
+                    menu = menu.push(menu_item_container(
+                        expand_button.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
+                    menu = menu.push(menu_item_container(
+                        collapse_button.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
                 }
 
                 let copy_json = style_menu_button(
@@ -731,10 +766,10 @@ impl BsonTree {
                 }
                 let copy_path = style_menu_button(copy_path, &menu_colors, menu_border);
 
-                menu = menu.push(copy_json);
-                menu = menu.push(copy_key);
-                menu = menu.push(copy_value);
-                menu = menu.push(copy_path);
+                menu = menu.push(menu_item_container(copy_json.into(), &menu_colors, menu_border));
+                menu = menu.push(menu_item_container(copy_key.into(), &menu_colors, menu_border));
+                menu = menu.push(menu_item_container(copy_value.into(), &menu_colors, menu_border));
+                menu = menu.push(menu_item_container(copy_path.into(), &menu_colors, menu_border));
                 if value_edit_enabled {
                     let edit_value = style_menu_button(
                         Button::new(fonts::primary_text(tr("Edit Value Only..."), None))
@@ -748,7 +783,11 @@ impl BsonTree {
                         &menu_colors,
                         menu_border,
                     );
-                    menu = menu.push(edit_value);
+                    menu = menu.push(menu_item_container(
+                        edit_value.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
                 }
 
                 if let Some((index_name, hidden_state, ttl_enabled)) = index_context.clone() {
@@ -764,7 +803,11 @@ impl BsonTree {
                         });
                     }
                     let delete_button = style_menu_button(delete_button, &menu_colors, menu_border);
-                    menu = menu.push(delete_button);
+                    menu = menu.push(menu_item_container(
+                        delete_button.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
 
                     let hidden = hidden_state.unwrap_or(false);
 
@@ -779,7 +822,11 @@ impl BsonTree {
                         });
                     }
                     let hide_button = style_menu_button(hide_button, &menu_colors, menu_border);
-                    menu = menu.push(hide_button);
+                    menu = menu.push(menu_item_container(
+                        hide_button.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
 
                     let mut unhide_button =
                         Button::new(fonts::primary_text(tr("Unhide Index"), None))
@@ -793,7 +840,11 @@ impl BsonTree {
                         });
                     }
                     let unhide_button = style_menu_button(unhide_button, &menu_colors, menu_border);
-                    menu = menu.push(unhide_button);
+                    menu = menu.push(menu_item_container(
+                        unhide_button.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
 
                     if ttl_enabled {
                         let edit_button =
@@ -805,14 +856,22 @@ impl BsonTree {
                                     node_id: menu_node_id,
                                 });
                         let edit_button = style_menu_button(edit_button, &menu_colors, menu_border);
-                        menu = menu.push(edit_button);
+                        menu = menu.push(menu_item_container(
+                            edit_button.into(),
+                            &menu_colors,
+                            menu_border,
+                        ));
                     } else {
                         let edit_button =
                             Button::new(fonts::primary_text(tr("Edit Index..."), None))
                                 .padding([4, 12])
                                 .width(Length::Shrink);
                         let edit_button = style_menu_button(edit_button, &menu_colors, menu_border);
-                        menu = menu.push(edit_button);
+                        menu = menu.push(menu_item_container(
+                            edit_button.into(),
+                            &menu_colors,
+                            menu_border,
+                        ));
                     }
                 } else if is_root_document {
                     let edit_button =
@@ -824,7 +883,11 @@ impl BsonTree {
                                 node_id: menu_node_id,
                             });
                     let edit_button = style_menu_button(edit_button, &menu_colors, menu_border);
-                    menu = menu.push(edit_button);
+                    menu = menu.push(menu_item_container(
+                        edit_button.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
                 }
 
                 menu.into()

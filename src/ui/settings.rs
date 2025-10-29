@@ -2,7 +2,9 @@ use iced::alignment::Vertical;
 use iced::font::Weight;
 use iced::widget::checkbox::Checkbox;
 use iced::widget::pick_list::PickList;
-use iced::widget::{self, Button, Column, Container, Row, Scrollable, Space, button, text_input};
+use iced::widget::{
+    Button, Column, Container, Row, Scrollable, Space, button, container, text_input,
+};
 use iced::{Color, Element, Length, Shadow, border};
 
 use crate::Message;
@@ -10,6 +12,7 @@ use crate::fonts;
 use crate::i18n::{ALL_LANGUAGES, Language, tr, tr_format};
 use crate::settings::{ALL_THEMES, AppSettings, RgbaColor, ThemeChoice, ThemeColors, ThemePalette};
 use crate::ui::fonts_dropdown::{self, FontDropdown};
+use crate::ui::modal::modal_layout;
 use iced_aw::ColorPicker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -361,8 +364,6 @@ pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
     let scrollable =
         Scrollable::new(scroll_content).width(Length::Fill).height(Length::Fixed(360.0));
 
-    let card_palette = palette.clone();
-
     let card_content = Column::new()
         .spacing(16)
         .push(header)
@@ -370,21 +371,8 @@ pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
         .push(scrollable)
         .push(bottom_actions(&palette));
 
-    let card = Container::new(card_content)
-        .padding(24)
-        .width(Length::Fixed(640.0))
-        .style(move |_| card_palette.container_style(12.0));
-
-    Container::new(card)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .style(|_| widget::container::Style {
-            background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-            ..Default::default()
-        })
-        .into()
+    let card_element: Element<Message> = card_content.into();
+    modal_layout(palette, card_element, Length::Fixed(640.0), 24, 12.0)
 }
 
 fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<Message> {
@@ -576,7 +564,7 @@ fn color_picker_row<'a>(
     let swatch_color = color;
     let swatch =
         Container::new(Space::new(Length::Fixed(32.0), Length::Fixed(20.0))).style(move |_| {
-            widget::container::Style {
+            container::Style {
                 background: Some(swatch_color.into()),
                 border: border::rounded(4).width(1).color(Color::from_rgba8(0, 0, 0, 0.2)),
                 ..Default::default()

@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::fonts;
 use crate::i18n::tr;
 use crate::settings::ThemePalette;
+use crate::ui::modal::modal_layout;
 use crate::{
     DOUBLE_CLICK_INTERVAL, ICON_NETWORK_BYTES, ICON_NETWORK_HANDLE, Message, shared_icon_handle,
 };
@@ -421,21 +422,8 @@ pub fn connections_view<'a>(
 
     content = content.push(controls_row);
 
-    let card = Container::new(content)
-        .padding(20)
-        .width(Length::Fixed(700.0))
-        .style(pane_style(palette.clone(), 6.0));
-
-    Container::new(card)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .style(|_| widget::container::Style {
-            background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-            ..Default::default()
-        })
-        .into()
+    let card_element: Element<Message> = content.into();
+    modal_layout(palette, card_element, Length::Fixed(700.0), 20, 6.0)
 }
 
 fn subtle_button_style(
@@ -632,33 +620,8 @@ pub fn connection_form_view<'a>(
     let buttons = Row::new().spacing(12).push(cancel_button).push(test_button).push(save_button);
     content = content.push(buttons);
 
-    let card = Container::new(content)
-        .padding(16)
-        .width(Length::Fixed(560.0))
-        .style(pane_style(palette.clone(), 6.0));
-
-    Container::new(card)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center_x(Length::Fill)
-        .center_y(Length::Fill)
-        .style(|_| widget::container::Style {
-            background: Some(Color::from_rgba8(0x16, 0x1a, 0x1f, 0.55).into()),
-            ..Default::default()
-        })
-        .into()
-}
-
-fn pane_style(palette: ThemePalette, radius: f32) -> impl Fn(&Theme) -> widget::container::Style {
-    let background = palette.widget_background_color();
-    let border_color = palette.widget_border_color();
-    let text_color = palette.text_primary.to_color();
-    move |_| widget::container::Style {
-        background: Some(background.into()),
-        border: border::rounded(radius).width(1).color(border_color),
-        text_color: Some(text_color),
-        ..Default::default()
-    }
+    let card_element: Element<Message> = content.into();
+    modal_layout(palette, card_element, Length::Fixed(560.0), 16, 6.0)
 }
 
 fn connections_file_path() -> PathBuf {
