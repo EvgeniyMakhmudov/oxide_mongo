@@ -65,6 +65,7 @@ pub(crate) enum CollectionContextAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DatabaseContextAction {
+    CreateCollection,
     Refresh,
     Stats,
     Drop,
@@ -199,6 +200,8 @@ pub(crate) fn database_context_menu<'a>(
             apply_item_container(button.into(), palette.clone())
         };
 
+        menu = menu
+            .push(make_button(tr("Create Collection"), DatabaseContextAction::CreateCollection));
         menu = menu.push(make_button(tr("Refresh"), DatabaseContextAction::Refresh));
         menu = menu.push(make_button(tr("Statistics"), DatabaseContextAction::Stats));
         menu = menu.push(make_button(tr("Drop Database"), DatabaseContextAction::Drop));

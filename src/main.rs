@@ -270,6 +270,12 @@ pub(crate) enum Message {
         collection: String,
         result: Result<(), String>,
     },
+    CollectionCreateCompleted {
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        result: Result<(), String>,
+    },
     CollectionRenameCompleted {
         client_id: ClientId,
         db_name: String,
@@ -381,6 +387,19 @@ struct CollectionNode {
 }
 
 impl CollectionModalState {
+    fn new_create(client_id: ClientId, db_name: String) -> Self {
+        Self {
+            client_id,
+            db_name,
+            collection: String::new(),
+            kind: CollectionModalKind::CreateCollection,
+            input: String::new(),
+            error: None,
+            processing: false,
+            origin_tab: None,
+        }
+    }
+
     fn new_delete_all(client_id: ClientId, db_name: String, collection: String) -> Self {
         Self {
             client_id,
@@ -529,6 +548,7 @@ enum AppMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum CollectionModalKind {
+    CreateCollection,
     DeleteAllDocuments,
     DeleteCollection,
     RenameCollection,
@@ -1394,6 +1414,12 @@ impl App {
                 Task::none()
             }
             Message::DatabaseContextMenu { client_id, db_name, action } => match action {
+                DatabaseContextAction::CreateCollection => {
+                    self.collection_modal =
+                        Some(CollectionModalState::new_create(client_id, db_name.clone()));
+                    self.mode = AppMode::CollectionModal;
+                    Task::none()
+                }
                 DatabaseContextAction::Refresh => self.refresh_databases(client_id),
                 DatabaseContextAction::Stats => {
                     let tab_id = self.open_database_stats_tab(client_id, db_name.clone());
@@ -1501,6 +1527,13 @@ impl App {
 
                 let trimmed_input = modal.input.trim().to_string();
                 match modal.kind {
+                    CollectionModalKind::CreateCollection => {
+                        if trimmed_input.is_empty() {
+                            modal.error =
+                                Some(String::from(tr("Collection name cannot be empty.")));
+                            return Task::none();
+                        }
+                    }
                     CollectionModalKind::DeleteAllDocuments
                     | CollectionModalKind::DeleteCollection => {
                         if trimmed_input != modal.collection {
@@ -1552,10 +1585,51 @@ impl App {
                     }
                 };
 
+                if matches!(modal.kind, CollectionModalKind::CreateCollection) {
+                    if let Some(client) = self.clients.iter().find(|client| client.id == client_id)
+                    {
+                        if let Some(database) =
+                            client.databases.iter().find(|db| db.name == db_name)
+                        {
+                            if database.collections.iter().any(|node| node.name == trimmed_input) {
+                                modal.error = Some(String::from(tr(
+                                    "A collection with this name already exists.",
+                                )));
+                                return Task::none();
+                            }
+                        }
+                    }
+                }
+
                 modal.processing = true;
                 modal.error = None;
 
                 match kind {
+                    CollectionModalKind::CreateCollection => {
+                        let new_collection = trimmed_input.clone();
+                        modal.collection = new_collection.clone();
+
+                        let future_db = db_name.clone();
+                        let message_db = db_name.clone();
+                        let message_collection = new_collection.clone();
+                        let handle_task = handle.clone();
+
+                        Task::perform(
+                            async move {
+                                handle_task
+                                    .database(&future_db)
+                                    .create_collection(&new_collection)
+                                    .run()
+                                    .map_err(|error| error.to_string())
+                            },
+                            move |result| Message::CollectionCreateCompleted {
+                                client_id,
+                                db_name: message_db.clone(),
+                                collection: message_collection.clone(),
+                                result,
+                            },
+                        )
+                    }
                     CollectionModalKind::DeleteAllDocuments => {
                         let future_db = db_name.clone();
                         let future_collection = collection.clone();
@@ -1711,6 +1785,28 @@ impl App {
                                 self.collection_modal = None;
                                 self.mode = AppMode::Main;
                                 self.remove_collection_from_tree(client_id, &db_name, &collection);
+                            }
+                            Err(error) => {
+                                modal.processing = false;
+                                modal.error = Some(error);
+                            }
+                        }
+                    }
+                }
+                Task::none()
+            }
+            Message::CollectionCreateCompleted { client_id, db_name, collection, result } => {
+                if let Some(modal) = self.collection_modal.as_mut() {
+                    if matches!(modal.kind, CollectionModalKind::CreateCollection)
+                        && modal.client_id == client_id
+                        && modal.db_name == db_name
+                        && modal.collection == collection
+                    {
+                        match result {
+                            Ok(()) => {
+                                self.collection_modal = None;
+                                self.mode = AppMode::Main;
+                                self.add_collection_to_tree(client_id, &db_name, &collection);
                             }
                             Err(error) => {
                                 modal.processing = false;
@@ -3085,6 +3181,16 @@ impl App {
         let accent_color = success_accent_color(&palette);
 
         let (title, warning, prompt, placeholder, confirm_label) = match state.kind {
+            CollectionModalKind::CreateCollection => (
+                tr("Create Collection"),
+                tr_format(
+                    "Enter a name for the new collection in database \"{}\".",
+                    &[state.db_name.as_str()],
+                ),
+                None,
+                tr("Collection Name"),
+                tr("Create"),
+            ),
             CollectionModalKind::DeleteAllDocuments => (
                 tr("Delete All Documents"),
                 tr_format(
@@ -3137,6 +3243,9 @@ impl App {
         };
 
         let confirm_ready = match state.kind {
+            CollectionModalKind::CreateCollection => {
+                !state.input.trim().is_empty() && !state.processing
+            }
             CollectionModalKind::DeleteAllDocuments | CollectionModalKind::DeleteCollection => {
                 state.input.trim() == state.collection && !state.processing
             }
@@ -4127,6 +4236,18 @@ impl App {
             async move { handle.list_database_names().run().map_err(|error| error.to_string()) },
             move |result| Message::DatabasesRefreshed { client_id, result },
         )
+    }
+
+    fn add_collection_to_tree(&mut self, client_id: ClientId, db_name: &str, collection: &str) {
+        if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
+            if let Some(database) = client.databases.iter_mut().find(|d| d.name == db_name) {
+                if database.collections.iter().any(|node| node.name == collection) {
+                    return;
+                }
+                database.collections.push(CollectionNode::new(collection.to_string()));
+                database.collections.sort_by(|a, b| a.name.cmp(&b.name));
+            }
+        }
     }
 
     fn remove_collection_from_tree(

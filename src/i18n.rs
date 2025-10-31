@@ -93,6 +93,7 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Delete All Documents...", "Удалить все документы..."),
             ("Rename Collection...", "Переименовать коллекцию..."),
             ("Drop Collection...", "Удалить коллекцию..."),
+            ("Create Collection", "Создать коллекцию"),
             ("Create Index", "Создать индекс"),
             ("Indexes", "Индексы"),
             ("No tabs opened", "Вкладки не открыты"),
@@ -143,6 +144,7 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Database filter", "Фильтр баз данных"),
             ("Database name", "Название базы данных"),
             ("First collection name", "Имя первой коллекции"),
+            ("Collection Name", "Имя коллекции"),
             ("Settings", "Настройки"),
             ("Settings Error", "Ошибка настроек"),
             ("Failed to load settings:", "Не удалось загрузить настройки:"),
@@ -233,6 +235,10 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             (
                 "Enter a new name for collection \"{}\" in database \"{}\".",
                 "Введите новое имя для коллекции \"{}\" в базе \"{}\".",
+            ),
+            (
+                "Enter a name for the new collection in database \"{}\".",
+                "Введите имя новой коллекции в базе данных \"{}\".",
             ),
             ("New Collection Name", "Новое имя коллекции"),
             ("Rename", "Переименовать"),
@@ -460,6 +466,11 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("No active connection.", "Нет активного соединения."),
             ("New collection name must differ from the current one.", "Новое имя коллекции должно отличаться от текущего."),
             ("New collection name cannot be empty.", "Новое имя коллекции не может быть пустым."),
+            ("Collection name cannot be empty.", "Имя коллекции не может быть пустым."),
+            (
+                "A collection with this name already exists.",
+                "Коллекция с таким именем уже существует.",
+            ),
             ("RegExp options must be a string.", "Опции RegExp должны быть строкой."),
             ("countDocuments options must be a JSON object.", "Опции countDocuments должны быть JSON-объектом."),
             ("deleteOne/deleteMany options must be a JSON object.", "Опции deleteOne/deleteMany должны быть JSON-объектом."),
