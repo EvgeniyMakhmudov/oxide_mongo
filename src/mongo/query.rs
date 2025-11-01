@@ -16,6 +16,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::i18n::{tr, tr_format};
+use crate::mongo::shell_preprocessor::quote_unquoted_keys;
 
 #[derive(Debug, Clone, Default)]
 pub struct CountDocumentsParsedOptions {
@@ -2043,7 +2044,8 @@ impl<'a> QueryParser<'a> {
     }
 
     fn parse_shell_json_value(source: &str) -> Result<Value, String> {
-        let normalized = Self::preprocess_shell_json(source)?;
+        let quoted = quote_unquoted_keys(source);
+        let normalized = Self::preprocess_shell_json(&quoted)?;
         serde_json::from_str(&normalized).map_err(|error| format!("JSON parse error: {error}"))
     }
 
