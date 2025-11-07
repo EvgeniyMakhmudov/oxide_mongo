@@ -337,7 +337,7 @@ where
         .map_err(|_| tr_format("Invalid numeric value for \"{}\".", &[label]).to_string())
 }
 
-pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
+pub fn settings_view(state: &SettingsWindowState) -> Element<'_, Message> {
     let palette = state.palette_for_edit().clone();
     let text_color = palette.text_primary.to_color();
     let muted_color = palette.text_muted.to_color();
@@ -375,7 +375,7 @@ pub fn settings_view(state: &SettingsWindowState) -> Element<Message> {
     modal_layout(palette, card_element, Length::Fixed(640.0), 24, 12.0)
 }
 
-fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<Message> {
+fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, Message> {
     let expand_checkbox = Checkbox::new(tr("Expand first result item"), state.expand_first_result)
         .on_toggle(Message::SettingsToggleExpandFirstResult);
 
@@ -445,7 +445,7 @@ fn font_picker_row<'a>(
         .into()
 }
 
-fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<Message> {
+fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, Message> {
     let language_row = Row::new()
         .spacing(12)
         .align_y(Vertical::Center)
@@ -493,7 +493,7 @@ fn color_theme_tab(
     palette: ThemePalette,
     text_color: Color,
     _muted_color: Color,
-) -> Element<Message> {
+) -> Element<'_, Message> {
     let theme_row = Row::new()
         .spacing(12)
         .align_y(Vertical::Center)

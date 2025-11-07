@@ -491,7 +491,7 @@ impl BsonTree {
         }
     }
 
-    pub fn view(&self, tab_id: TabId) -> Element<Message> {
+    pub fn view(&self, tab_id: TabId) -> Element<'_, Message> {
         let mut rows = Vec::new();
         self.collect_rows(&mut rows, &self.roots, 0);
 

@@ -4,3 +4,5 @@ pub mod connection;
 pub mod query;
 pub mod shell;
 pub mod shell_preprocessor;
+#[cfg(test)]
+mod tests;

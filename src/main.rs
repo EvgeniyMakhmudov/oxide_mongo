@@ -82,7 +82,7 @@ fn main() -> iced::Result {
         .run_with(App::init)
 }
 
-struct App {
+pub(crate) struct App {
     panes: pane_grid::State<PaneContent>,
     tabs: Vec<TabData>,
     active_tab: Option<TabId>,
@@ -534,7 +534,7 @@ impl DocumentModalState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AppMode {
+pub(crate) enum AppMode {
     Main,
     Connections,
     ConnectionForm,
@@ -793,7 +793,7 @@ impl CollectionTab {
         self.panes.resize(split, clamped);
     }
 
-    fn view(&self, tab_id: TabId) -> Element<Message> {
+    fn view(&self, tab_id: TabId) -> Element<'_, Message> {
         let skip_tab_id = tab_id;
         let limit_tab_id = tab_id;
         let skip_prev_tab_id = tab_id;
@@ -942,7 +942,7 @@ impl CollectionTab {
         self.bson_tree.value_edit_context(node_id)
     }
 
-    fn request_view(&self, tab_id: TabId) -> Element<Message> {
+    fn request_view(&self, tab_id: TabId) -> Element<'_, Message> {
         let send_tab_id = tab_id;
         let editor = text_editor::TextEditor::new(&self.editor)
             .key_binding(move |key_press| {
@@ -1012,7 +1012,7 @@ impl CollectionTab {
             .into()
     }
 
-    fn response_view(&self, tab_id: TabId) -> Element<Message> {
+    fn response_view(&self, tab_id: TabId) -> Element<'_, Message> {
         self.bson_tree.view(tab_id)
     }
 
@@ -1208,7 +1208,7 @@ impl App {
         }
     }
 
-    fn init() -> (Self, Task<Message>) {
+    pub(crate) fn init() -> (Self, Task<Message>) {
         let settings_result = settings::load_from_disk();
 
         let (settings, load_error) = match settings_result {
@@ -1236,7 +1236,7 @@ impl App {
         (app, Task::none())
     }
 
-    fn update(&mut self, message: Message) -> Task<Message> {
+    pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::MenuItemSelected(menu, entry) => {
                 match entry {
@@ -3062,7 +3062,7 @@ impl App {
         Subscription::none()
     }
 
-    fn main_view(&self) -> Element<Message> {
+    fn main_view(&self) -> Element<'_, Message> {
         let menu_bar = menues::build_menu_bar(self.active_palette());
 
         let content_grid =
@@ -3077,7 +3077,7 @@ impl App {
         Column::new().push(menu_bar).push(content_grid).spacing(0).height(Length::Fill).into()
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         match self.mode {
             AppMode::Main => self.main_view(),
             AppMode::Connections => {
@@ -3141,7 +3141,7 @@ impl App {
         }
     }
 
-    fn settings_error_modal_view(&self, state: &SettingsErrorModalState) -> Element<Message> {
+    fn settings_error_modal_view(&self, state: &SettingsErrorModalState) -> Element<'_, Message> {
         let palette = self.active_palette();
         let title = fonts::primary_text(tr("Settings Error"), Some(6.0))
             .color(palette.text_primary.to_color());
@@ -3173,7 +3173,7 @@ impl App {
         modal_layout(palette, content, Length::Fixed(520.0), 24, 12.0)
     }
 
-    fn collection_modal_view(&self, state: &CollectionModalState) -> Element<Message> {
+    fn collection_modal_view(&self, state: &CollectionModalState) -> Element<'_, Message> {
         let palette = self.active_palette();
         let text_primary = palette.text_primary.to_color();
         let muted_color = palette.text_muted.to_color();
@@ -3315,7 +3315,7 @@ impl App {
         modal_layout(palette, content, Length::Fixed(420.0), 24, 12.0)
     }
 
-    fn database_modal_view(&self, state: &DatabaseModalState) -> Element<Message> {
+    fn database_modal_view(&self, state: &DatabaseModalState) -> Element<'_, Message> {
         let palette = self.active_palette();
         let text_primary = palette.text_primary.to_color();
         let muted_color = palette.text_muted.to_color();
@@ -3684,7 +3684,7 @@ impl App {
         }
     }
 
-    fn sidebar_panel(&self) -> Element<Message> {
+    fn sidebar_panel(&self) -> Element<'_, Message> {
         let mut list = Column::new().spacing(4);
         let palette = self.active_palette();
         let muted_color = palette.text_muted.to_color();
@@ -3944,7 +3944,7 @@ impl App {
         }
     }
 
-    fn main_panel(&self) -> Element<Message> {
+    fn main_panel(&self) -> Element<'_, Message> {
         let palette = self.active_palette();
         let pane_bg = palette.widget_background_color();
         let pane_border = palette.widget_border_color();
@@ -4587,7 +4587,7 @@ impl TabData {
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<'_, Message> {
         self.collection.view(self.id)
     }
 }
