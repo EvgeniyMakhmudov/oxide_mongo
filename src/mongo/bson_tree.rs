@@ -961,6 +961,11 @@ impl BsonTree {
         self.roots.first().map(|node| node.id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn root_id_at(&self, index: usize) -> Option<usize> {
+        self.roots.get(index).map(|node| node.id)
+    }
+
     pub fn expand_node(&mut self, node_id: usize) {
         if self.is_container(node_id) {
             self.expanded.insert(node_id);
@@ -989,6 +994,34 @@ impl BsonTree {
         }
 
         if components.is_empty() { None } else { Some(components.join(".")) }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn find_node_id_by_path(&self, path: &str) -> Option<usize> {
+        let components: Vec<&str> =
+            path.split('.').filter(|component| !component.is_empty()).collect();
+        if components.is_empty() {
+            return None;
+        }
+
+        self.roots.iter().find_map(|root| Self::find_node_by_components(root, &components))
+    }
+
+    #[cfg(test)]
+    fn find_node_by_components(node: &BsonNode, components: &[&str]) -> Option<usize> {
+        if components.is_empty() {
+            return Some(node.id);
+        }
+
+        let (head, tail) = components.split_first().expect("components is not empty");
+        let child = match &node.kind {
+            BsonKind::Document(children) | BsonKind::Array(children) => {
+                children.iter().find(|candidate| candidate.path_key.as_deref() == Some(*head))
+            }
+            _ => None,
+        }?;
+
+        Self::find_node_by_components(child, tail)
     }
 
     pub fn value_edit_context(&self, node_id: usize) -> Option<ValueEditContext> {

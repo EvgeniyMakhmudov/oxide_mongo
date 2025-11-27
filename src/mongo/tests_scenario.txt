@@ -15,4 +15,98 @@
 2.3 В левой панели в списке баз данных развернуть базу NEW_DB_NAME_1 и получить список коллекций. Провека что количество коллекций строго 1, с названием COLLECTION_NAME_1.
 2.4 В левой панели у базы данных NEW_DB_NAME_1 вызвать контексное меню и активировать пункт "Создать коллекцию". Откроется окно "Создать коллекцию". Заполнить поле ввода "Имя коллекции" случайной строкой (якорь COLLECTION_NAME_2). Нажать кнопку "Создать". Получить список коллекций базы данных NEW_DB_NAME_1. Проверка количества коллекций строго 2, названия коллекций соответтсвуют COLLECTION_NAME_1 и COLLECTION_NAME_2.
 2.5 В левой панели у базы данных NEW_DB_NAME_1 на коллекции COLLECTION_NAME_1 вызвать контексное меню, активировать пункт "Открыть пустую вкладку". Проверка количество вкладок основного окна должно быть строго 1.
-3.1 В основном окне, на первой вкладке, в редакторе запроса ввести запрос `db.getCollection('first_col').find({}).count({})`, нажать кнопку "Отправить". Проверка результата запроса - в таблице с данными должно отобразиться значение 0.
+3.1 В основном окне, на первой вкладке, в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_1).find({}).count({})`, нажать кнопку "Отправить". Проверка результата запроса - в таблице с данными должно отобразиться значение 0.
+3.2 В основном окне, в первой вкладке, в редкаторе запрос ввести запрос `db.getCollection(COLLECTION_NAME_1).insertOne({
+    string1: "Пример строки",
+    string2: String("через конструктор String"),
+    int32_1: NumberInt(42),
+    int32_2: NumberInt("42"),
+    long1: NumberLong(9007199254740991),
+    long2: NumberLong("9007199254740991"),
+    long3: NumberLong(42),
+    double1: 3.14159,
+    double2: Number(2.5),
+    double3: Infinity,
+    double4: -Infinity,
+    double5: NaN,
+    decimal1: NumberDecimal("12345.6789"),
+    decimal2: NumberDecimal("1E-28"),
+    decimal3: NumberDecimal("0.30000000000000004"),
+    bool1: true,
+    bool2: Boolean(false),
+    date1: new Date(),
+    date2: ISODate(),
+    date3: ISODate("2025-10-14T15:30:00Z"),
+    date4: new Date("2025-10-14T15:30:00Z"),
+    date5: new Date(2025, 9, 14, 17, 0, 0, 0),
+    date6: new Date(0),
+    array1: [1, 2, 3, "текст"],
+    array2: new Array(1, 2, 3),
+    object1: { a: 1, b: "строка" },
+    object2: Object({ x: 10, y: 20 }),
+    null1: null,
+    regex1: /mongodb/i,
+    regex2: new RegExp("mon(go|godb)", "i"),
+    objectId1: ObjectId(),
+    objectId2: ObjectId("64e9c4a9c2c1b3a5f1d0eabc"),
+    objectId3: ObjectId.fromDate(ISODate("2020-01-01T00:00:00Z")),
+    binary1: new BinData(0, "YWJjZGVmZw=="),
+    binary2: HexData(0, "DEADBEEF"),
+    uuid1: UUID(),
+    uuid2: UUID("12345678-1234-5678-9abc-123456789abc"),
+    timestamp1: Timestamp(1680000000, 1),
+    timestamp2: Timestamp(ISODate("2023-03-28T00:00:00Z").getTime()/1000, 5),
+    minKey1: MinKey(),
+    maxKey1: MaxKey(),
+    undefined1: undefined,
+    js1: new Code("function() { return 2 + 2; }"),
+    js2: function() { return 40 + 2; },
+    jsWithScope1: new Code(
+      "function(x) { return x + y; }",
+      { y: 5 }
+      ),
+    dbref1: DBRef("users", ObjectId("64e9c4a9c2c1b3a5f1d0eabc")),
+    dbref2: DBRef("users", ObjectId(), "otherDb")
+})`, нажать кнопку "Отправить". Проверка, в таблице результатов будет записано "operation" со значением "insertOne", "insertedId" со значением типа ObjectId.
+3.3  В основном окне, на первой вкладке, в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_1).find({}).count({})`, нажать кнопку "Отправить". Проверка результата запроса - в таблице с данными должно отобразиться значение 1.
+3.4  В сновном окне, на первой вкладке, в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_1).insertMany([{value: 10}, {value: 11}])`, нажать кнопку "Отправить". Проверка, в таблице результатов будет записано "operation" со значением "insertMany", "insertedCount" со значением 2.
+3.5 В левой панели у базы данных NEW_DB_NAME_1 на коллекции COLLECTION_NAME_1 вызвать контексное меню, активировать пункт "Посмотреть документы". В таблице будет отображено 4 документа.
+3.6 В талблице результатов у первого документа вызвать контексное меню, активировать меню "Изменить документ...". Появится окно редактирования всего документа. Скопировать от туда значение ключа "_id". Добавить его в текст ниже
+{
+    "string1": "Пример строки1",
+    "string2": String("через конструктор String1"),
+    "int32_1": NumberInt(421),
+    "int32_2": NumberInt("421"),
+    "long1": NumberLong(90071992547409911),
+    "long2": NumberLong("90071992547409911"),
+    "long3": NumberLong(421),
+    "double1": 3.141591,
+    "double2": Number(2.51),
+    "double3": -Infinity,
+    "double4": Infinity,
+    "decimal1": NumberDecimal("12345.67891"),
+    "decimal2": NumberDecimal("1E-21"),
+    "decimal3": NumberDecimal("0.300000000000000041"),
+    "bool1": false,
+    "bool2": Boolean(true),
+    "date3": ISODate("2025-10-14T15:30:01Z"),
+    "date4": new Date("2025-10-14T15:30:01Z"),
+    "date5": new Date(2025, 9, 14, 17, 0, 0, 1),
+    "date6": new Date(1),
+    "array1": [1, 2, 3, "текст1"],
+    "array2": new Array(1, 2, 31),
+    "object1": { a: 11, b: "строка1" },
+    "object2": Object({ x: 101, y: 201 }),
+    "regex1": /mongodb1/i,
+    "regex2": new RegExp("mon(go|godb)1", "i"),
+    "objectId2": ObjectId("64e9c4a9c2c1b3a5f1d0eab1"),
+    "objectId3": ObjectId.fromDate(ISODate("2020-01-01T00:00:01Z")),
+    "binary2": HexData(0, "DEADBEEF1"),
+    "uuid2": UUID("12345678-1234-5678-9abc-123456789ab1"),
+    "timestamp1": Timestamp(1680000001, 1),
+    "timestamp2": Timestamp(ISODate("2023-03-21T00:00:00Z").getTime()/1000, 5),
+}
+и сформировать из текста в коде теста переменную с именем "updated_data". Заменить текст в текстовом виджете в окне "Изменение документа" на содержимое переменной "updated_data". Нажать кнопку "Сохранить". Окно закроется. В текстовом редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_1).count()` поместив в качестве аргумента для count содержимое переменной "updated_data". Нажать кнопку "Отправить". Проверка, в качестве результат запроса в таблице результатов будет значение 0.
+3.7.1 В текстовом редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_1).find()`, нажать кнопку "Отправить". Проверка в таблице результатов будет 4 документа.
+3.7.2 В первом документе найти строчку таблицы с ключом `array1`, раскрыть массив, найти строчку со значением `2`, вызывать на ней контекстное меню. активировать пункт "Изменить только значение...". Появится окно изменение значения. В текстовом редакторе заменить содержимое на `2.0`. Проверка в виджете `Тип значение` должно быть значение `Double`. Нажать кнопку `Сохранить`, окно закроется.
+3.7.3 В редакторе запроса ввести текст `db.getCollection(COLLECTION_NAME_1).find({"array1.1": NumberDouble("2.0")}).count()`, нажать кнопку "Отправить". ПРоверки в таблице результатов должно быть значение `1`.

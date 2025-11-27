@@ -229,10 +229,30 @@ impl FindOneAndDeleteParsedOptions {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct FindCursorChain {
+    sort: Option<Document>,
+    hint: Option<Hint>,
+    skip: Option<u64>,
+    limit: Option<u64>,
+    max_time: Option<Duration>,
+}
+
+impl FindCursorChain {
+    fn has_effect(&self) -> bool {
+        self.sort.is_some()
+            || self.hint.is_some()
+            || self.skip.is_some()
+            || self.limit.is_some()
+            || self.max_time.is_some()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum QueryOperation {
     Find {
         filter: Document,
+        options: Option<FindCursorChain>,
     },
     FindOne {
         filter: Document,
@@ -338,13 +358,16 @@ impl<'a> QueryParser<'a> {
         let after_collection = Self::strip_collection_prefix(cleaned)?;
 
         let (method_name, args, remainder) = Self::extract_primary_method(after_collection)?;
+        if method_name == "find" {
+            let filter = if args.trim().is_empty() {
+                Document::new()
+            } else {
+                Self::parse_json_object(args.trim())?
+            };
+            return self.parse_find_chain(filter, remainder);
+        }
+
         if !remainder.trim().is_empty() {
-            let extra = remainder.trim_start();
-            if method_name == "find" && extra.starts_with(".countDocuments(") {
-                return Err(String::from(tr(
-                    "countDocuments() must be called directly on a collection. Chains like db.collection.find(...).countDocuments(...) are not supported.",
-                )));
-            }
             return Err(String::from(tr(
                 "Only a single method call is supported after specifying the collection.",
             )));
@@ -943,13 +966,6 @@ impl<'a> QueryParser<'a> {
 
                 Ok(QueryOperation::DeleteMany { filter, options })
             }
-            "find" => {
-                if args_trimmed.is_empty() {
-                    return Ok(QueryOperation::Find { filter: Document::new() });
-                }
-                let filter = Self::parse_json_object(args_trimmed)?;
-                Ok(QueryOperation::Find { filter })
-            }
             other => Err(tr_format(
                 "Method {} is not supported. Available methods: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
                 &[other],
@@ -1286,6 +1302,185 @@ impl<'a> QueryParser<'a> {
                 "Method db.{} is not supported. Available methods: stats, runCommand.",
                 &[other],
             )),
+        }
+    }
+
+    fn parse_find_chain(
+        &self,
+        filter: Document,
+        remainder: &str,
+    ) -> Result<QueryOperation, String> {
+        let mut modifiers = FindCursorChain::default();
+        let mut tail = remainder.trim_start();
+
+        while !tail.is_empty() {
+            let (method, args, rest) = Self::extract_primary_method(tail)?;
+            let args_trimmed = args.trim();
+            match method.as_str() {
+                "sort" => {
+                    if args_trimmed.is_empty() {
+                        return Err(String::from(tr("sort requires a document with sort keys.")));
+                    }
+                    let sort_doc = Self::parse_json_object(args_trimmed)?;
+                    modifiers.sort = Some(sort_doc);
+                }
+                "hint" => {
+                    if args_trimmed.is_empty() {
+                        return Err(String::from(tr("hint requires an index specification.")));
+                    }
+                    let hint_value = Self::parse_shell_json_value(args_trimmed)?;
+                    let hint = Self::parse_hint_value(&hint_value)?;
+                    modifiers.hint = Some(hint);
+                }
+                "limit" => {
+                    modifiers.limit = Self::parse_find_limit_argument(args_trimmed)?;
+                }
+                "skip" => {
+                    let skip = Self::parse_find_skip_argument(args_trimmed)?;
+                    modifiers.skip = if skip == 0 { None } else { Some(skip) };
+                }
+                "maxTimeMS" => {
+                    let duration = Self::parse_find_max_time_argument(args_trimmed)?;
+                    modifiers.max_time = Some(duration);
+                }
+                "count" | "countDocuments" => {
+                    return self.finish_find_with_count(filter, modifiers, args_trimmed, rest);
+                }
+                other => {
+                    return Err(tr_format(
+                        "Method '{}' is not supported after find(...).",
+                        &[other],
+                    ));
+                }
+            }
+            tail = rest.trim_start();
+        }
+
+        let options = if modifiers.has_effect() { Some(modifiers) } else { None };
+        Ok(QueryOperation::Find { filter, options })
+    }
+
+    fn parse_find_limit_argument(source: &str) -> Result<Option<u64>, String> {
+        if source.trim().is_empty() {
+            return Err(String::from(tr("limit expects a numeric argument.")));
+        }
+        let value = Self::parse_shell_json_value(source)?;
+        let number = value.as_i64().ok_or_else(|| {
+            String::from(tr("limit expects a numeric argument. Strings are not supported."))
+        })?;
+        if number <= 0 {
+            return Ok(None);
+        }
+        Ok(Some(number as u64))
+    }
+
+    fn parse_find_skip_argument(source: &str) -> Result<u64, String> {
+        if source.trim().is_empty() {
+            return Err(String::from(tr("skip expects a numeric argument.")));
+        }
+        let value = Self::parse_shell_json_value(source)?;
+        let number = value
+            .as_i64()
+            .ok_or_else(|| String::from(tr("skip expects a non-negative integer value.")))?;
+        if number < 0 {
+            return Err(String::from(tr("skip cannot be negative.")));
+        }
+        Ok(number as u64)
+    }
+
+    fn parse_find_max_time_argument(source: &str) -> Result<Duration, String> {
+        if source.trim().is_empty() {
+            return Err(String::from(tr("maxTimeMS expects a numeric argument.")));
+        }
+        let value = Self::parse_shell_json_value(source)?;
+        let number = value.as_u64().ok_or_else(|| {
+            String::from(tr("maxTimeMS must be a non-negative integer representing milliseconds."))
+        })?;
+        Ok(Duration::from_millis(number))
+    }
+
+    fn finish_find_with_count(
+        &self,
+        filter: Document,
+        chain: FindCursorChain,
+        args: &str,
+        remainder: &str,
+    ) -> Result<QueryOperation, String> {
+        if !remainder.trim().is_empty() {
+            return Err(String::from(tr(
+                "count() or countDocuments() must be the last method in a find() chain.",
+            )));
+        }
+
+        let mut base_options = CountDocumentsParsedOptions::default();
+        let mut base_present = false;
+
+        if let Some(hint) = chain.hint.clone() {
+            base_options.hint = Some(hint);
+            base_present = true;
+        }
+
+        if let Some(duration) = chain.max_time {
+            base_options.max_time = Some(duration);
+            base_present = true;
+        }
+
+        let mut options = if base_present { Some(base_options) } else { None };
+
+        if !args.is_empty() {
+            let value = Self::parse_shell_json_value(args)?;
+            match value {
+                Value::Bool(include_paging) => {
+                    if include_paging {
+                        let mut extras = CountDocumentsParsedOptions::default();
+                        if let Some(limit) = chain.limit {
+                            extras.limit = Some(limit);
+                        }
+                        if let Some(skip) = chain.skip {
+                            extras.skip = Some(skip);
+                        }
+                        options = Self::merge_count_options(
+                            options,
+                            if extras.has_values() { Some(extras) } else { None },
+                        );
+                    }
+                }
+                Value::Object(_) => {
+                    let parsed = Self::parse_count_documents_options(args)?;
+                    options = Self::merge_count_options(options, parsed);
+                }
+                _ => {
+                    return Err(String::from(tr(
+                        "count argument must be a boolean or an options object.",
+                    )));
+                }
+            }
+        }
+
+        Ok(QueryOperation::CountDocuments { filter, options })
+    }
+
+    fn merge_count_options(
+        base: Option<CountDocumentsParsedOptions>,
+        extra: Option<CountDocumentsParsedOptions>,
+    ) -> Option<CountDocumentsParsedOptions> {
+        match (base, extra) {
+            (Some(mut existing), Some(additional)) => {
+                if let Some(limit) = additional.limit {
+                    existing.limit = Some(limit);
+                }
+                if let Some(skip) = additional.skip {
+                    existing.skip = Some(skip);
+                }
+                if let Some(hint) = additional.hint {
+                    existing.hint = Some(hint);
+                }
+                if let Some(duration) = additional.max_time {
+                    existing.max_time = Some(duration);
+                }
+                Some(existing)
+            }
+            (None, opt) | (opt, None) => opt,
         }
     }
 
@@ -3009,6 +3204,19 @@ pub fn parse_collection_query(
     QueryParser { db_name, collection }.parse_query(text)
 }
 
+fn resolve_effective_limit(ui_limit: u64, chain_limit: Option<u64>) -> u64 {
+    match chain_limit {
+        Some(chain) => {
+            if ui_limit == 0 {
+                chain
+            } else {
+                ui_limit.min(chain)
+            }
+        }
+        None => ui_limit,
+    }
+}
+
 fn u64_to_bson(value: u64) -> Bson {
     if value <= i64::MAX as u64 {
         Bson::Int64(value as i64)
@@ -3030,23 +3238,51 @@ pub fn run_collection_query(
     let collection = database.collection::<Document>(&collection_name);
 
     match operation {
-        QueryOperation::Find { filter } => {
-            if limit == 0 {
+        QueryOperation::Find { filter, options } => {
+            let mut builder = collection.find(filter);
+            let mut effective_skip = skip;
+            let mut chain_limit: Option<u64> = None;
+            let mut chain_max_time = None;
+
+            if let Some(opts) = options {
+                if let Some(sort) = opts.sort {
+                    builder = builder.sort(sort);
+                }
+                if let Some(hint) = opts.hint {
+                    builder = builder.hint(hint);
+                }
+                if let Some(chain_skip) = opts.skip {
+                    effective_skip = effective_skip.saturating_add(chain_skip);
+                }
+                if let Some(duration) = opts.max_time {
+                    chain_max_time = Some(duration);
+                }
+                chain_limit = opts.limit;
+            }
+
+            if effective_skip > 0 {
+                builder = builder.skip(effective_skip);
+            }
+
+            let combined_limit = resolve_effective_limit(limit, chain_limit);
+            if combined_limit == 0 {
                 return Ok(QueryResult::Documents(Vec::new()));
             }
 
-            let mut builder = collection.find(filter);
-            if skip > 0 {
-                builder = builder.skip(skip);
-            }
-
-            let limit_capped = limit.min(i64::MAX as u64) as i64;
+            let limit_capped = combined_limit.min(i64::MAX as u64) as i64;
             if limit_capped > 0 {
                 builder = builder.limit(limit_capped);
             }
 
-            if let Some(timeout) = timeout {
-                builder = builder.max_time(timeout);
+            let effective_timeout = match (chain_max_time, timeout) {
+                (Some(chain), Some(global)) => Some(chain.min(global)),
+                (Some(chain), None) => Some(chain),
+                (None, Some(global)) => Some(global),
+                (None, None) => None,
+            };
+
+            if let Some(duration) = effective_timeout {
+                builder = builder.max_time(duration);
             }
 
             let cursor = builder.run().map_err(|err| err.to_string())?;
@@ -3609,7 +3845,76 @@ mod tests {
     fn parses_simple_find_query() {
         let operation = parse("db.users.find({ \"name\": \"Alice\" })");
         match operation {
-            QueryOperation::Find { filter } => assert_eq!(filter, doc! { "name": "Alice" }),
+            QueryOperation::Find { filter, options } => {
+                assert_eq!(filter, doc! { "name": "Alice" });
+                assert!(options.is_none());
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_find_chain_with_sort_and_hint() {
+        let operation =
+            parse("db.users.find({ \"active\": true }).sort({ \"score\": -1 }).hint(\"score_1\")");
+        match operation {
+            QueryOperation::Find { filter, options } => {
+                assert_eq!(filter, doc! { "active": true });
+                let parsed = options.expect("modifiers expected");
+                assert_eq!(parsed.sort, Some(doc! { "score": -1i64 }));
+                match parsed.hint {
+                    Some(Hint::Name(name)) => assert_eq!(name, "score_1"),
+                    other => panic!("unexpected hint: {:?}", other),
+                }
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_find_chain_with_skip_limit_and_max_time() {
+        let operation = parse("db.users.find({}).skip(5).limit(10).maxTimeMS(1500)");
+        match operation {
+            QueryOperation::Find { filter, options } => {
+                assert_eq!(filter, doc! {});
+                let parsed = options.expect("modifiers expected");
+                assert_eq!(parsed.skip, Some(5));
+                assert_eq!(parsed.limit, Some(10));
+                assert_eq!(parsed.max_time, Some(Duration::from_millis(1500)));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_find_chain_count_with_options() {
+        let operation = parse(
+            "db.users.find({ \"status\": \"new\" }).count({ \"limit\": 5, \"hint\": { \"status\": 1 } })",
+        );
+        match operation {
+            QueryOperation::CountDocuments { filter, options } => {
+                assert_eq!(filter, doc! { "status": "new" });
+                let parsed = options.expect("options expected");
+                assert_eq!(parsed.limit, Some(5));
+                match parsed.hint {
+                    Some(Hint::Keys(doc)) => assert_eq!(doc, doc! { "status": 1i64 }),
+                    other => panic!("unexpected hint: {:?}", other),
+                }
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_find_chain_count_with_bool_argument() {
+        let operation = parse("db.users.find({}).skip(3).limit(7).count(true)");
+        match operation {
+            QueryOperation::CountDocuments { filter, options } => {
+                assert_eq!(filter, doc! {});
+                let parsed = options.expect("options expected");
+                assert_eq!(parsed.skip, Some(3));
+                assert_eq!(parsed.limit, Some(7));
+            }
             other => panic!("unexpected operation: {:?}", other),
         }
     }
