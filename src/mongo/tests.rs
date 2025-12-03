@@ -281,8 +281,8 @@ fn connection_flow_via_messages() {
     );
 
     let connection_name = format!("connection-{}", Uuid::new_v4().simple());
-    let new_db_name_1 = format!("db-{}", Uuid::new_v4().simple());
-    let new_db_name_2 = format!("db-{}", Uuid::new_v4().simple());
+    let new_db_name_1 = String::from("debug-db-1");
+    let new_db_name_2 = String::from("debug-db-2");
     let collection_name_1 = format!("collection-{}", Uuid::new_v4().simple());
     let collection_name_2 = format!("collection-{}", Uuid::new_v4().simple());
 
@@ -822,5 +822,158 @@ fn connection_flow_via_messages() {
     match array_filter_count {
         QueryResult::Count { value } => assert_eq!(value, Bson::Int64(1)),
         other => panic!("expected count result with single matching array value, got {:?}", other),
+    }
+
+    //
+    // Step 4.1.1: Close previous tabs and open an empty tab for the second collection.
+    //
+    for tab_id in [documents_tab_id, primary_tab_id] {
+        let _ = app.update(Message::TabClosed(tab_id));
+    }
+    assert_eq!(app.test_tabs_len(), 0);
+
+    let _ = app.update(Message::CollectionContextMenu {
+        client_id,
+        db_name: new_db_name_1.clone(),
+        collection: collection_name_2.clone(),
+        action: CollectionContextAction::OpenEmptyTab,
+    });
+    assert_eq!(app.test_tabs_len(), 1);
+
+    let secondary_tab_id =
+        app.test_active_tab_id().expect("secondary collection tab should be active");
+    let (sec_client_id, sec_db_name, sec_collection_name) =
+        app.test_collection_identifiers(secondary_tab_id).expect("secondary tab identifiers");
+    assert_eq!(sec_client_id, client_id);
+    assert_eq!(sec_db_name, new_db_name_1);
+    assert_eq!(sec_collection_name, collection_name_2);
+
+    //
+    // Step 4.1.2: Insert documents into COLLECTION_NAME_2.
+    //
+    let insert_many_collection_2 = format!(
+        concat!(
+            "db.getCollection('{collection}').insertMany([\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"IT\", \"starts\": ISODate(\"2020-02-01\"), \"points\": 10 }},\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"Support\", \"starts\": ISODate(\"2018-03-10\"), \"points\": 8 }},\n",
+            "    {{ \"name\": \"Anya\", \"department\": \"IT\", \"starts\": ISODate(\"2020-06-15\"), \"points\": 20 }},\n",
+            "    {{ \"name\": \"Mark\", \"department\": \"Devops\", \"starts\": ISODate(\"2019-05-01\"), \"points\": 12 }}\n",
+            "])"
+        ),
+        collection = collection_name_2
+    );
+    let insert_many_collection_2_result =
+        execute_query(&mut app, secondary_tab_id, &insert_many_collection_2, &shared_client);
+    match insert_many_collection_2_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_str("operation").unwrap_or_default(), "insertMany");
+            assert_eq!(document.get_i64("insertedCount").unwrap_or_default(), 4);
+        }
+        other => panic!("expected insertMany result for collection 2, got {:?}", other),
+    }
+
+    //
+    // Step 4.2.1: Check find({}) return 4 documents.
+    //
+    let find_all_collection_2 =
+        format!("db.getCollection('{collection}').find({{}})", collection = collection_name_2);
+    let find_all_result =
+        execute_query(&mut app, secondary_tab_id, &find_all_collection_2, &shared_client);
+    match &find_all_result {
+        QueryResult::Documents(values) => assert_eq!(values.len(), 4),
+        other => panic!("expected 4 documents in collection 2, got {:?}", other),
+    }
+
+    //
+    // Step 4.2.2: Query unknown name should return zero documents.
+    //
+    let find_unknown = format!(
+        "db.getCollection('{collection}').find({{\"name\": \"unknown\"}})",
+        collection = collection_name_2
+    );
+    let find_unknown_result =
+        execute_query(&mut app, secondary_tab_id, &find_unknown, &shared_client);
+    match &find_unknown_result {
+        QueryResult::Documents(values) => assert!(values.is_empty()),
+        other => panic!("expected zero documents for unknown name, got {:?}", other),
+    }
+
+    //
+    // Step 4.2.3: Filter by IT department and specific names, expect 2 documents.
+    //
+    let find_it_names = format!(
+        "db.getCollection('{collection}').find({{\"department\": \"IT\", \"name\": {{\"$in\": [\"Alex\", \"Anya\"]}}}})",
+        collection = collection_name_2
+    );
+    let find_it_result = execute_query(&mut app, secondary_tab_id, &find_it_names, &shared_client);
+    match &find_it_result {
+        QueryResult::Documents(values) => assert_eq!(values.len(), 2),
+        other => panic!("expected two IT documents for Alex/Anya, got {:?}", other),
+    }
+
+    //
+    // Step 4.2.4: Filter by date range in 2020, expect 2 documents.
+    //
+    let find_date_range = format!(
+        "db.getCollection('{collection}').find({{\"starts\": {{\"$gt\": ISODate('2020-01-01'), \"$lt\": ISODate(\"2021-01-01\")}}}})",
+        collection = collection_name_2
+    );
+    let find_date_result =
+        execute_query(&mut app, secondary_tab_id, &find_date_range, &shared_client);
+    match &find_date_result {
+        QueryResult::Documents(values) => assert_eq!(values.len(), 2),
+        other => panic!("expected two documents in date range, got {:?}", other),
+    }
+
+    //
+    // Step 4.3: findOne on date range should return a single document.
+    //
+    let find_one_date_range = format!(
+        "db.getCollection('{collection}').findOne({{\"starts\": {{\"$gt\": ISODate('2020-01-01'), \"$lt\": ISODate(\"2021-01-01\")}}}})",
+        collection = collection_name_2
+    );
+    let find_one_date_result =
+        execute_query(&mut app, secondary_tab_id, &find_one_date_range, &shared_client);
+    match &find_one_date_result {
+        QueryResult::SingleDocument { document } => {
+            assert!(document.get("starts").is_some(), "findOne result must contain starts field");
+        }
+        QueryResult::Documents(values) => {
+            panic!("expected single document for date range, got list of len {}", values.len())
+        }
+        other => panic!("expected single document in date range, got {:?}", other),
+    }
+
+    //
+    // Step 4.4: Aggregation.
+    //
+    let aggregate_points = format!(
+        concat!(
+            "db.getCollection('{collection}').aggregate([",
+            "{{\"$match\": {{\"department\": \"IT\"}}}}, ",
+            "{{\"$group\": {{\"_id\": null, \"total\": {{\"$sum\": \"$points\"}}, \"count\": {{\"$sum\": 1}}}}}}, ",
+            "{{\"$project\": {{\"value\": {{\"$divide\": [\"$total\", \"$count\"]}}}}}}",
+            "])"
+        ),
+        collection = collection_name_2
+    );
+    let aggregate_result =
+        execute_query(&mut app, secondary_tab_id, &aggregate_points, &shared_client);
+    match &aggregate_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 1);
+            if let Some(doc) = values.first().and_then(|b| b.as_document()) {
+                let value_bson = doc.get("value").cloned().unwrap_or(Bson::Null);
+                match value_bson {
+                    Bson::Int32(v) => assert_eq!(v, 15),
+                    Bson::Int64(v) => assert_eq!(v, 15),
+                    Bson::Double(v) => assert!((v - 15.0).abs() < f64::EPSILON),
+                    other => panic!("expected numeric value 15, got {:?}", other),
+                }
+            } else {
+                panic!("aggregate result missing document payload");
+            }
+        }
+        other => panic!("expected aggregation documents result, got {:?}", other),
     }
 }

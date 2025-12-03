@@ -4,7 +4,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use chrono::{Duration as ChronoDuration, TimeZone, Utc};
 use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{
     self, Binary, Bson, DateTime, Decimal128, Document, JavaScriptCodeWithScope, Regex,
@@ -16,6 +15,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::i18n::{tr, tr_format};
+use crate::mongo::shell::parse_date_constructor;
 use crate::mongo::shell_preprocessor::quote_unquoted_keys;
 
 #[derive(Debug, Clone, Default)]
@@ -919,7 +919,7 @@ impl<'a> QueryParser<'a> {
 
                 Ok(QueryOperation::FindOneAndDelete { filter, options })
             }
-            "findOneAndModify" => self.parse_find_one_and_modify(args_trimmed),
+            "findAndModify" => self.parse_find_and_modify(args_trimmed),
             "deleteOne" => {
                 if args_trimmed.is_empty() {
                     return Err(String::from(tr(
@@ -1884,17 +1884,15 @@ impl<'a> QueryParser<'a> {
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
     }
 
-    fn parse_find_one_and_modify(&self, source: &str) -> Result<QueryOperation, String> {
+    fn parse_find_and_modify(&self, source: &str) -> Result<QueryOperation, String> {
         if source.trim().is_empty() {
-            return Err(String::from(tr(
-                "findOneAndModify requires a JSON object with parameters.",
-            )));
+            return Err(String::from(tr("findAndModify requires a JSON object with parameters.")));
         }
 
         let value: Value = Self::parse_shell_json_value(source)?;
         let object = value
             .as_object()
-            .ok_or_else(|| String::from(tr("findOneAndModify expects a JSON object.")))?;
+            .ok_or_else(|| String::from(tr("findAndModify expects a JSON object.")))?;
 
         let mut filter = Document::new();
         let mut update_spec: Option<UpdateModificationsSpec> = None;
@@ -2007,7 +2005,7 @@ impl<'a> QueryParser<'a> {
                 }
                 other => {
                     return Err(tr_format(
-                        "Parameter '{}' is not supported in findOneAndModify.",
+                        "Parameter '{}' is not supported in findAndModify.",
                         &[other],
                     ));
                 }
@@ -2056,7 +2054,7 @@ impl<'a> QueryParser<'a> {
         }
 
         let update_spec = update_spec.ok_or_else(|| {
-            String::from(tr("findOneAndModify requires an 'update' parameter when remove=false."))
+            String::from(tr("findAndModify requires an 'update' parameter when remove=false."))
         })?;
 
         let mut options = FindOneAndUpdateParsedOptions::default();
@@ -2753,12 +2751,12 @@ impl<'a> QueryParser<'a> {
                 if parts.len() != 1 {
                     return Err(String::from(tr("ObjectId.fromDate expects a single argument.")));
                 }
-                let date = Self::parse_date_constructor(&[parts[0].clone()])?;
+                let date = parse_date_constructor(&[parts[0].clone()])?;
                 let seconds = (date.timestamp_millis() / 1000) as u32;
                 Ok(Bson::ObjectId(ObjectId::from_parts(seconds, [0; 5], [0; 3])))
             }
             "ISODate" | "Date" => {
-                let datetime = Self::parse_date_constructor(parts)?;
+                let datetime = parse_date_constructor(parts)?;
                 Ok(Bson::DateTime(datetime))
             }
             "NumberDecimal" => {
@@ -3015,79 +3013,15 @@ impl<'a> QueryParser<'a> {
         }
     }
 
-    fn parse_date_constructor(parts: &[String]) -> Result<DateTime, String> {
-        if parts.is_empty() {
-            return Ok(DateTime::now());
-        }
-
-        if parts.len() == 1 {
-            let bson = Self::parse_shell_bson_value(&parts[0])?;
-            return match bson {
-                Bson::DateTime(dt) => Ok(dt),
-                Bson::String(text) => DateTime::parse_rfc3339_str(&text)
-                    .or_else(|_| {
-                        if let Ok(ms) = text.parse::<i128>() {
-                            Ok(DateTime::from_millis(ms as i64))
-                        } else {
-                            Err(())
-                        }
-                    })
-                    .map_err(|_| String::from(tr("Failed to convert string to date."))),
-                Bson::Int32(value) => Ok(DateTime::from_millis(value as i64)),
-                Bson::Int64(value) => Ok(DateTime::from_millis(value)),
-                Bson::Double(value) => Ok(DateTime::from_millis(value as i64)),
-                Bson::Decimal128(value) => {
-                    let millis = value.to_string().parse::<f64>().map_err(|_| {
-                        String::from(tr("Failed to convert Decimal128 to a number."))
-                    })?;
-                    Ok(DateTime::from_millis(millis as i64))
-                }
-                Bson::Null => Ok(DateTime::now()),
-                other => Err(tr_format(
-                    "Cannot convert value of type {} to a date.",
-                    &[&format!("{other:?}")],
-                )),
-            };
-        }
-
-        Self::construct_date_from_components(parts)
-    }
-
-    fn construct_date_from_components(parts: &[String]) -> Result<DateTime, String> {
-        let mut components = [0i64; 7];
-        for (index, part) in parts.iter().enumerate().take(7) {
-            let value = Self::parse_shell_json_value(part)?;
-            let number = Self::value_as_f64(&value)?;
-            components[index] = number.trunc() as i64;
-        }
-
-        let year = components[0] as i32;
-        let month_zero = components.get(1).copied().unwrap_or(0);
-        let month = (month_zero + 1).clamp(1, 12) as u32;
-        let day = components.get(2).copied().unwrap_or(1).clamp(1, 31) as u32;
-        let hour = components.get(3).copied().unwrap_or(0).clamp(0, 23) as u32;
-        let minute = components.get(4).copied().unwrap_or(0).clamp(0, 59) as u32;
-        let second = components.get(5).copied().unwrap_or(0).clamp(0, 59) as u32;
-        let millis = components.get(6).copied().unwrap_or(0);
-
-        let base =
-            Utc.with_ymd_and_hms(year, month, day, hour, minute, second).single().ok_or_else(
-                || String::from(tr("Unable to construct a date with the specified components.")),
-            )?;
-
-        let chrono_dt = base + ChronoDuration::milliseconds(millis);
-        Ok(DateTime::from_millis(chrono_dt.timestamp_millis()))
-    }
-
     fn parse_timestamp_seconds(value: &str) -> Result<u32, String> {
         let trimmed = value.trim();
         if let Some(prefix) = trimmed.strip_suffix(".getTime()/1000") {
-            let date = Self::parse_date_constructor(&[prefix.trim().to_string()])?;
+            let date = parse_date_constructor(&[prefix.trim().to_string()])?;
             return Ok((date.timestamp_millis() / 1000) as u32);
         }
 
         if let Some(prefix) = trimmed.strip_suffix(".getTime()") {
-            let date = Self::parse_date_constructor(&[prefix.trim().to_string()])?;
+            let date = parse_date_constructor(&[prefix.trim().to_string()])?;
             return Ok(date.timestamp_millis() as u32);
         }
 

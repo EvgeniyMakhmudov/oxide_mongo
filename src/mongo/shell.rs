@@ -2,7 +2,7 @@ use std::convert::TryFrom;
 use std::str::FromStr;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use chrono::{Duration as ChronoDuration, TimeZone, Utc};
+use chrono::{Duration as ChronoDuration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{
     Binary, Bson, DateTime, Decimal128, Document, JavaScriptCodeWithScope, Regex,
@@ -1075,24 +1075,83 @@ fn value_as_f64(value: &Value) -> Result<f64, String> {
     }
 }
 
-fn parse_date_constructor(parts: &[String]) -> Result<DateTime, String> {
+pub(crate) fn parse_date_constructor(parts: &[String]) -> Result<DateTime, String> {
     if parts.is_empty() {
         return Ok(DateTime::now());
+    }
+
+    fn parse_iso_like(text: &str) -> Option<DateTime> {
+        let trimmed = text.trim();
+
+        if let Ok(dt) = DateTime::parse_rfc3339_str(trimmed) {
+            return Some(dt);
+        }
+
+        let normalized_with_tz = if let Some(stripped) = trimmed.strip_suffix('Z') {
+            format!("{stripped}+00:00")
+        } else {
+            trimmed.to_string()
+        };
+
+        let tz_patterns = [
+            "%Y-%m-%dT%H:%M:%S%.f%:z",
+            "%Y-%m-%dT%H:%M:%S%:z",
+            "%Y-%m-%dT%H:%M%:z",
+            "%Y-%m-%dT%H%:z",
+            "%Y-%m-%d %H:%M:%S%.f%:z",
+            "%Y-%m-%d %H:%M:%S%:z",
+            "%Y-%m-%d %H:%M%:z",
+            "%Y-%m-%d %H%:z",
+        ];
+
+        for fmt in tz_patterns {
+            if let Ok(dt) = chrono::DateTime::parse_from_str(&normalized_with_tz, fmt) {
+                return Some(DateTime::from_millis(dt.with_timezone(&Utc).timestamp_millis()));
+            }
+        }
+
+        let naive_patterns = [
+            "%Y-%m-%dT%H:%M:%S%.f",
+            "%Y-%m-%dT%H:%M:%S",
+            "%Y-%m-%dT%H:%M",
+            "%Y-%m-%dT%H",
+            "%Y-%m-%d %H:%M:%S%.f",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d %H",
+            "%Y-%m-%d",
+        ];
+
+        for fmt in naive_patterns {
+            if let Ok(ndt) = NaiveDateTime::parse_from_str(trimmed, fmt) {
+                let dt = Utc.from_utc_datetime(&ndt);
+                return Some(DateTime::from_millis(dt.timestamp_millis()));
+            }
+        }
+
+        if let Ok(date) = NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
+            if let Some(ndt) = date.and_hms_opt(0, 0, 0) {
+                let dt = Utc.from_utc_datetime(&ndt);
+                return Some(DateTime::from_millis(dt.timestamp_millis()));
+            }
+        }
+
+        None
     }
 
     if parts.len() == 1 {
         let bson = parse_shell_bson_value(&parts[0])?;
         return match bson {
             Bson::DateTime(dt) => Ok(dt),
-            Bson::String(text) => DateTime::parse_rfc3339_str(&text)
-                .or_else(|_| {
-                    if let Ok(ms) = text.parse::<i128>() {
-                        Ok(DateTime::from_millis(ms as i64))
-                    } else {
-                        Err(())
-                    }
-                })
-                .map_err(|_| String::from(tr("Failed to convert string to date."))),
+            Bson::String(text) => {
+                if let Some(dt) = parse_iso_like(&text) {
+                    Ok(dt)
+                } else if let Ok(ms) = text.parse::<i128>() {
+                    Ok(DateTime::from_millis(ms as i64))
+                } else {
+                    Err(String::from(tr("Failed to convert string to date.")))
+                }
+            }
             Bson::Int32(value) => Ok(DateTime::from_millis(value as i64)),
             Bson::Int64(value) => Ok(DateTime::from_millis(value)),
             Bson::Double(value) => Ok(DateTime::from_millis(value as i64)),
@@ -1279,7 +1338,7 @@ pub fn bson_type_name(bson: &Bson) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{FixedOffset, TimeZone};
     use mongodb::bson::{
         Binary, DateTime, Decimal128, JavaScriptCodeWithScope, Regex, Timestamp as BsonTimestamp,
         doc, oid::ObjectId,
@@ -1482,13 +1541,22 @@ mod tests {
             Bson::ObjectId(oid)
         );
 
+        // Checking ISODate in full ISO 8601 format and date-only format
         let dt_str = "2021-03-25T11:26:20Z";
         let dt = DateTime::from_millis(1616671580000);
         assert_eq!(
             parse_shell_bson_value(&format!("ISODate(\"{dt_str}\")")).unwrap(),
             Bson::DateTime(dt)
         );
-        assert_eq!(parse_shell_bson_value("Date(1616671580000)").unwrap(), Bson::DateTime(dt));
+
+        let dt_str = "2025-12-01";
+        let dt = DateTime::from_millis(1764547200000);
+        assert_eq!(
+            parse_shell_bson_value(&format!("ISODate(\"{dt_str}\")")).unwrap(),
+            Bson::DateTime(dt)
+        );
+        assert_eq!(parse_shell_bson_value("Date(1764547200000)").unwrap(), Bson::DateTime(dt));
+
         // Проверка Date(y, m, d) (в JS месяцы 0-индексированные)
         let dt_comp = Utc.with_ymd_and_hms(2021, 3, 25, 0, 0, 0).single().unwrap();
         assert_eq!(
@@ -1634,6 +1702,34 @@ mod tests {
 
         let generic_bin = Bson::Binary(Binary { subtype: BinarySubtype::Generic, bytes: vec![1] });
         assert_eq!(bson_type_name(&generic_bin), "Binary");
+    }
+
+    #[test]
+    fn test_parse_date_constructor_iso_variants() {
+        let base_iso =
+            parse_date_constructor(&[String::from("\"2025-12-01\"")]).expect("plain ISO date");
+        let expected_base = Utc.with_ymd_and_hms(2025, 12, 1, 0, 0, 0).single().unwrap();
+        assert_eq!(base_iso, DateTime::from_millis(expected_base.timestamp_millis()));
+
+        let iso_with_time = parse_date_constructor(&[String::from("\"2025-12-01T15:30\"")])
+            .expect("ISO date with hours and minutes");
+        let expected_time = Utc.with_ymd_and_hms(2025, 12, 1, 15, 30, 0).single().unwrap();
+        assert_eq!(iso_with_time, DateTime::from_millis(expected_time.timestamp_millis()));
+
+        let iso_with_seconds_tz =
+            parse_date_constructor(&[String::from("\"2025-12-01T15:30:45+03:00\"")])
+                .expect("ISO date with timezone offset");
+        let offset = FixedOffset::east_opt(3 * 3600).unwrap();
+        let expected_tz =
+            offset.with_ymd_and_hms(2025, 12, 1, 15, 30, 45).single().unwrap().with_timezone(&Utc);
+        assert_eq!(iso_with_seconds_tz, DateTime::from_millis(expected_tz.timestamp_millis()));
+
+        let iso_with_millis_z =
+            parse_date_constructor(&[String::from("\"2025-12-01T00:00:00.123Z\"")])
+                .expect("ISO date with milliseconds and Z");
+        let expected_z = Utc.with_ymd_and_hms(2025, 12, 1, 0, 0, 0).single().unwrap()
+            + chrono::Duration::milliseconds(123);
+        assert_eq!(iso_with_millis_z, DateTime::from_millis(expected_z.timestamp_millis()));
     }
 
     #[test]
