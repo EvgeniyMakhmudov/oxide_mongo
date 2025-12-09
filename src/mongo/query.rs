@@ -3492,6 +3492,7 @@ pub fn run_collection_query(
 
             let mut response = Document::new();
             response.insert("operation", Bson::String(String::from(tr("deleteOne"))));
+            response.insert("acknowledged", Bson::Boolean(true));
             response.insert("deletedCount", deleted_bson);
 
             Ok(QueryResult::SingleDocument { document: response })
@@ -3516,6 +3517,7 @@ pub fn run_collection_query(
 
             let mut response = Document::new();
             response.insert("operation", Bson::String(String::from(tr("deleteMany"))));
+            response.insert("acknowledged", Bson::Boolean(true));
             response.insert("deletedCount", deleted_bson);
 
             Ok(QueryResult::SingleDocument { document: response })

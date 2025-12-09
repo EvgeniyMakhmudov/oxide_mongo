@@ -1274,4 +1274,93 @@ fn connection_flow_via_messages() {
         }
         other => panic!("expected aggregation documents result after updates, got {:?}", other),
     }
+
+    //
+    // Step 4.8.1: findOneAndDelete should return IT Alex (highest points among Alex).
+    //
+    let find_one_and_delete = format!(
+        "db.getCollection('{collection}').findOneAndDelete({{name: 'Alex'}}, {{sort: {{points: -1}}}})",
+        collection = collection_name_2
+    );
+    let foad_result =
+        execute_query(&mut app, secondary_tab_id, &find_one_and_delete, &shared_client);
+    match &foad_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_str("department").unwrap_or_default(), "IT");
+        }
+        other => panic!("expected single document from findOneAndDelete, got {:?}", other),
+    }
+
+    //
+    // Step 4.8.2: deleteOne remaining Alex, then verify counts.
+    //
+    let delete_one_alex = format!(
+        "db.getCollection('{collection}').deleteOne({{name: 'Alex'}})",
+        collection = collection_name_2
+    );
+    let delete_one_result =
+        execute_query(&mut app, secondary_tab_id, &delete_one_alex, &shared_client);
+    match &delete_one_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_bool("acknowledged").unwrap_or(false), true);
+            let deleted = numeric_field(document, "deletedCount").unwrap_or_default();
+            assert!(
+                (deleted - 1.0).abs() < f64::EPSILON,
+                "expected deletedCount 1, got {}",
+                deleted
+            );
+        }
+        other => panic!("expected deleteOne acknowledgment, got {:?}", other),
+    }
+
+    let find_remaining_alex = format!(
+        "db.getCollection('{collection}').find({{name: \"Alex\"}})",
+        collection = collection_name_2
+    );
+    let remaining_alex_result =
+        execute_query(&mut app, secondary_tab_id, &find_remaining_alex, &shared_client);
+    match &remaining_alex_result {
+        QueryResult::Documents(values) => assert!(values.is_empty()),
+        other => panic!("expected zero documents for remaining Alex, got {:?}", other),
+    }
+
+    let find_after_delete =
+        format!("db.getCollection('{collection}').find({{}})", collection = collection_name_2);
+    let after_delete_result =
+        execute_query(&mut app, secondary_tab_id, &find_after_delete, &shared_client);
+    match &after_delete_result {
+        QueryResult::Documents(values) => assert_eq!(values.len(), 2),
+        other => panic!("expected two documents after deleteOne, got {:?}", other),
+    }
+
+    //
+    // Step 4.8.3: deleteMany remaining positives and verify empty collection.
+    //
+    let delete_many = format!(
+        "db.getCollection('{collection}').deleteMany({{points: {{\"$gt\": 0}}}})",
+        collection = collection_name_2
+    );
+    let delete_many_result =
+        execute_query(&mut app, secondary_tab_id, &delete_many, &shared_client);
+    match &delete_many_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_bool("acknowledged").unwrap_or(false), true);
+            let deleted = numeric_field(document, "deletedCount").unwrap_or_default();
+            assert!(
+                (deleted - 2.0).abs() < f64::EPSILON,
+                "expected deletedCount 2, got {}",
+                deleted
+            );
+        }
+        other => panic!("expected deleteMany acknowledgment, got {:?}", other),
+    }
+
+    let find_after_delete_many =
+        format!("db.getCollection('{collection}').find({{}})", collection = collection_name_2);
+    let after_delete_many_result =
+        execute_query(&mut app, secondary_tab_id, &find_after_delete_many, &shared_client);
+    match &after_delete_many_result {
+        QueryResult::Documents(values) => assert!(values.is_empty()),
+        other => panic!("expected zero documents after deleteMany, got {:?}", other),
+    }
 }
