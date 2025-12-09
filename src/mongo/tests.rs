@@ -14,8 +14,7 @@ use iced::Task;
 use iced::futures::{StreamExt, executor::block_on};
 use iced::widget::text_editor::Content as TextEditorContent;
 use iced_runtime::{Action as RuntimeAction, task as runtime_task};
-use mongodb::bson::{self, Bson, Document, doc};
-use mongodb::options::ReturnDocument;
+use mongodb::bson::{self, Bson, Document};
 use mongodb::sync::Client;
 use std::env;
 use std::fs;
@@ -177,6 +176,7 @@ impl App {
             .map(|tab| (tab.collection.skip_value(), tab.collection.limit_value()))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn test_collection_last_result(&self, tab_id: TabId) -> Option<QueryResult> {
         self.tabs
             .iter()
@@ -189,6 +189,7 @@ impl App {
         if secs == 0 { None } else { Some(Duration::from_secs(secs)) }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn test_first_root_node_id(&self, tab_id: TabId) -> Option<usize> {
         self.tabs
             .iter()
@@ -800,7 +801,7 @@ fn connection_flow_via_messages() {
 
     let value_modal_context =
         app.test_value_modal_context().expect("value modal context should be available");
-    let (value_client_id, value_db_name, value_collection, value_filter, value_path) =
+    let (value_client_id, _value_db_name, _value_collection, value_filter, value_path) =
         value_modal_context;
     assert_eq!(value_client_id, client_id);
     assert_eq!(value_path, "array1.1");
@@ -854,10 +855,10 @@ fn connection_flow_via_messages() {
     let insert_many_collection_2 = format!(
         concat!(
             "db.getCollection('{collection}').insertMany([\n",
-            "    {{ \"name\": \"Alex\", \"department\": \"IT\", \"starts\": ISODate(\"2020-02-01\"), \"points\": 10 }},\n",
-            "    {{ \"name\": \"Alex\", \"department\": \"Support\", \"starts\": ISODate(\"2018-03-10\"), \"points\": 8 }},\n",
-            "    {{ \"name\": \"Anya\", \"department\": \"IT\", \"starts\": ISODate(\"2020-06-15\"), \"points\": 20 }},\n",
-            "    {{ \"name\": \"Mark\", \"department\": \"Devops\", \"starts\": ISODate(\"2019-05-01\"), \"points\": 12 }}\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"IT\", \"starts\": ISODate(\"2020-02-01\"), \"points\": 10}},\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"Support\", \"starts\": ISODate(\"2018-03-10\"), \"points\": 8}},\n",
+            "    {{ \"name\": \"Anya\", \"department\": \"IT\", \"starts\": ISODate(\"2020-06-15\"), \"points\": 20}},\n",
+            "    {{ \"name\": \"Mark\", \"department\": \"Devops\", \"starts\": ISODate(\"2019-05-01\"), \"points\": 12}}\n",
             "])"
         ),
         collection = collection_name_2
@@ -975,5 +976,302 @@ fn connection_flow_via_messages() {
             }
         }
         other => panic!("expected aggregation documents result, got {:?}", other),
+    }
+
+    let numeric_field = |document: &Document, key: &str| -> Option<f64> {
+        match document.get(key) {
+            Some(Bson::Int32(v)) => Some(*v as f64),
+            Some(Bson::Int64(v)) => Some(*v as f64),
+            Some(Bson::Double(v)) => Some(*v),
+            _ => None,
+        }
+    };
+
+    //
+    // Step 4.5: Distinct by name with points filter should return Alex, Anya, and Mark.
+    //
+    let distinct_names = format!(
+        "db.getCollection('{collection}').distinct('name', {{points: {{\"$lte\": 20}}}})",
+        collection = collection_name_2
+    );
+    let distinct_result =
+        execute_query(&mut app, secondary_tab_id, &distinct_names, &shared_client);
+    match &distinct_result {
+        QueryResult::Distinct { field, values } => {
+            assert_eq!(field, "name");
+            let mut names: Vec<String> =
+                values.iter().filter_map(|b| b.as_str().map(|s| s.to_string())).collect();
+            names.sort();
+            assert_eq!(names, vec!["Alex".to_string(), "Anya".to_string(), "Mark".to_string()]);
+        }
+        other => panic!("expected distinct result for names, got {:?}", other),
+    }
+
+    //
+    // Step 4.6.1: count() should report 4 documents.
+    //
+    let count_all =
+        format!("db.getCollection('{collection}').count()", collection = collection_name_2);
+    let count_all_result = execute_query(&mut app, secondary_tab_id, &count_all, &shared_client);
+    match &count_all_result {
+        QueryResult::Count { value } => assert_eq!(*value, Bson::Int64(4)),
+        other => panic!("expected count result with value 4, got {:?}", other),
+    }
+
+    //
+    // Step 4.6.2: countDocuments() should report 4 documents.
+    //
+    let count_documents = format!(
+        "db.getCollection('{collection}').countDocuments()",
+        collection = collection_name_2
+    );
+    let count_documents_result =
+        execute_query(&mut app, secondary_tab_id, &count_documents, &shared_client);
+    match &count_documents_result {
+        QueryResult::Count { value } => assert_eq!(*value, Bson::Int64(4)),
+        other => panic!("expected countDocuments result with value 4, got {:?}", other),
+    }
+
+    //
+    // Step 4.6.3: estimatedDocumentCount() should report 4 documents.
+    //
+    let estimated_count = format!(
+        "db.getCollection('{collection}').estimatedDocumentCount()",
+        collection = collection_name_2
+    );
+    let estimated_count_result =
+        execute_query(&mut app, secondary_tab_id, &estimated_count, &shared_client);
+    match &estimated_count_result {
+        QueryResult::Count { value } => assert_eq!(*value, Bson::Int64(4)),
+        other => panic!("expected estimatedDocumentCount result with value 4, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.1: findOneAndUpdate should return the original document with points 10 for Alex (IT).
+    //
+    let find_one_and_update = format!(
+        "db.getCollection('{collection}').findOneAndUpdate({{name: 'Alex', department: 'IT'}}, {{\"$set\": {{\"points\": 20}}}})",
+        collection = collection_name_2
+    );
+    let fou_result =
+        execute_query(&mut app, secondary_tab_id, &find_one_and_update, &shared_client);
+    match &fou_result {
+        QueryResult::SingleDocument { document } => {
+            let points = document
+                .get("points")
+                .and_then(|b| match b {
+                    Bson::Int32(v) => Some(*v as f64),
+                    Bson::Int64(v) => Some(*v as f64),
+                    Bson::Double(v) => Some(*v),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            assert!(
+                (points - 10.0).abs() < f64::EPSILON,
+                "findOneAndUpdate should return original document, got {}",
+                points
+            );
+        }
+        other => panic!("expected single document result for findOneAndUpdate, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.2: updateOne on Anya should acknowledge and modify one document.
+    //
+    let update_one = format!(
+        "db.getCollection('{collection}').updateOne({{name: 'Anya'}}, {{\"$set\": {{points: 30}}}})",
+        collection = collection_name_2
+    );
+    let update_one_result = execute_query(&mut app, secondary_tab_id, &update_one, &shared_client);
+    match &update_one_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_bool("acknowledged").unwrap_or(false), true);
+            let matched = numeric_field(document, "matchedCount").unwrap_or_default();
+            let modified = numeric_field(document, "modifiedCount").unwrap_or_default();
+            assert!(
+                (matched - 1.0).abs() < f64::EPSILON,
+                "expected matchedCount 1, got {}",
+                matched
+            );
+            assert!(
+                (modified - 1.0).abs() < f64::EPSILON,
+                "expected modifiedCount 1, got {}",
+                modified
+            );
+        }
+        other => panic!("expected updateOne acknowledgment, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.3: findAndModify should return original Support Alex with points 8.
+    //
+    let find_and_modify = format!(
+        "db.getCollection('{collection}').findAndModify({{query: {{name: 'Alex', department: 'Support'}}, update:{{\"$inc\": {{points: 20}}}}}})",
+        collection = collection_name_2
+    );
+    let fam_result = execute_query(&mut app, secondary_tab_id, &find_and_modify, &shared_client);
+    match &fam_result {
+        QueryResult::SingleDocument { document } => {
+            let points = document
+                .get("points")
+                .and_then(|b| match b {
+                    Bson::Int32(v) => Some(*v as f64),
+                    Bson::Int64(v) => Some(*v as f64),
+                    Bson::Double(v) => Some(*v),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            assert!(
+                (points - 8.0).abs() < f64::EPSILON,
+                "findAndModify should return original Support Alex points 8, got {}",
+                points
+            );
+        }
+        other => panic!("expected findAndModify to return original document, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.4: findAndModify with new=true should return updated Support Alex with points 18.
+    //
+    let find_and_modify_new = format!(
+        "db.getCollection('{collection}').findAndModify({{query: {{name: 'Alex', department: 'Support'}}, update:{{\"$inc\": {{points: -10}}}}, new: true}})",
+        collection = collection_name_2
+    );
+    let fam_new_result =
+        execute_query(&mut app, secondary_tab_id, &find_and_modify_new, &shared_client);
+    match &fam_new_result {
+        QueryResult::SingleDocument { document } => {
+            let points = document
+                .get("points")
+                .and_then(|b| match b {
+                    Bson::Int32(v) => Some(*v as f64),
+                    Bson::Int64(v) => Some(*v as f64),
+                    Bson::Double(v) => Some(*v),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            assert!(
+                (points - 18.0).abs() < f64::EPSILON,
+                "findAndModify with new=true should return points 18, got {}",
+                points
+            );
+        }
+        other => panic!("expected findAndModify with new=true, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.5: findOneAndReplace should return original Mark document with points 12.
+    //
+    let find_one_and_replace = format!(
+        "db.getCollection('{collection}').findOneAndReplace({{name: 'Mark'}}, {{name: 'Markus', department: 'Devops', \"starts\": ISODate(\"2019-05-01\"), points: 22}})",
+        collection = collection_name_2
+    );
+    let foar_result =
+        execute_query(&mut app, secondary_tab_id, &find_one_and_replace, &shared_client);
+    match &foar_result {
+        QueryResult::SingleDocument { document } => {
+            let points = document
+                .get("points")
+                .and_then(|b| match b {
+                    Bson::Int32(v) => Some(*v as f64),
+                    Bson::Int64(v) => Some(*v as f64),
+                    Bson::Double(v) => Some(*v),
+                    _ => None,
+                })
+                .unwrap_or_default();
+            assert!(
+                (points - 12.0).abs() < f64::EPSILON,
+                "findAndModify with new=true should return points 12, got {}",
+                points
+            );
+        }
+        other => panic!("expected original document from findOneAndReplace, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.6: replaceOne on Markus should acknowledge one modification.
+    //
+    let replace_one = format!(
+        "db.getCollection('{collection}').replaceOne({{name: 'Markus'}}, {{name: 'Markus', department: 'Devops', \"starts\": ISODate(\"2019-05-01\"), points: 25}})",
+        collection = collection_name_2
+    );
+    let replace_one_result =
+        execute_query(&mut app, secondary_tab_id, &replace_one, &shared_client);
+    match &replace_one_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_bool("acknowledged").unwrap_or(false), true);
+            let matched = numeric_field(document, "matchedCount").unwrap_or_default();
+            let modified = numeric_field(document, "modifiedCount").unwrap_or_default();
+            assert!(
+                (matched - 1.0).abs() < f64::EPSILON,
+                "expected matchedCount 1, got {}",
+                matched
+            );
+            assert!(
+                (modified - 1.0).abs() < f64::EPSILON,
+                "expected modifiedCount 1, got {}",
+                modified
+            );
+        }
+        other => panic!("expected replaceOne acknowledgment, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.7: updateMany should touch all documents with points > 0 (increment points by 100).
+    //
+    let update_many = format!(
+        "db.getCollection('{collection}').updateMany({{points: {{\"$gt\": 0}}}}, {{\"$inc\": {{points: 100}}}})",
+        collection = collection_name_2
+    );
+    let update_many_result =
+        execute_query(&mut app, secondary_tab_id, &update_many, &shared_client);
+    match &update_many_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_bool("acknowledged").unwrap_or(false), true);
+            let matched = numeric_field(document, "matchedCount").unwrap_or_default();
+            let modified = numeric_field(document, "modifiedCount").unwrap_or_default();
+            assert!(
+                (matched - 4.0).abs() < f64::EPSILON,
+                "expected matchedCount 4, got {}",
+                matched
+            );
+            assert!(
+                (modified - 4.0).abs() < f64::EPSILON,
+                "expected modifiedCount 4, got {}",
+                modified
+            );
+        }
+        other => panic!("expected updateMany acknowledgment, got {:?}", other),
+    }
+
+    //
+    // Step 4.7.8: Aggregation after updates should produce total points of 493.
+    //
+    let aggregate_points_after = format!(
+        concat!(
+            "db.getCollection('{collection}').aggregate([",
+            "{{\"$group\": {{\"_id\": null, \"value\": {{\"$sum\": \"$points\"}}}}}}",
+            "])"
+        ),
+        collection = collection_name_2
+    );
+    let aggregate_after_result =
+        execute_query(&mut app, secondary_tab_id, &aggregate_points_after, &shared_client);
+    match &aggregate_after_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 1);
+            if let Some(doc) = values.first().and_then(|b| b.as_document()) {
+                let value_bson = doc.get("value").cloned().unwrap_or(Bson::Null);
+                match value_bson {
+                    Bson::Double(v) => assert!((v - 493.0).abs() < f64::EPSILON),
+                    Bson::Int32(v) => assert_eq!(v, 493),
+                    Bson::Int64(v) => assert_eq!(v, 493),
+                    other => panic!("expected numeric value 493, got {:?}", other),
+                }
+            } else {
+                panic!("aggregate result missing document payload after updates");
+            }
+        }
+        other => panic!("expected aggregation documents result after updates, got {:?}", other),
     }
 }

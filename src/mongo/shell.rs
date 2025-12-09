@@ -1036,7 +1036,7 @@ pub fn parse_shell_bson_value(source: &str) -> Result<Bson, String> {
     serde_json::from_str(&normalized).map_err(|error| format!("JSON parse error: {error}"))
 }
 
-fn value_as_bool(value: &Value) -> Result<bool, String> {
+pub(crate) fn value_as_bool(value: &Value) -> Result<bool, String> {
     if let Some(flag) = value.as_bool() {
         Ok(flag)
     } else if let Some(number) = value.as_i64() {
@@ -1054,7 +1054,7 @@ fn value_as_bool(value: &Value) -> Result<bool, String> {
     }
 }
 
-fn value_as_f64(value: &Value) -> Result<f64, String> {
+pub(crate) fn value_as_f64(value: &Value) -> Result<f64, String> {
     if let Some(number) = value.as_f64() {
         Ok(number)
     } else if let Some(number) = value.as_i64() {

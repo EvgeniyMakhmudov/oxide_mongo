@@ -2239,7 +2239,7 @@ impl<'a> QueryParser<'a> {
     fn parse_shell_json_value(source: &str) -> Result<Value, String> {
         let quoted = quote_unquoted_keys(source);
         let normalized = Self::preprocess_shell_json(&quoted)?;
-        serde_json::from_str(&normalized).map_err(|error| format!("JSON parse error: {error}"))
+        crate::mongo::shell::parse_shell_json_value(&normalized)
     }
 
     fn preprocess_shell_json(source: &str) -> Result<String, String> {
@@ -2969,48 +2969,15 @@ impl<'a> QueryParser<'a> {
 
     fn parse_shell_bson_value(source: &str) -> Result<Bson, String> {
         let normalized = Self::preprocess_shell_json(source)?;
-        serde_json::from_str(&normalized).map_err(|error| format!("JSON parse error: {error}"))
+        crate::mongo::shell::parse_shell_bson_value(&normalized)
     }
 
     fn value_as_bool(value: &Value) -> Result<bool, String> {
-        if let Some(flag) = value.as_bool() {
-            Ok(flag)
-        } else if let Some(number) = value.as_i64() {
-            Ok(number != 0)
-        } else if let Some(number) = value.as_u64() {
-            Ok(number != 0)
-        } else if let Some(text) = value.as_str() {
-            match text.trim().to_lowercase().as_str() {
-                "true" | "1" => Ok(true),
-                "false" | "0" => Ok(false),
-                _ => Err(String::from(tr("String must be true or false."))),
-            }
-        } else {
-            Err(String::from(tr(
-                "Value must be boolean, numeric, or a string equal to true/false.",
-            )))
-        }
+        crate::mongo::shell::value_as_bool(value)
     }
 
     fn value_as_f64(value: &Value) -> Result<f64, String> {
-        if let Some(number) = value.as_f64() {
-            Ok(number)
-        } else if let Some(number) = value.as_i64() {
-            Ok(number as f64)
-        } else if let Some(number) = value.as_u64() {
-            Ok(number as f64)
-        } else if let Some(text) = value.as_str() {
-            match text.trim().to_lowercase().as_str() {
-                "infinity" => Ok(f64::INFINITY),
-                "-infinity" => Ok(f64::NEG_INFINITY),
-                "nan" => Ok(f64::NAN),
-                other => other
-                    .parse::<f64>()
-                    .map_err(|_| String::from(tr("Failed to convert string value to number."))),
-            }
-        } else {
-            Err(String::from(tr("Value must be a number or a string.")))
-        }
+        crate::mongo::shell::value_as_f64(value)
     }
 
     fn parse_timestamp_seconds(value: &str) -> Result<u32, String> {
@@ -3443,6 +3410,7 @@ pub fn run_collection_query(
 
             let mut response = Document::new();
             response.insert("operation", Bson::String(String::from(tr("updateOne"))));
+            response.insert("acknowledged", Bson::Boolean(true));
             response.insert("matchedCount", u64_to_bson(result.matched_count));
             response.insert("modifiedCount", u64_to_bson(result.modified_count));
             if let Some(id) = result.upserted_id {
@@ -3495,6 +3463,7 @@ pub fn run_collection_query(
 
             let mut response = Document::new();
             response.insert("operation", Bson::String(String::from(tr("updateMany"))));
+            response.insert("acknowledged", Bson::Boolean(true));
             response.insert("matchedCount", u64_to_bson(result.matched_count));
             response.insert("modifiedCount", u64_to_bson(result.modified_count));
             if let Some(id) = result.upserted_id {
@@ -3584,6 +3553,7 @@ pub fn run_collection_query(
 
             let mut response = Document::new();
             response.insert("operation", Bson::String(String::from(tr("replaceOne"))));
+            response.insert("acknowledged", Bson::Boolean(true));
             response.insert("matchedCount", u64_to_bson(result.matched_count));
             response.insert("modifiedCount", u64_to_bson(result.modified_count));
             if let Some(id) = result.upserted_id {
