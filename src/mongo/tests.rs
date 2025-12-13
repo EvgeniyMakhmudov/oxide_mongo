@@ -1455,4 +1455,160 @@ fn connection_flow_via_messages() {
             "starts_1".to_string()
         ]
     );
+
+    //
+    // Step 5.4.1: Explain plan for Mark should use name_asc index.
+    //
+    let explain_query = format!(
+        "db.getCollection('{collection}').find({{\"name\": \"Mark\"}}).explain()",
+        collection = collection_name_2
+    );
+    let explain_result = execute_query(&mut app, secondary_tab_id, &explain_query, &shared_client);
+    let plan_doc = match &explain_result {
+        QueryResult::SingleDocument { document } => document,
+        other => panic!("expected explain to return a single document, got {:?}", other),
+    };
+    let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
+    let winning_plan =
+        planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
+    let input_stage = winning_plan
+        .get_document("inputStage")
+        .or_else(|_| {
+            winning_plan
+                .get_array("inputStage")
+                .ok()
+                .and_then(|arr| arr.first().and_then(|b| b.as_document()))
+                .ok_or(())
+        })
+        .map(|doc| doc.clone())
+        .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan));
+
+    let stage = input_stage.get_str("stage").unwrap_or_default();
+    assert_eq!(stage, "IXSCAN");
+    let index_name = input_stage.get_str("indexName").unwrap_or_default();
+    assert_eq!(index_name, "name_asc");
+
+    //
+    // Step 5.4.2: explain().find(...).finish() should produce the same plan.
+    //
+    let explain_chain_query = format!(
+        "db.getCollection('{collection}').explain().find({{\"name\": \"Mark\"}}).finish()",
+        collection = collection_name_2
+    );
+    let explain_chain_result =
+        execute_query(&mut app, secondary_tab_id, &explain_chain_query, &shared_client);
+    let plan_doc = match &explain_chain_result {
+        QueryResult::SingleDocument { document } => document,
+        other => panic!("expected explain chain to return a single document, got {:?}", other),
+    };
+    let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
+    let winning_plan =
+        planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
+    let input_stage = winning_plan
+        .get_document("inputStage")
+        .or_else(|_| {
+            winning_plan
+                .get_array("inputStage")
+                .ok()
+                .and_then(|arr| arr.first().and_then(|b| b.as_document()))
+                .ok_or(())
+        })
+        .map(|doc| doc.clone())
+        .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan));
+
+    let stage = input_stage.get_str("stage").unwrap_or_default();
+    assert_eq!(stage, "IXSCAN");
+    let index_name = input_stage.get_str("indexName").unwrap_or_default();
+    assert_eq!(index_name, "name_asc");
+
+    //
+    // Step 5.5: Hide index and expect COLLSCAN in explain.
+    //
+    let hide_index = format!(
+        "db.getCollection('{collection}').hideIndex(\"name_asc\")",
+        collection = collection_name_2
+    );
+    let hide_index_result = execute_query(&mut app, secondary_tab_id, &hide_index, &shared_client);
+    match &hide_index_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_f64("ok").unwrap_or_default(), 1.0);
+        }
+        other => panic!("expected hideIndex response, got {:?}", other),
+    }
+
+    let explain_after_hide = format!(
+        "db.getCollection('{collection}').find({{\"name\": \"Mark\"}}).explain()",
+        collection = collection_name_2
+    );
+    let explain_after_hide_result =
+        execute_query(&mut app, secondary_tab_id, &explain_after_hide, &shared_client);
+    let plan_doc = match &explain_after_hide_result {
+        QueryResult::SingleDocument { document } => document,
+        other => panic!("expected explain after hide to return a single document, got {:?}", other),
+    };
+    let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
+    let winning_plan =
+        planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
+    let input_stage = winning_plan
+        .get_document("inputStage")
+        .or_else(|_| {
+            winning_plan
+                .get_array("inputStage")
+                .ok()
+                .and_then(|arr| arr.first().and_then(|b| b.as_document()))
+                .ok_or(())
+        })
+        .map(|doc| doc.clone())
+        .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan));
+
+    let stage = input_stage.get_str("stage").unwrap_or_default();
+    assert_eq!(stage, "COLLSCAN");
+
+    //
+    // Step 5.6: Unhide index and expect IXSCAN on name_asc.
+    //
+    let unhide_index = format!(
+        "db.getCollection('{collection}').unhideIndex(\"name_asc\")",
+        collection = collection_name_2
+    );
+    let unhide_index_result =
+        execute_query(&mut app, secondary_tab_id, &unhide_index, &shared_client);
+    match &unhide_index_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_f64("ok").unwrap_or_default(), 1.0);
+        }
+        other => panic!("expected unhideIndex response, got {:?}", other),
+    }
+
+    let explain_after_unhide = format!(
+        "db.getCollection('{collection}').find({{\"name\": \"Mark\"}}).explain()",
+        collection = collection_name_2
+    );
+    let explain_after_unhide_result =
+        execute_query(&mut app, secondary_tab_id, &explain_after_unhide, &shared_client);
+    let plan_doc = match &explain_after_unhide_result {
+        QueryResult::SingleDocument { document } => document,
+        other => {
+            panic!("expected explain after unhide to return a single document, got {:?}", other)
+        }
+    };
+    let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
+    let winning_plan =
+        planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
+    let input_stage = winning_plan
+        .get_document("inputStage")
+        .or_else(|_| {
+            winning_plan
+                .get_array("inputStage")
+                .ok()
+                .and_then(|arr| arr.first().and_then(|b| b.as_document()))
+                .ok_or(())
+        })
+        .map(|doc| doc.clone())
+        .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan));
+
+    let stage = input_stage.get_str("stage").unwrap_or_default();
+    assert_eq!(stage, "IXSCAN");
+    let index_name = input_stage.get_str("indexName").unwrap_or_default();
+    assert_eq!(index_name, "name_asc");
 }

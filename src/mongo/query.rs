@@ -1343,6 +1343,51 @@ impl<'a> QueryParser<'a> {
                     let duration = Self::parse_find_max_time_argument(args_trimmed)?;
                     modifiers.max_time = Some(duration);
                 }
+                "explain" => {
+                    if !args_trimmed.is_empty() {
+                        return Err(String::from(tr("explain does not take any arguments.")));
+                    }
+                    if !rest.trim().is_empty() {
+                        return Err(String::from(tr("No methods are supported after explain().")));
+                    }
+
+                    let mut find_doc = Document::new();
+                    find_doc.insert("find", Bson::String(self.collection.to_string()));
+                    find_doc.insert("filter", Bson::Document(filter.clone()));
+
+                    if let Some(sort) = modifiers.sort {
+                        find_doc.insert("sort", Bson::Document(sort));
+                    }
+                    if let Some(hint) = modifiers.hint {
+                        let hint_bson = match hint {
+                            Hint::Name(name) => Bson::String(name),
+                            Hint::Keys(doc) => Bson::Document(doc),
+                            other => {
+                                return Err(tr_format(
+                                    "Unsupported hint value in explain: {:?}",
+                                    &[&format!("{other:?}")],
+                                ));
+                            }
+                        };
+                        find_doc.insert("hint", hint_bson);
+                    }
+                    if let Some(skip) = modifiers.skip {
+                        find_doc.insert("skip", u64_to_bson(skip));
+                    }
+                    if let Some(limit) = modifiers.limit {
+                        find_doc.insert("limit", u64_to_bson(limit));
+                    }
+                    if let Some(max_time) = modifiers.max_time {
+                        find_doc.insert("maxTimeMS", Bson::Int64(max_time.as_millis() as i64));
+                    }
+
+                    let mut command = Document::new();
+                    command.insert("explain", Bson::Document(find_doc));
+                    return Ok(QueryOperation::DatabaseCommand {
+                        db: self.db_name.to_string(),
+                        command,
+                    });
+                }
                 "count" | "countDocuments" => {
                     return self.finish_find_with_count(filter, modifiers, args_trimmed, rest);
                 }
