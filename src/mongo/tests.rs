@@ -1363,4 +1363,96 @@ fn connection_flow_via_messages() {
         QueryResult::Documents(values) => assert!(values.is_empty()),
         other => panic!("expected zero documents after deleteMany, got {:?}", other),
     }
+
+    //
+    // Step 5.1: Create single index and verify via getIndexes.
+    //
+    let create_index = format!(
+        "db.getCollection('{collection}').createIndex({{name: 1}}, {{name: \"name_asc\", expireAfterSeconds: 3600}})",
+        collection = collection_name_2
+    );
+    let create_index_result =
+        execute_query(&mut app, secondary_tab_id, &create_index, &shared_client);
+    match &create_index_result {
+        QueryResult::SingleDocument { .. } => {}
+        other => panic!("expected createIndex response document, got {:?}", other),
+    }
+
+    let get_indexes =
+        format!("db.getCollection('{collection}').getIndexes()", collection = collection_name_2);
+    let get_indexes_result =
+        execute_query(&mut app, secondary_tab_id, &get_indexes, &shared_client);
+    let index_names: Vec<String> = match &get_indexes_result {
+        QueryResult::Indexes(values) => values
+            .iter()
+            .filter_map(|b| b.as_document())
+            .filter_map(|doc| doc.get_str("name").ok().map(|s| s.to_string()))
+            .collect(),
+        other => panic!("expected index list, got {:?}", other),
+    };
+    assert_eq!(index_names.len(), 2);
+    assert!(index_names.contains(&String::from("_id_")));
+    assert!(index_names.contains(&String::from("name_asc")));
+
+    //
+    // Step 5.2: Reinsert documents for further index tests.
+    //
+    let insert_many_again = format!(
+        concat!(
+            "db.getCollection('{collection}').insertMany([\\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"IT\", \"starts\": ISODate(\"2020-02-01\"), \"points\": 10, \"scores\": 1 }},\\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"Support\", \"starts\": ISODate(\"2018-03-10\"), \"points\": 8, \"scores\": 1 }},\\n",
+            "    {{ \"name\": \"Anya\", \"department\": \"IT\", \"starts\": ISODate(\"2020-06-15\"), \"points\": 20, \"scores\": 1 }},\\n",
+            "    {{ \"name\": \"Mark\", \"department\": \"Devops\", \"starts\": ISODate(\"2019-05-01\"), \"points\": 12, \"scores\": 1 }}\\n",
+            "])"
+        ),
+        collection = collection_name_2
+    );
+    let insert_again_result =
+        execute_query(&mut app, secondary_tab_id, &insert_many_again, &shared_client);
+    match &insert_again_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_str("operation").unwrap_or_default(), "insertMany");
+            assert_eq!(document.get_i64("insertedCount").unwrap_or_default(), 4);
+        }
+        other => panic!("expected insertMany result on reinsertion, got {:?}", other),
+    }
+
+    //
+    // Step 5.3: Create multiple indexes and verify names list.
+    //
+    let create_indexes = format!(
+        "db.getCollection('{collection}').createIndexes([{{starts: 1}}, {{points: -1}}, {{name: 1, points: -1}}])",
+        collection = collection_name_2
+    );
+    let create_indexes_result =
+        execute_query(&mut app, secondary_tab_id, &create_indexes, &shared_client);
+    match &create_indexes_result {
+        QueryResult::SingleDocument { .. } => {}
+        other => panic!("expected createIndexes response document, got {:?}", other),
+    }
+
+    let get_indexes_full =
+        format!("db.getCollection('{collection}').getIndexes()", collection = collection_name_2);
+    let get_indexes_full_result =
+        execute_query(&mut app, secondary_tab_id, &get_indexes_full, &shared_client);
+    let mut full_index_names: Vec<String> = match &get_indexes_full_result {
+        QueryResult::Indexes(values) => values
+            .iter()
+            .filter_map(|b| b.as_document())
+            .filter_map(|doc| doc.get_str("name").ok().map(|s| s.to_string()))
+            .collect(),
+        other => panic!("expected index list after createIndexes, got {:?}", other),
+    };
+    full_index_names.sort();
+    assert_eq!(
+        full_index_names,
+        vec![
+            "_id_".to_string(),
+            "name_1_points_-1".to_string(),
+            "name_asc".to_string(),
+            "points_-1".to_string(),
+            "starts_1".to_string()
+        ]
+    );
 }
