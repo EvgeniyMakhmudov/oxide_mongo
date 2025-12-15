@@ -9,7 +9,7 @@ use crate::ui::connections::{ConnectionEntry, ConnectionFormState, ConnectionsWi
 use crate::ui::menues::{
     CollectionContextAction, ConnectionContextAction, DatabaseContextAction, MenuEntry, TopMenu,
 };
-use crate::{App, AppMode, ClientId, Message, TabId, TableContextAction};
+use crate::{App, AppMode, ClientId, DEFAULT_RESULT_LIMIT, Message, TabId, TableContextAction};
 use iced::Task;
 use iced::futures::{StreamExt, executor::block_on};
 use iced::widget::text_editor::Content as TextEditorContent;
@@ -1611,4 +1611,228 @@ fn connection_flow_via_messages() {
     assert_eq!(stage, "IXSCAN");
     let index_name = input_stage.get_str("indexName").unwrap_or_default();
     assert_eq!(index_name, "name_asc");
+
+    //
+    // Step 5.7: dropIndex should remove name_asc and explain should fall back to COLLSCAN.
+    //
+    let drop_index = format!(
+        "db.getCollection('{collection}').dropIndex(\"name_asc\")",
+        collection = collection_name_2
+    );
+    let drop_index_result = execute_query(&mut app, secondary_tab_id, &drop_index, &shared_client);
+    match &drop_index_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_f64("ok").unwrap_or_default(), 1.0);
+        }
+        other => panic!("expected dropIndex response, got {:?}", other),
+    }
+
+    let explain_after_drop = format!(
+        "db.getCollection('{collection}').find({{\"name\": \"Mark\"}}).explain()",
+        collection = collection_name_2
+    );
+    let explain_after_drop_result =
+        execute_query(&mut app, secondary_tab_id, &explain_after_drop, &shared_client);
+    let plan_doc = match &explain_after_drop_result {
+        QueryResult::SingleDocument { document } => document,
+        other => panic!("expected explain after drop to return a single document, got {:?}", other),
+    };
+    let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
+    let winning_plan =
+        planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
+    let input_stage = winning_plan
+        .get_document("inputStage")
+        .or_else(|_| {
+            winning_plan
+                .get_array("inputStage")
+                .ok()
+                .and_then(|arr| arr.first().and_then(|b| b.as_document()))
+                .ok_or(())
+        })
+        .map(|doc| doc.clone())
+        .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan));
+    assert_eq!(input_stage.get_str("stage").unwrap_or_default(), "COLLSCAN");
+
+    let get_indexes_after_drop =
+        format!("db.getCollection('{collection}').getIndexes()", collection = collection_name_2);
+    let get_indexes_after_drop_result =
+        execute_query(&mut app, secondary_tab_id, &get_indexes_after_drop, &shared_client);
+    let mut remaining_indexes: Vec<String> = match &get_indexes_after_drop_result {
+        QueryResult::Indexes(values) => values
+            .iter()
+            .filter_map(|b| b.as_document())
+            .filter_map(|doc| doc.get_str("name").ok().map(|s| s.to_string()))
+            .collect(),
+        other => panic!("expected index list after dropIndex, got {:?}", other),
+    };
+    remaining_indexes.sort();
+    assert_eq!(
+        remaining_indexes,
+        vec![
+            "_id_".to_string(),
+            "name_1_points_-1".to_string(),
+            "points_-1".to_string(),
+            "starts_1".to_string()
+        ]
+    );
+
+    //
+    // Step 6.1: sort by starts ascending should begin with 2018-03-10 and end with 2020-06-15.
+    //
+    let sort_starts_asc = format!(
+        "db.getCollection('{collection}').find({{}}).sort({{'starts': 1}})",
+        collection = collection_name_2
+    );
+    let sort_starts_asc_result =
+        execute_query(&mut app, secondary_tab_id, &sort_starts_asc, &shared_client);
+    match &sort_starts_asc_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 4);
+            let first = values.first().and_then(|b| b.as_document()).unwrap();
+            let last = values.last().and_then(|b| b.as_document()).unwrap();
+            assert_eq!(first.get_str("starts").unwrap_or_default(), "2018-03-10T00:00:00Z");
+            assert_eq!(last.get_str("starts").unwrap_or_default(), "2020-06-15T00:00:00Z");
+        }
+        other => panic!("expected sorted documents by starts asc, got {:?}", other),
+    }
+
+    //
+    // Step 6.2: sort by starts descending should begin with 2020-06-15 and end with 2018-03-10.
+    //
+    let sort_starts_desc = format!(
+        "db.getCollection('{collection}').find({{}}).sort({{'starts': -1}})",
+        collection = collection_name_2
+    );
+    let sort_starts_desc_result =
+        execute_query(&mut app, secondary_tab_id, &sort_starts_desc, &shared_client);
+    match &sort_starts_desc_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 4);
+            let first = values.first().and_then(|b| b.as_document()).unwrap();
+            let last = values.last().and_then(|b| b.as_document()).unwrap();
+            assert_eq!(first.get_str("starts").unwrap_or_default(), "2020-06-15T00:00:00Z");
+            assert_eq!(last.get_str("starts").unwrap_or_default(), "2018-03-10T00:00:00Z");
+        }
+        other => panic!("expected sorted documents by starts desc, got {:?}", other),
+    }
+
+    //
+    // Step 6.3: sort by points descending should start with 20 and end with 8.
+    //
+    let sort_points_desc = format!(
+        "db.getCollection('{collection}').find({{}}).sort({{'points': -1}})",
+        collection = collection_name_2
+    );
+    let sort_points_desc_result =
+        execute_query(&mut app, secondary_tab_id, &sort_points_desc, &shared_client);
+    match &sort_points_desc_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 4);
+            let first = values.first().and_then(|b| b.as_document()).unwrap();
+            let last = values.last().and_then(|b| b.as_document()).unwrap();
+            assert_eq!(first.get_i32("points").unwrap_or_default(), 20);
+            assert_eq!(last.get_i32("points").unwrap_or_default(), 8);
+        }
+        other => panic!("expected sorted documents by points desc, got {:?}", other),
+    }
+
+    //
+    // Step 6.4: sort by points ascending for Alex should start with 8 then 10.
+    //
+    let sort_alex_points = format!(
+        "db.getCollection('{collection}').find({{name: \"Alex\"}}).sort({{'points': 1}})",
+        collection = collection_name_2
+    );
+    let sort_alex_points_result =
+        execute_query(&mut app, secondary_tab_id, &sort_alex_points, &shared_client);
+    match &sort_alex_points_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 2);
+            let first = values.first().and_then(|b| b.as_document()).unwrap();
+            let last = values.last().and_then(|b| b.as_document()).unwrap();
+            assert_eq!(first.get_i32("points").unwrap_or_default(), 8);
+            assert_eq!(last.get_i32("points").unwrap_or_default(), 10);
+        }
+        other => panic!("expected sorted Alex documents by points asc, got {:?}", other),
+    }
+
+    let _extract_input_stage = |plan_doc: &Document| -> Document {
+        let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
+        let winning_plan =
+            planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
+        winning_plan
+            .get_document("inputStage")
+            .or_else(|_| {
+                winning_plan
+                    .get_array("inputStage")
+                    .ok()
+                    .and_then(|arr| arr.first().and_then(|b| b.as_document()))
+                    .ok_or(())
+            })
+            .map(|doc| doc.clone())
+            .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan))
+    };
+
+    //
+    // Step 7.1: hint to points_-1 should order Alex docs by points descending (10 then 8).
+    //
+    let hint_points_desc = format!(
+        "db.getCollection('{collection}').find({{name: \"Alex\"}}).hint('points_-1')",
+        collection = collection_name_2
+    );
+    let hint_points_desc_result =
+        execute_query(&mut app, secondary_tab_id, &hint_points_desc, &shared_client);
+    match &hint_points_desc_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 2);
+            let first = values.first().and_then(|b| b.as_document()).unwrap();
+            let last = values.last().and_then(|b| b.as_document()).unwrap();
+            assert_eq!(first.get_i32("points").unwrap_or_default(), 10);
+            assert_eq!(last.get_i32("points").unwrap_or_default(), 8);
+        }
+        other => panic!("expected documents result for hint points_-1, got {:?}", other),
+    }
+
+    //
+    // Step 7.2: hint to non-existent index should error.
+    //
+    let bad_hint_query = format!(
+        "db.getCollection('{collection}').find({{name: \"Alex\"}}).hint('points_1')",
+        collection = collection_name_2
+    );
+    let bad_hint_op =
+        parse_collection_query(&new_db_name_1, &collection_name_2, &bad_hint_query).unwrap();
+    let bad_hint_err = run_collection_query(
+        Arc::clone(&shared_client),
+        new_db_name_1.clone(),
+        collection_name_2.clone(),
+        bad_hint_op,
+        0,
+        DEFAULT_RESULT_LIMIT as u64,
+        app.test_query_timeout(),
+    )
+    .expect_err("expected hint to non-existent index to fail");
+    assert!(
+        bad_hint_err.to_lowercase().contains("hint"),
+        "expected hint-related error, got {bad_hint_err}"
+    );
+
+    //
+    // Step 8: comment on find should still return two Alex documents.
+    //
+    let comment_query = format!(
+        "db.getCollection('{collection}').find({{name: \"Alex\"}}).comment('my_comment')",
+        collection = collection_name_2
+    );
+    let comment_result = execute_query(&mut app, secondary_tab_id, &comment_query, &shared_client);
+    match &comment_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 2);
+            for doc in values {
+                let name = doc.as_document().and_then(|d| d.get_str("name").ok()).unwrap_or("");
+                assert_eq!(name, "Alex");
+            }
+        }
+        other => panic!("expected two Alex documents with comment, got {:?}", other),
+    }
 }
