@@ -166,6 +166,10 @@ pub(crate) enum Message {
         tab_id: TabId,
         node_id: usize,
     },
+    CollectionTextResultAction {
+        tab_id: TabId,
+        action: TextEditorAction,
+    },
     DocumentEditRequested {
         tab_id: TabId,
         node_id: usize,
@@ -711,6 +715,8 @@ struct CollectionTab {
     editor: TextEditorContent,
     panes: pane_grid::State<CollectionPane>,
     bson_tree: BsonTree,
+    response_view_mode: ResponseViewMode,
+    text_result: Option<TextResultView>,
     skip_input: String,
     limit_input: String,
     last_query_duration: Option<Duration>,
@@ -718,10 +724,63 @@ struct CollectionTab {
     palette: ThemePalette,
 }
 
+#[derive(Debug)]
+struct TextResultView {
+    content: TextEditorContent,
+}
+
+impl TextResultView {
+    fn from_documents(documents: &[Bson]) -> Option<Self> {
+        let docs_json: Vec<String> = documents.iter().map(shell::format_bson_shell).collect();
+        let joined = docs_json
+            .iter()
+            .enumerate()
+            .map(|(index, doc)| {
+                let indented =
+                    doc.lines().map(|line| format!("    {line}")).collect::<Vec<_>>().join("\n");
+                if index + 1 == docs_json.len() { indented } else { format!("{indented},") }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let content =
+            if docs_json.is_empty() { "[]".to_string() } else { format!("[\n{joined}\n]") };
+
+        Some(Self { content: TextEditorContent::with_text(&content) })
+    }
+
+    fn from_query_result(result: &QueryResult) -> Option<Self> {
+        match result {
+            QueryResult::Documents(values) => Self::from_documents(values),
+            QueryResult::SingleDocument { document } => {
+                let bson = Bson::Document(document.clone());
+                Self::from_documents(&[bson])
+            }
+            QueryResult::Indexes(values) => Self::from_documents(values),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CollectionPane {
     Request,
     Response,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseViewMode {
+    Table,
+    Text,
+}
+
+impl ResponseViewMode {
+    fn label(self) -> &'static str {
+        match self {
+            ResponseViewMode::Table => tr("Table"),
+            ResponseViewMode::Text => tr("Text"),
+        }
+    }
 }
 
 impl CollectionTab {
@@ -772,6 +831,7 @@ impl CollectionTab {
             "db.getCollection('{collection_name}').find({{}})",
             collection_name = collection.as_str()
         );
+        let text_result = TextResultView::from_documents(&values);
 
         let mut instance = Self {
             client_id,
@@ -781,6 +841,8 @@ impl CollectionTab {
             editor: TextEditorContent::with_text(&editor_text),
             panes,
             bson_tree,
+            response_view_mode: ResponseViewMode::Table,
+            text_result,
             skip_input: DEFAULT_RESULT_SKIP.to_string(),
             limit_input: DEFAULT_RESULT_LIMIT.to_string(),
             last_query_duration: None,
@@ -1021,7 +1083,36 @@ impl CollectionTab {
     }
 
     fn response_view(&self, tab_id: TabId) -> Element<'_, Message> {
-        self.bson_tree.view(tab_id)
+        match self.response_view_mode {
+            ResponseViewMode::Table => self.bson_tree.view(tab_id),
+            ResponseViewMode::Text => self.text_result_view(tab_id),
+        }
+    }
+
+    fn text_result_view(&self, tab_id: TabId) -> Element<'_, Message> {
+        if let Some(text_result) = &self.text_result {
+            let editor = text_editor::TextEditor::new(&text_result.content)
+                .on_action(move |action| Message::CollectionTextResultAction { tab_id, action });
+
+            let scroll = Scrollable::new(editor).width(Length::Fill).height(Length::Fill);
+
+            Container::new(scroll)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(move |_| container::Style {
+                    border: border::rounded(6.0).width(1),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            Container::new(
+                fonts::primary_text(tr("Text view is available only for document results"), None)
+                    .color(self.palette.text_muted.to_color()),
+            )
+            .padding([8, 12])
+            .width(Length::Fill)
+            .into()
+        }
     }
 
     fn toggle_node(&mut self, node_id: usize) {
@@ -1106,6 +1197,7 @@ impl CollectionTab {
         self.palette = settings.active_palette().clone();
         let cached = result.clone();
         self.last_result = Some(cached);
+        self.text_result = TextResultView::from_query_result(&result);
 
         let options = BsonTreeOptions::from(settings);
 
@@ -1145,6 +1237,7 @@ impl CollectionTab {
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
         self.last_result = None;
+        self.text_result = None;
     }
 
     fn apply_behavior_settings(&mut self, settings: &AppSettings) {
@@ -1253,6 +1346,14 @@ impl App {
                             self.open_connections_window();
                         } else {
                             println!("Menu '{menu:?}' entry '{label}' clicked");
+                        }
+                    }
+                    MenuEntry::ViewMode(mode) => {
+                        if let Some(active_id) = self.active_tab {
+                            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id)
+                            {
+                                tab.collection.response_view_mode = mode;
+                            }
                         }
                     }
                 }
@@ -1418,6 +1519,14 @@ impl App {
             Message::CollectionEditorAction { tab_id, action } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.editor.perform(action);
+                }
+                Task::none()
+            }
+            Message::CollectionTextResultAction { tab_id, action } => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    if let Some(text_result) = tab.collection.text_result.as_mut() {
+                        text_result.content.perform(action);
+                    }
                 }
                 Task::none()
             }
