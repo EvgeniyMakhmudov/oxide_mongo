@@ -5,7 +5,7 @@ use mongodb::sync::Client;
 
 #[derive(Debug, Clone)]
 pub enum OMDBConnection {
-    Uri { uri: String, include_filter: String, exclude_filter: String },
+    Uri { uri: String, include_filter: String, exclude_filter: String, display_label: String },
 }
 
 #[derive(Debug, Clone)]
@@ -15,24 +15,30 @@ pub struct ConnectionBootstrap {
 }
 
 impl OMDBConnection {
-    pub fn from_uri(uri: &str, include_filter: &str, exclude_filter: &str) -> Self {
+    pub fn from_uri(
+        uri: &str,
+        include_filter: &str,
+        exclude_filter: &str,
+        display_label: String,
+    ) -> Self {
         Self::Uri {
             uri: uri.to_owned(),
             include_filter: include_filter.to_owned(),
             exclude_filter: exclude_filter.to_owned(),
+            display_label,
         }
     }
 
     pub fn display_label(&self) -> String {
         match self {
-            OMDBConnection::Uri { uri, .. } => uri.clone(),
+            OMDBConnection::Uri { display_label, .. } => display_label.clone(),
         }
     }
 }
 
 pub fn connect_and_discover(connection: OMDBConnection) -> Result<ConnectionBootstrap, String> {
     match connection {
-        OMDBConnection::Uri { uri, include_filter, exclude_filter } => {
+        OMDBConnection::Uri { uri, include_filter, exclude_filter, .. } => {
             let client = Client::with_uri_str(&uri).map_err(|err| err.to_string())?;
             let databases = filter_databases(
                 client.list_database_names().run().map_err(|err| err.to_string())?,

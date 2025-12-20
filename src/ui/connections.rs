@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use iced::alignment::{Horizontal, Vertical};
+use iced::widget::checkbox::Checkbox;
+use iced::widget::pick_list::PickList;
 use iced::widget::text_editor::{self, Action as TextEditorAction, Content as TextEditorContent};
 use iced::widget::{
     self, Button, Column, Container, Image, Row, Scrollable, Space, button, text_input,
@@ -21,20 +23,214 @@ use crate::{
 };
 
 const CONNECTIONS_FILE: &str = "connections.toml";
+const PASSWORD_STORAGE_OPTIONS: &[PasswordStorage] =
+    &[PasswordStorage::Prompt, PasswordStorage::File];
+const AUTH_MECHANISM_OPTIONS: &[AuthMechanismChoice] = &[
+    AuthMechanismChoice::ScramSha256,
+    AuthMechanismChoice::ScramSha1,
+    AuthMechanismChoice::MongodbX509,
+];
+const CONNECTION_TYPE_OPTIONS: &[ConnectionType] =
+    &[ConnectionType::Direct, ConnectionType::ReplicaSet];
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PasswordStorage {
+    Prompt,
+    File,
+}
+
+impl Default for PasswordStorage {
+    fn default() -> Self {
+        Self::Prompt
+    }
+}
+
+impl std::fmt::Display for PasswordStorage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            PasswordStorage::Prompt => tr("Prompt for password"),
+            PasswordStorage::File => tr("Store in file"),
+        };
+        f.write_str(label)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AuthMechanismChoice {
+    ScramSha256,
+    ScramSha1,
+    Plain,
+    MongodbX509,
+    Gssapi,
+    MongodbAws,
+}
+
+impl Default for AuthMechanismChoice {
+    fn default() -> Self {
+        Self::ScramSha256
+    }
+}
+
+impl AuthMechanismChoice {
+    pub fn label(self) -> &'static str {
+        match self {
+            AuthMechanismChoice::ScramSha256 => "SCRAM-SHA-256",
+            AuthMechanismChoice::ScramSha1 => "SCRAM-SHA-1",
+            AuthMechanismChoice::Plain => "PLAIN",
+            AuthMechanismChoice::MongodbX509 => "MONGODB-X509",
+            AuthMechanismChoice::Gssapi => "GSSAPI",
+            AuthMechanismChoice::MongodbAws => "MONGODB-AWS",
+        }
+    }
+}
+
+impl std::fmt::Display for AuthMechanismChoice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+fn default_auth_database() -> String {
+    String::from("admin")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthSettings {
+    #[serde(default)]
+    pub use_auth: bool,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub password_storage: PasswordStorage,
+    #[serde(default)]
+    pub mechanism: AuthMechanismChoice,
+    #[serde(default = "default_auth_database")]
+    pub database: String,
+}
+
+impl Default for AuthSettings {
+    fn default() -> Self {
+        Self {
+            use_auth: false,
+            username: String::new(),
+            password: None,
+            password_storage: PasswordStorage::Prompt,
+            mechanism: AuthMechanismChoice::ScramSha256,
+            database: default_auth_database(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionEntry {
     pub name: String,
     pub host: String,
     pub port: u16,
+    #[serde(default)]
+    pub connection_type: ConnectionType,
     pub include_filter: String,
     pub exclude_filter: String,
+    #[serde(default)]
+    pub auth: AuthSettings,
 }
 
 impl ConnectionEntry {
-    pub fn uri(&self) -> String {
-        format!("mongodb://{}:{}", self.host.trim(), self.port)
+    pub fn address_label(&self) -> String {
+        format!("{}:{}", self.host.trim(), self.port)
     }
+
+    pub fn display_label(&self) -> String {
+        if self.auth.use_auth && !self.auth.username.trim().is_empty() {
+            format!("mongodb://{}@{}", self.auth.username.trim(), self.address_label())
+        } else {
+            format!("mongodb://{}", self.address_label())
+        }
+    }
+
+    pub fn uri(&self) -> Result<String, String> {
+        self.uri_with_password(self.auth.password.as_deref())
+    }
+
+    pub fn uri_with_password(&self, password_override: Option<&str>) -> Result<String, String> {
+        let mut uri = String::from("mongodb://");
+        let mut query_params: Vec<(String, String)> = Vec::new();
+        query_params.push((
+            String::from("directConnection"),
+            if self.connection_type == ConnectionType::Direct {
+                String::from("true")
+            } else {
+                String::from("false")
+            },
+        ));
+
+        if self.auth.use_auth {
+            let username = self.auth.username.trim();
+            let password = password_override.unwrap_or_default().trim();
+
+            if username.is_empty() {
+                return Err(String::from(tr("Login cannot be empty")));
+            }
+
+            if password.is_empty() {
+                return Err(String::from(tr("Password cannot be empty")));
+            }
+
+            uri.push_str(&percent_encode(username));
+            uri.push(':');
+            uri.push_str(&percent_encode(password));
+            uri.push('@');
+        }
+
+        uri.push_str(&self.address_label());
+
+        if self.auth.use_auth {
+            let database = self.auth.database.trim();
+            let database =
+                if database.is_empty() { default_auth_database() } else { database.to_string() };
+
+            uri.push('/');
+            uri.push_str(&percent_encode(&database));
+            query_params
+                .push((String::from("authMechanism"), self.auth.mechanism.label().to_string()));
+            query_params.push((String::from("authSource"), database));
+        }
+
+        if !query_params.is_empty() {
+            uri.push('?');
+            let joined = query_params
+                .into_iter()
+                .map(|(key, value)| format!("{}={}", percent_encode(&key), percent_encode(&value)))
+                .collect::<Vec<_>>()
+                .join("&");
+            uri.push_str(&joined);
+        }
+
+        Ok(uri)
+    }
+
+    pub fn sanitized_for_storage(&self) -> Self {
+        let mut cloned = self.clone();
+        if cloned.auth.password_storage == PasswordStorage::Prompt {
+            cloned.auth.password = None;
+        }
+        cloned
+    }
+}
+
+fn percent_encode(input: &str) -> String {
+    input
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{:02X}", byte),
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -65,7 +261,31 @@ pub(crate) struct ListClick {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionFormTab {
     General,
+    Authorization,
     Filter,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectionType {
+    ReplicaSet,
+    Direct,
+}
+
+impl Default for ConnectionType {
+    fn default() -> Self {
+        ConnectionType::ReplicaSet
+    }
+}
+
+impl std::fmt::Display for ConnectionType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            ConnectionType::ReplicaSet => tr("ReplicaSet"),
+            ConnectionType::Direct => tr("Direct connection"),
+        };
+        f.write_str(label)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +301,8 @@ pub struct ConnectionFormState {
     pub(crate) name: String,
     pub(crate) host: String,
     pub(crate) port: String,
+    pub(crate) connection_type: ConnectionType,
+    pub(crate) auth: AuthFormState,
     pub(crate) include_editor: TextEditorContent,
     pub(crate) exclude_editor: TextEditorContent,
     pub(crate) validation_error: Option<String>,
@@ -88,16 +310,92 @@ pub struct ConnectionFormState {
     pub(crate) testing: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct AuthFormState {
+    pub(crate) use_auth: bool,
+    pub(crate) username: String,
+    pub(crate) password: String,
+    pub(crate) password_storage: PasswordStorage,
+    pub(crate) mechanism: AuthMechanismChoice,
+    pub(crate) database: String,
+}
+
+impl Default for AuthFormState {
+    fn default() -> Self {
+        let defaults = AuthSettings::default();
+        Self::from_settings(&defaults)
+    }
+}
+
+impl AuthFormState {
+    fn from_settings(settings: &AuthSettings) -> Self {
+        Self {
+            use_auth: settings.use_auth,
+            username: settings.username.clone(),
+            password: settings.password.clone().unwrap_or_default(),
+            password_storage: settings.password_storage,
+            mechanism: settings.mechanism,
+            database: settings.database.clone(),
+        }
+    }
+
+    fn to_settings(&self, require_password: bool) -> Result<AuthSettings, String> {
+        if !self.use_auth {
+            let database = self.database.trim();
+            return Ok(AuthSettings {
+                use_auth: false,
+                username: self.username.trim().to_string(),
+                password: None,
+                password_storage: self.password_storage,
+                mechanism: self.mechanism,
+                database: if database.is_empty() {
+                    default_auth_database()
+                } else {
+                    database.to_string()
+                },
+            });
+        }
+
+        let username = self.username.trim();
+        if username.is_empty() {
+            return Err(String::from(tr("Login cannot be empty")));
+        }
+
+        let database = self.database.trim();
+        if database.is_empty() {
+            return Err(String::from(tr("Database cannot be empty")));
+        }
+
+        let password_value = self.password.clone();
+        if (require_password || self.password_storage == PasswordStorage::File)
+            && password_value.trim().is_empty()
+        {
+            return Err(String::from(tr("Password cannot be empty")));
+        }
+
+        Ok(AuthSettings {
+            use_auth: true,
+            username: username.to_string(),
+            password: (!password_value.is_empty()).then_some(password_value),
+            password_storage: self.password_storage,
+            mechanism: self.mechanism,
+            database: database.to_string(),
+        })
+    }
+}
+
 impl ConnectionFormState {
     pub fn new(mode: ConnectionFormMode, entry: Option<&ConnectionEntry>) -> Self {
-        let (name, host, port, include_filter, exclude_filter) = entry
+        let (name, host, port, connection_type, include_filter, exclude_filter, auth) = entry
             .map(|conn| {
                 (
                     conn.name.clone(),
                     conn.host.clone(),
                     conn.port.to_string(),
+                    conn.connection_type,
                     conn.include_filter.clone(),
                     conn.exclude_filter.clone(),
+                    AuthFormState::from_settings(&conn.auth),
                 )
             })
             .unwrap_or_else(|| {
@@ -105,8 +403,10 @@ impl ConnectionFormState {
                     String::new(),
                     String::from(tr("localhost")),
                     String::from(tr("27017")),
+                    ConnectionType::default(),
                     String::new(),
                     String::new(),
+                    AuthFormState::default(),
                 )
             });
 
@@ -116,6 +416,8 @@ impl ConnectionFormState {
             name,
             host,
             port,
+            connection_type,
+            auth,
             include_editor: TextEditorContent::with_text(&include_filter),
             exclude_editor: TextEditorContent::with_text(&exclude_filter),
             validation_error: None,
@@ -124,7 +426,7 @@ impl ConnectionFormState {
         }
     }
 
-    pub fn validate(&self) -> Result<ConnectionEntry, String> {
+    pub fn validate(&self, require_password: bool) -> Result<ConnectionEntry, String> {
         let name = self.name.trim();
         if name.is_empty() {
             return Err(String::from(tr("Name cannot be empty")));
@@ -141,12 +443,16 @@ impl ConnectionFormState {
             .parse()
             .map_err(|_| String::from(tr("Port must be a number between 0 and 65535")))?;
 
+        let auth = self.auth.to_settings(require_password)?;
+
         Ok(ConnectionEntry {
             name: name.to_string(),
             host: host.to_string(),
             port,
+            connection_type: self.connection_type,
             include_filter: self.include_editor.text(),
             exclude_filter: self.exclude_editor.text(),
+            auth,
         })
     }
 
@@ -217,7 +523,9 @@ pub fn load_connections_from_disk() -> Result<Vec<ConnectionEntry>, String> {
 }
 
 pub fn save_connections_to_disk(connections: &[ConnectionEntry]) -> Result<(), String> {
-    let store = ConnectionStore { connections: connections.to_vec() };
+    let sanitized: Vec<_> =
+        connections.iter().map(ConnectionEntry::sanitized_for_storage).collect();
+    let store = ConnectionStore { connections: sanitized };
     let data = toml::to_string_pretty(&store).map_err(|err| err.to_string())?;
     let path = connections_file_path();
     if let Some(parent) = path.parent() {
@@ -268,8 +576,7 @@ pub fn connections_view<'a>(
 
             let name_text = fonts::primary_text(entry.name.clone(), Some(4.0)).color(primary_text);
             let details_text =
-                fonts::primary_text(format!("{}:{}", entry.host, entry.port), Some(-1.0))
-                    .color(muted_text);
+                fonts::primary_text(entry.address_label(), Some(-1.0)).color(muted_text);
 
             let labels = Column::new().spacing(4).push(name_text).push(details_text);
 
@@ -498,6 +805,28 @@ pub fn connection_form_view<'a>(
             general_button.on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::General));
     }
 
+    let authorization_active = state.active_tab == ConnectionFormTab::Authorization;
+    let authorization_label_color = if authorization_active { text_color } else { muted_text };
+    let mut authorization_button = Button::new(
+        fonts::primary_text(tr("Authorization"), None).color(authorization_label_color),
+    )
+    .padding([6, 16])
+    .style({
+        let border_color = border_color;
+        let active_bg = tab_active_bg;
+        let inactive_bg = tab_inactive_bg;
+        move |_, _| button::Style {
+            background: Some((if authorization_active { active_bg } else { inactive_bg }).into()),
+            text_color: authorization_label_color,
+            border: border::rounded(6).width(1).color(border_color),
+            shadow: Shadow::default(),
+        }
+    });
+    if !authorization_active {
+        authorization_button = authorization_button
+            .on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::Authorization));
+    }
+
     let filter_active = state.active_tab == ConnectionFormTab::Filter;
     let filter_label_color = if filter_active { text_color } else { muted_text };
     let mut filter_button =
@@ -519,7 +848,8 @@ pub fn connection_form_view<'a>(
             filter_button.on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::Filter));
     }
 
-    let tabs_row = Row::new().spacing(8).push(general_button).push(filter_button);
+    let tabs_row =
+        Row::new().spacing(8).push(general_button).push(authorization_button).push(filter_button);
 
     let tab_content: Element<_> = match state.active_tab {
         ConnectionFormTab::General => {
@@ -539,6 +869,13 @@ pub fn connection_form_view<'a>(
                 .align_x(Horizontal::Center)
                 .width(Length::Fixed(120.0));
 
+            let connection_type = PickList::new(
+                CONNECTION_TYPE_OPTIONS,
+                Some(state.connection_type),
+                Message::ConnectionFormTypeChanged,
+            )
+            .width(Length::FillPortion(4));
+
             Column::new()
                 .spacing(12)
                 .push(fonts::primary_text(tr("Name"), None).color(text_color))
@@ -547,6 +884,80 @@ pub fn connection_form_view<'a>(
                 .push(host_input)
                 .push(fonts::primary_text(tr("Port"), None).color(text_color))
                 .push(port_input)
+                .push(
+                    Row::new()
+                        .spacing(12)
+                        .align_y(Vertical::Center)
+                        .push(
+                            fonts::primary_text(tr("Connection type"), None)
+                                .color(text_color)
+                                .width(Length::FillPortion(2)),
+                        )
+                        .push(connection_type)
+                        .push(Space::with_width(Length::FillPortion(1))),
+                )
+                .into()
+        }
+        ConnectionFormTab::Authorization => {
+            let use_auth = Checkbox::new(tr("Use"), state.auth.use_auth)
+                .on_toggle(Message::ConnectionFormAuthUseChanged);
+
+            let login_input = text_input(tr("Login"), &state.auth.username)
+                .on_input(Message::ConnectionFormAuthLoginChanged)
+                .padding([6, 12])
+                .width(Length::Fill);
+
+            let mut password_input = text_input(tr("Password"), &state.auth.password)
+                .on_input(Message::ConnectionFormAuthPasswordChanged)
+                .padding([6, 12])
+                .width(Length::FillPortion(3));
+            #[allow(deprecated)]
+            {
+                password_input = password_input.secure(true);
+            }
+
+            let password_storage = PickList::new(
+                PASSWORD_STORAGE_OPTIONS,
+                Some(state.auth.password_storage),
+                Message::ConnectionFormPasswordStorageChanged,
+            )
+            .width(Length::FillPortion(2));
+
+            let password_row = Row::new().spacing(12).push(password_input).push(password_storage);
+
+            let mechanism = PickList::new(
+                AUTH_MECHANISM_OPTIONS,
+                Some(state.auth.mechanism),
+                Message::ConnectionFormAuthMechanismChanged,
+            )
+            .width(Length::FillPortion(3));
+
+            let mechanism_row = Row::new()
+                .spacing(12)
+                .align_y(Vertical::Center)
+                .push(
+                    fonts::primary_text(tr("Authentication mechanism"), None)
+                        .color(text_color)
+                        .width(Length::FillPortion(2)),
+                )
+                .push(mechanism)
+                .push(Space::with_width(Length::FillPortion(1)));
+
+            let database_input = text_input(tr("Database"), &state.auth.database)
+                .on_input(Message::ConnectionFormAuthDatabaseChanged)
+                .padding([6, 12])
+                .width(Length::FillPortion(3));
+
+            Column::new()
+                .spacing(12)
+                .push(use_auth)
+                .push(fonts::primary_text(tr("Login"), None).color(text_color))
+                .push(login_input)
+                .push(fonts::primary_text(tr("Password"), None).color(text_color))
+                .push(password_row)
+                .push(mechanism_row)
+                .push(fonts::primary_text(tr("Database"), None).color(text_color))
+                .push(database_input)
                 .into()
         }
         ConnectionFormTab::Filter => {

@@ -41,9 +41,10 @@ use mongo::query::{QueryOperation, QueryResult, parse_collection_query, run_coll
 use mongo::shell;
 use settings::{AppSettings, ThemeChoice, ThemePalette};
 use ui::connections::{
-    ConnectionEntry, ConnectionFormMode, ConnectionFormState, ConnectionFormTab,
-    ConnectionsWindowState, ListClick, TestFeedback, connection_form_view, connections_view,
-    load_connections_from_disk, save_connections_to_disk,
+    AuthMechanismChoice, ConnectionEntry, ConnectionFormMode, ConnectionFormState,
+    ConnectionFormTab, ConnectionType, ConnectionsWindowState, ListClick, PasswordStorage,
+    TestFeedback, connection_form_view, connections_view, load_connections_from_disk,
+    save_connections_to_disk,
 };
 use ui::menues::{
     self, CollectionContextAction, ConnectionContextAction, DatabaseContextAction, MenuEntry,
@@ -220,6 +221,13 @@ pub(crate) enum Message {
     ConnectionFormNameChanged(String),
     ConnectionFormHostChanged(String),
     ConnectionFormPortChanged(String),
+    ConnectionFormTypeChanged(ConnectionType),
+    ConnectionFormAuthUseChanged(bool),
+    ConnectionFormAuthLoginChanged(String),
+    ConnectionFormAuthPasswordChanged(String),
+    ConnectionFormPasswordStorageChanged(PasswordStorage),
+    ConnectionFormAuthMechanismChanged(AuthMechanismChoice),
+    ConnectionFormAuthDatabaseChanged(String),
     ConnectionFormIncludeAction(TextEditorAction),
     ConnectionFormExcludeAction(TextEditorAction),
     ConnectionFormAddSystemFilters,
@@ -2603,8 +2611,17 @@ impl App {
                     state.selected = Some(index);
                 }
                 if let Some(entry) = self.connections.get(index).cloned() {
-                    self.close_connections_window();
-                    return self.add_connection_from_entry(entry);
+                    match self.add_connection_from_entry(entry) {
+                        Ok(task) => {
+                            self.close_connections_window();
+                            return task;
+                        }
+                        Err(error) => {
+                            if let Some(window) = self.connections_window.as_mut() {
+                                window.feedback = Some(error);
+                            }
+                        }
+                    }
                 }
                 Task::none()
             }
@@ -2663,9 +2680,17 @@ impl App {
                 if let Some(state) = &self.connections_window {
                     if let Some(index) = state.selected {
                         if let Some(entry) = self.connections.get(index) {
-                            let task = self.add_connection_from_entry(entry.clone());
-                            self.close_connections_window();
-                            return task;
+                            match self.add_connection_from_entry(entry.clone()) {
+                                Ok(task) => {
+                                    self.close_connections_window();
+                                    return task;
+                                }
+                                Err(error) => {
+                                    if let Some(window) = self.connections_window.as_mut() {
+                                        window.feedback = Some(error);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -2686,6 +2711,14 @@ impl App {
             Message::ConnectionFormHostChanged(value) => {
                 if let Some(form) = self.connection_form.as_mut() {
                     form.host = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormTypeChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.connection_type = value;
+                    form.validation_error = None;
                 }
                 Task::none()
             }
@@ -2694,6 +2727,49 @@ impl App {
                     let sanitized: String =
                         value.chars().filter(|ch| ch.is_ascii_digit()).take(5).collect();
                     form.port = sanitized;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormAuthUseChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.auth.use_auth = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormAuthLoginChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.auth.username = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormAuthPasswordChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.auth.password = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormPasswordStorageChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.auth.password_storage = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormAuthMechanismChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.auth.mechanism = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormAuthDatabaseChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.auth.database = value;
+                    form.validation_error = None;
                 }
                 Task::none()
             }
@@ -2717,24 +2793,37 @@ impl App {
             }
             Message::ConnectionFormTest => {
                 if let Some(form) = self.connection_form.as_mut() {
-                    match form.validate() {
-                        Ok(entry) => {
+                    match form.validate(true).and_then(|entry| entry.uri()) {
+                        Ok(uri) => {
                             form.validation_error = None;
                             form.testing = true;
                             form.test_feedback = None;
-                            let uri = entry.uri();
+                            let auth_db = if form.auth.use_auth {
+                                form.auth.database.trim()
+                            } else {
+                                "admin"
+                            };
+                            let auth_db = if auth_db.is_empty() { "admin" } else { auth_db };
+                            let auth_db = auth_db.to_string();
                             return Task::perform(
                                 async move {
-                                    Client::with_uri_str(&uri)
+                                    let client = Client::with_uri_str(&uri)
+                                        .map_err(|err| err.to_string())?;
+                                    let database = client.database(&auth_db);
+                                    database
+                                        .run_command(doc! { "ping": 1 })
+                                        .run()
+                                        .map_err(|err| err.to_string())?;
+                                    database
+                                        .list_collection_names()
+                                        .run()
                                         .map(|_| ())
                                         .map_err(|err| err.to_string())
                                 },
                                 Message::ConnectionFormTestResult,
                             );
                         }
-                        Err(error) => {
-                            form.validation_error = Some(error);
-                        }
+                        Err(error) => form.validation_error = Some(error),
                     }
                 }
                 Task::none()
@@ -2751,7 +2840,8 @@ impl App {
             }
             Message::ConnectionFormSave => {
                 if let Some(form) = self.connection_form.as_mut() {
-                    match form.validate() {
+                    let require_password = form.auth.password_storage == PasswordStorage::File;
+                    match form.validate(require_password) {
                         Ok(entry) => {
                             let result = match form.mode {
                                 ConnectionFormMode::Create => {
@@ -4545,10 +4635,17 @@ impl App {
         Ok(())
     }
 
-    fn add_connection_from_entry(&mut self, entry: ConnectionEntry) -> Task<Message> {
-        let uri = entry.uri();
-        let connection =
-            OMDBConnection::from_uri(&uri, &entry.include_filter, &entry.exclude_filter);
+    fn add_connection_from_entry(
+        &mut self,
+        entry: ConnectionEntry,
+    ) -> Result<Task<Message>, String> {
+        let uri = entry.uri()?;
+        let connection = OMDBConnection::from_uri(
+            &uri,
+            &entry.include_filter,
+            &entry.exclude_filter,
+            entry.display_label(),
+        );
         let client_id = self.next_client_id;
         self.next_client_id += 1;
 
@@ -4556,9 +4653,9 @@ impl App {
         client.name = entry.name;
         self.clients.push(client);
 
-        Task::perform(async move { connect_and_discover(connection) }, move |result| {
+        Ok(Task::perform(async move { connect_and_discover(connection) }, move |result| {
             Message::ConnectionCompleted { client_id, result }
-        })
+        }))
     }
 }
 
