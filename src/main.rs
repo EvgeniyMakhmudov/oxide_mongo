@@ -21,7 +21,10 @@ use iced::widget::{
     pane_grid, text_input,
 };
 use iced::window;
-use iced::{Color, Element, Font, Length, Subscription, Task, Theme, application, clipboard};
+use iced::{
+    Color, Element, Font, Length, Shadow, Subscription, Task, Theme, application, clipboard,
+};
+use iced_aw::ContextMenu;
 use iced_fonts::REQUIRED_FONT_BYTES;
 use mongodb::bson::{self, Bson, Document, doc};
 use mongodb::options::ReturnDocument;
@@ -165,6 +168,9 @@ pub(crate) enum Message {
     CollectionTreeToggle {
         tab_id: TabId,
         node_id: usize,
+    },
+    CollectionTextCopyJson {
+        tab_id: TabId,
     },
     DocumentEditRequested {
         tab_id: TabId,
@@ -711,6 +717,8 @@ struct CollectionTab {
     editor: TextEditorContent,
     panes: pane_grid::State<CollectionPane>,
     bson_tree: BsonTree,
+    response_view_mode: ResponseViewMode,
+    text_result: Option<TextResultView>,
     skip_input: String,
     limit_input: String,
     last_query_duration: Option<Duration>,
@@ -718,10 +726,86 @@ struct CollectionTab {
     palette: ThemePalette,
 }
 
+#[derive(Debug)]
+struct TextResultView {
+    documents: Vec<String>,
+}
+
+impl TextResultView {
+    fn from_documents(documents: &[Bson]) -> Option<Self> {
+        if documents.is_empty() {
+            return None;
+        }
+        let docs_json: Vec<String> = documents.iter().map(shell::format_bson_shell).collect();
+        Some(Self { documents: docs_json })
+    }
+
+    fn from_query_result(result: &QueryResult) -> Option<Self> {
+        match result {
+            QueryResult::Documents(values) => Self::from_documents(values),
+            QueryResult::SingleDocument { document } => {
+                let bson = Bson::Document(document.clone());
+                Self::from_documents(&[bson])
+            }
+            QueryResult::Indexes(values) => Self::from_documents(values),
+            _ => None,
+        }
+    }
+
+    fn as_json_list(&self) -> String {
+        if self.documents.is_empty() {
+            return String::from("[]");
+        }
+
+        let joined = self.documents.join(",\n");
+        format!("[\n{joined}\n]")
+    }
+}
+
+impl CollectionTab {
+    fn build_text_result(&mut self, result: &QueryResult) -> Duration {
+        let start = Instant::now();
+        self.text_result = TextResultView::from_query_result(result);
+        let elapsed = start.elapsed();
+        let count = Self::result_count(result);
+        let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
+        println!(
+            "[results] collection='{}' view=Text documents={} clone_ms=0.000 text_ms={:.3} tree_ms=0.000 apply_ms=0.000 total_ms={:.3}",
+            self.collection, count, elapsed_ms, elapsed_ms
+        );
+        elapsed
+    }
+
+    fn result_count(result: &QueryResult) -> usize {
+        match result {
+            QueryResult::Documents(values) => values.len(),
+            QueryResult::Indexes(values) => values.len(),
+            QueryResult::SingleDocument { .. } => 1,
+            QueryResult::Distinct { values, .. } => values.len(),
+            QueryResult::Count { .. } => 1,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CollectionPane {
     Request,
     Response,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseViewMode {
+    Table,
+    Text,
+}
+
+impl ResponseViewMode {
+    fn label(self) -> &'static str {
+        match self {
+            ResponseViewMode::Table => tr("Table"),
+            ResponseViewMode::Text => tr("Text"),
+        }
+    }
 }
 
 impl CollectionTab {
@@ -772,6 +856,7 @@ impl CollectionTab {
             "db.getCollection('{collection_name}').find({{}})",
             collection_name = collection.as_str()
         );
+        let text_result = None;
 
         let mut instance = Self {
             client_id,
@@ -781,6 +866,8 @@ impl CollectionTab {
             editor: TextEditorContent::with_text(&editor_text),
             panes,
             bson_tree,
+            response_view_mode: ResponseViewMode::Table,
+            text_result,
             skip_input: DEFAULT_RESULT_SKIP.to_string(),
             limit_input: DEFAULT_RESULT_LIMIT.to_string(),
             last_query_duration: None,
@@ -1021,7 +1108,64 @@ impl CollectionTab {
     }
 
     fn response_view(&self, tab_id: TabId) -> Element<'_, Message> {
-        self.bson_tree.view(tab_id)
+        match self.response_view_mode {
+            ResponseViewMode::Table => self.bson_tree.view(tab_id),
+            ResponseViewMode::Text => self.text_result_view(tab_id),
+        }
+    }
+
+    fn text_result_view(&self, tab_id: TabId) -> Element<'_, Message> {
+        if let Some(text_result) = &self.text_result {
+            let mut column = Column::new().spacing(12).width(Length::Fill);
+            for doc in &text_result.documents {
+                column = column.push(
+                    Container::new(fonts::primary_text(doc.clone(), None).wrapping(Wrapping::Word))
+                        .padding([8, 10])
+                        .width(Length::Fill)
+                        .style(move |_| container::Style {
+                            border: border::rounded(6.0).width(1),
+                            ..Default::default()
+                        }),
+                );
+            }
+
+            let scroll = Scrollable::new(column).width(Length::Fill).height(Length::Fill);
+            let menu_palette = self.palette.clone();
+            let menu_palette_border = self.palette.clone();
+            let menu = move || {
+                let item_palette = menu_palette.clone();
+                let border_palette = menu_palette_border.clone();
+                let button = Button::new(fonts::primary_text(tr("Copy JSON"), None))
+                    .padding([4, 8])
+                    .on_press(Message::CollectionTextCopyJson { tab_id })
+                    .style(move |_, status| item_palette.menu_button_style(6.0, status));
+                Container::new(button)
+                    .style(move |_| iced::widget::container::Style {
+                        background: Some(border_palette.menu.background.to_color().into()),
+                        border: border::rounded(6.0)
+                            .width(1)
+                            .color(border_palette.widget_border_color()),
+                        shadow: Shadow {
+                            color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                            offset: iced::Vector::new(0.0, 3.0),
+                            blur_radius: 10.0,
+                        },
+                        ..Default::default()
+                    })
+                    .padding([4, 6])
+                    .into()
+            };
+
+            ContextMenu::new(scroll, menu).into()
+        } else {
+            Container::new(
+                fonts::primary_text(tr("Text view is available only for document results"), None)
+                    .color(self.palette.text_muted.to_color()),
+            )
+            .padding([8, 12])
+            .width(Length::Fill)
+            .into()
+        }
     }
 
     fn toggle_node(&mut self, node_id: usize) {
@@ -1101,14 +1245,24 @@ impl CollectionTab {
     }
 
     fn set_query_result(&mut self, result: QueryResult, settings: &AppSettings) {
-        let start = Instant::now();
-
+        let total_start = Instant::now();
         self.palette = settings.active_palette().clone();
+
+        let clone_start = Instant::now();
         let cached = result.clone();
         self.last_result = Some(cached);
+        let clone_elapsed = clone_start.elapsed();
+
+        let text_elapsed = if self.response_view_mode == ResponseViewMode::Text {
+            self.build_text_result(&result)
+        } else {
+            self.text_result = None;
+            Duration::ZERO
+        };
 
         let options = BsonTreeOptions::from(settings);
 
+        let tree_start = Instant::now();
         let (tree, count) = match result {
             QueryResult::Documents(values) => {
                 let count = values.len();
@@ -1127,17 +1281,25 @@ impl CollectionTab {
             }
             QueryResult::Count { value } => (BsonTree::from_count(value, options), 1),
         };
+        let tree_elapsed = tree_start.elapsed();
 
-        let elapsed = start.elapsed();
-        println!(
-            "[table] collection='{}' documents={} processed_in_ms={:.3}",
-            self.collection,
-            count,
-            elapsed.as_secs_f64() * 1000.0
-        );
-
+        let apply_start = Instant::now();
         self.bson_tree = tree;
         self.apply_behavior_settings(settings);
+        let apply_elapsed = apply_start.elapsed();
+
+        let elapsed = total_start.elapsed();
+        println!(
+            "[results] collection='{}' view={:?} documents={} clone_ms={:.3} text_ms={:.3} tree_ms={:.3} apply_ms={:.3} total_ms={:.3}",
+            self.collection,
+            self.response_view_mode,
+            count,
+            clone_elapsed.as_secs_f64() * 1000.0,
+            text_elapsed.as_secs_f64() * 1000.0,
+            tree_elapsed.as_secs_f64() * 1000.0,
+            apply_elapsed.as_secs_f64() * 1000.0,
+            elapsed.as_secs_f64() * 1000.0
+        );
     }
 
     fn set_tree_error(&mut self, error: String) {
@@ -1145,6 +1307,7 @@ impl CollectionTab {
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
         self.last_result = None;
+        self.text_result = None;
     }
 
     fn apply_behavior_settings(&mut self, settings: &AppSettings) {
@@ -1160,7 +1323,9 @@ impl CollectionTab {
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
         if let Some(result) = self.last_result.clone() {
-            self.set_query_result(result, settings);
+            if self.response_view_mode == ResponseViewMode::Text {
+                self.set_query_result(result, settings);
+            }
         } else if settings.expand_first_result {
             if let Some(root_id) = self.bson_tree.first_root_id() {
                 self.bson_tree.expand_node(root_id);
@@ -1253,6 +1418,19 @@ impl App {
                             self.open_connections_window();
                         } else {
                             println!("Menu '{menu:?}' entry '{label}' clicked");
+                        }
+                    }
+                    MenuEntry::ViewMode(mode) => {
+                        if let Some(active_id) = self.active_tab {
+                            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id)
+                            {
+                                tab.collection.response_view_mode = mode;
+                                if mode == ResponseViewMode::Text {
+                                    if let Some(result) = tab.collection.last_result.clone() {
+                                        tab.collection.build_text_result(&result);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -1418,6 +1596,14 @@ impl App {
             Message::CollectionEditorAction { tab_id, action } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.editor.perform(action);
+                }
+                Task::none()
+            }
+            Message::CollectionTextCopyJson { tab_id } => {
+                if let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) {
+                    if let Some(text_result) = &tab.collection.text_result {
+                        return clipboard::write(text_result.as_json_list());
+                    }
                 }
                 Task::none()
             }

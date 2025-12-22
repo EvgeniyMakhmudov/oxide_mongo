@@ -8,7 +8,7 @@ use iced_aw::{
 use crate::fonts;
 use crate::i18n::tr;
 use crate::settings::ThemePalette;
-use crate::{ClientId, Message};
+use crate::{ClientId, Message, ResponseViewMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TopMenu {
@@ -32,12 +32,14 @@ impl TopMenu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MenuEntry {
     Action(&'static str),
+    ViewMode(ResponseViewMode),
 }
 
 impl MenuEntry {
     pub(crate) fn label(self) -> &'static str {
         match self {
             MenuEntry::Action(label) => label,
+            MenuEntry::ViewMode(mode) => mode.label(),
         }
     }
 }
@@ -90,7 +92,10 @@ pub(crate) fn build_menu_bar<'a>(palette: ThemePalette) -> MenuBar<'a, Message, 
     roots.push(menu_root(
         &palette,
         TopMenu::View,
-        &[MenuEntry::Action("Explorer"), MenuEntry::Action("Refresh")],
+        &[
+            MenuEntry::ViewMode(ResponseViewMode::Table),
+            MenuEntry::ViewMode(ResponseViewMode::Text),
+        ],
     ));
     roots.push(menu_root(
         &palette,
