@@ -12,7 +12,7 @@
 - [DONE] Добавить соединение с использованием TLS сертификата (x.509)
 - Добавить соединение с использованием Kerberos
 - Добавить соединение с использованием LDAP
-- Добавить SSH тунелирование.
+- [DONE] Добавить SSH тунелирование.
 
 # Меню
 - [DONE] Добавить оснвонео меню Вид, в нем нужно уметь переключаться между таблицей и текстовым полем
@@ -84,7 +84,27 @@
 - watch (change streams) — подписка на изменения
 - [DONE] runCommand - служебные команды коллекции
 - [DONE] listIndexes / createIndex / dropIndex и т.п. — основные операции с индексами
-- цепочки операций find.sort, find.hint...
+- [DONE] цепочки операций find.sort, find.hint...
+- db.adminCommand
+
+
+### Операции с репликами
+- status
+- conf
+- isMaster
+- hello
+- printReplicationInfo
+- printSecondaryReplicationInfo
+- initiate
+- reconfig
+- stepDown
+- freeze
+- add
+- addArb
+- remove
+- syncFrom
+- slaveOk
+
 
 # Интернационализация
 - [DONE] русский язык

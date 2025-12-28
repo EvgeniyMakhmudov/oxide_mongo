@@ -4,5 +4,6 @@ pub mod connection;
 pub mod query;
 pub mod shell;
 pub mod shell_preprocessor;
+pub mod ssh_tunnel;
 #[cfg(test)]
 mod tests;
