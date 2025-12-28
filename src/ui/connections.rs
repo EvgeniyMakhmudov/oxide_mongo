@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use iced::alignment::{Horizontal, Vertical};
@@ -30,6 +30,8 @@ const AUTH_MECHANISM_OPTIONS: &[AuthMechanismChoice] = &[
     AuthMechanismChoice::ScramSha1,
     AuthMechanismChoice::MongodbX509,
 ];
+const SSH_AUTH_METHOD_OPTIONS: &[SshAuthMethod] =
+    &[SshAuthMethod::Password, SshAuthMethod::PrivateKey];
 const CONNECTION_TYPE_OPTIONS: &[ConnectionType] =
     &[ConnectionType::Direct, ConnectionType::ReplicaSet];
 
@@ -92,8 +94,45 @@ impl std::fmt::Display for AuthMechanismChoice {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SshAuthMethod {
+    Password,
+    PrivateKey,
+}
+
+impl Default for SshAuthMethod {
+    fn default() -> Self {
+        Self::Password
+    }
+}
+
+impl SshAuthMethod {
+    pub fn label(self) -> &'static str {
+        match self {
+            SshAuthMethod::Password => tr("Password"),
+            SshAuthMethod::PrivateKey => tr("Private key"),
+        }
+    }
+}
+
+impl std::fmt::Display for SshAuthMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 fn default_auth_database() -> String {
     String::from("admin")
+}
+
+fn default_ssh_port() -> u16 {
+    22
+}
+
+pub(crate) fn looks_like_private_key(value: &str) -> bool {
+    let trimmed = value.trim_start();
+    trimmed.starts_with("-----BEGIN ") && trimmed.contains("PRIVATE KEY-----")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +165,76 @@ impl Default for AuthSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshTunnelSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub host: String,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub auth_method: SshAuthMethod,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub private_key: Option<String>,
+    #[serde(default)]
+    pub passphrase: Option<String>,
+}
+
+impl Default for SshTunnelSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            host: String::new(),
+            port: default_ssh_port(),
+            username: String::new(),
+            auth_method: SshAuthMethod::default(),
+            password: None,
+            private_key: None,
+            passphrase: None,
+        }
+    }
+}
+
+impl SshTunnelSettings {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        if self.host.trim().is_empty() {
+            return Err(String::from(tr("SSH server address cannot be empty")));
+        }
+
+        if self.username.trim().is_empty() {
+            return Err(String::from(tr("SSH username cannot be empty")));
+        }
+
+        match self.auth_method {
+            SshAuthMethod::Password => {
+                if self.password.as_deref().unwrap_or_default().trim().is_empty() {
+                    return Err(String::from(tr("SSH password cannot be empty")));
+                }
+            }
+            SshAuthMethod::PrivateKey => {
+                let key_value = self.private_key.as_deref().unwrap_or_default().trim();
+                if key_value.is_empty() {
+                    return Err(String::from(tr("SSH private key cannot be empty")));
+                }
+                if !looks_like_private_key(key_value) && !Path::new(key_value).exists() {
+                    return Err(String::from(tr("SSH private key file not found")));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConnectionEntry {
     pub name: String,
     pub host: String,
@@ -136,26 +245,33 @@ pub struct ConnectionEntry {
     pub exclude_filter: String,
     #[serde(default)]
     pub auth: AuthSettings,
+    #[serde(default)]
+    pub ssh_tunnel: SshTunnelSettings,
 }
 
 impl ConnectionEntry {
     pub fn address_label(&self) -> String {
-        format!("{}:{}", self.host.trim(), self.port)
+        Self::address_label_for(&self.host, self.port)
     }
 
-    pub fn display_label(&self) -> String {
-        if self.auth.use_auth && !self.auth.username.trim().is_empty() {
-            format!("mongodb://{}@{}", self.auth.username.trim(), self.address_label())
-        } else {
-            format!("mongodb://{}", self.address_label())
-        }
+    pub fn address_label_for(host: &str, port: u16) -> String {
+        format!("{}:{}", host.trim(), port)
     }
 
     pub fn uri(&self) -> Result<String, String> {
-        self.uri_with_password(self.auth.password.as_deref())
+        self.uri_for_host_port(&self.host, self.port)
     }
 
-    pub fn uri_with_password(&self, password_override: Option<&str>) -> Result<String, String> {
+    pub fn uri_for_host_port(&self, host: &str, port: u16) -> Result<String, String> {
+        self.uri_with_host_port(host, port, self.auth.password.as_deref())
+    }
+
+    pub fn uri_with_host_port(
+        &self,
+        host: &str,
+        port: u16,
+        password_override: Option<&str>,
+    ) -> Result<String, String> {
         let mut uri = String::from("mongodb://");
         let mut query_params: Vec<(String, String)> = Vec::new();
         query_params.push((
@@ -185,7 +301,7 @@ impl ConnectionEntry {
             uri.push('@');
         }
 
-        uri.push_str(&self.address_label());
+        uri.push_str(&Self::address_label_for(host, port));
 
         if self.auth.use_auth {
             let database = self.auth.database.trim();
@@ -262,6 +378,7 @@ pub(crate) struct ListClick {
 pub enum ConnectionFormTab {
     General,
     Authorization,
+    SshTunnel,
     Filter,
 }
 
@@ -303,6 +420,7 @@ pub struct ConnectionFormState {
     pub(crate) port: String,
     pub(crate) connection_type: ConnectionType,
     pub(crate) auth: AuthFormState,
+    pub(crate) ssh: SshTunnelFormState,
     pub(crate) include_editor: TextEditorContent,
     pub(crate) exclude_editor: TextEditorContent,
     pub(crate) validation_error: Option<String>,
@@ -320,9 +438,28 @@ pub struct AuthFormState {
     pub(crate) database: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct SshTunnelFormState {
+    pub(crate) use_ssh: bool,
+    pub(crate) host: String,
+    pub(crate) port: String,
+    pub(crate) username: String,
+    pub(crate) auth_method: SshAuthMethod,
+    pub(crate) password: String,
+    pub(crate) private_key: String,
+    pub(crate) passphrase: String,
+}
+
 impl Default for AuthFormState {
     fn default() -> Self {
         let defaults = AuthSettings::default();
+        Self::from_settings(&defaults)
+    }
+}
+
+impl Default for SshTunnelFormState {
+    fn default() -> Self {
+        let defaults = SshTunnelSettings::default();
         Self::from_settings(&defaults)
     }
 }
@@ -384,9 +521,72 @@ impl AuthFormState {
     }
 }
 
+impl SshTunnelFormState {
+    fn from_settings(settings: &SshTunnelSettings) -> Self {
+        Self {
+            use_ssh: settings.enabled,
+            host: settings.host.clone(),
+            port: settings.port.to_string(),
+            username: settings.username.clone(),
+            auth_method: settings.auth_method,
+            password: settings.password.clone().unwrap_or_default(),
+            private_key: settings.private_key.clone().unwrap_or_default(),
+            passphrase: settings.passphrase.clone().unwrap_or_default(),
+        }
+    }
+
+    fn to_settings(&self) -> Result<SshTunnelSettings, String> {
+        let port_str = self.port.trim();
+        let port = if self.use_ssh {
+            port_str
+                .parse()
+                .map_err(|_| String::from(tr("SSH port must be a number between 0 and 65535")))?
+        } else if port_str.is_empty() {
+            default_ssh_port()
+        } else {
+            port_str.parse().unwrap_or_else(|_| default_ssh_port())
+        };
+
+        let host = self.host.trim();
+        let username = self.username.trim();
+
+        if self.use_ssh {
+            if host.is_empty() {
+                return Err(String::from(tr("SSH server address cannot be empty")));
+            }
+            if username.is_empty() {
+                return Err(String::from(tr("SSH username cannot be empty")));
+            }
+            match self.auth_method {
+                SshAuthMethod::Password => {
+                    if self.password.trim().is_empty() {
+                        return Err(String::from(tr("SSH password cannot be empty")));
+                    }
+                }
+                SshAuthMethod::PrivateKey => {
+                    if self.private_key.trim().is_empty() {
+                        return Err(String::from(tr("SSH private key cannot be empty")));
+                    }
+                }
+            }
+        }
+
+        Ok(SshTunnelSettings {
+            enabled: self.use_ssh,
+            host: host.to_string(),
+            port,
+            username: username.to_string(),
+            auth_method: self.auth_method,
+            password: (!self.password.trim().is_empty()).then_some(self.password.clone()),
+            private_key: (!self.private_key.trim().is_empty()).then_some(self.private_key.clone()),
+            passphrase: (!self.passphrase.trim().is_empty()).then_some(self.passphrase.clone()),
+        })
+    }
+}
+
 impl ConnectionFormState {
     pub fn new(mode: ConnectionFormMode, entry: Option<&ConnectionEntry>) -> Self {
-        let (name, host, port, connection_type, include_filter, exclude_filter, auth) = entry
+        let (name, host, port, connection_type, include_filter, exclude_filter, auth, ssh) = entry
             .map(|conn| {
                 (
                     conn.name.clone(),
@@ -396,6 +596,7 @@ impl ConnectionFormState {
                     conn.include_filter.clone(),
                     conn.exclude_filter.clone(),
                     AuthFormState::from_settings(&conn.auth),
+                    SshTunnelFormState::from_settings(&conn.ssh_tunnel),
                 )
             })
             .unwrap_or_else(|| {
@@ -407,6 +608,7 @@ impl ConnectionFormState {
                     String::new(),
                     String::new(),
                     AuthFormState::default(),
+                    SshTunnelFormState::default(),
                 )
             });
 
@@ -418,6 +620,7 @@ impl ConnectionFormState {
             port,
             connection_type,
             auth,
+            ssh,
             include_editor: TextEditorContent::with_text(&include_filter),
             exclude_editor: TextEditorContent::with_text(&exclude_filter),
             validation_error: None,
@@ -444,6 +647,7 @@ impl ConnectionFormState {
             .map_err(|_| String::from(tr("Port must be a number between 0 and 65535")))?;
 
         let auth = self.auth.to_settings(require_password)?;
+        let ssh = self.ssh.to_settings()?;
 
         Ok(ConnectionEntry {
             name: name.to_string(),
@@ -453,6 +657,7 @@ impl ConnectionFormState {
             include_filter: self.include_editor.text(),
             exclude_filter: self.exclude_editor.text(),
             auth,
+            ssh_tunnel: ssh,
         })
     }
 
@@ -550,6 +755,8 @@ pub fn connections_view<'a>(
     let primary_text = palette.text_primary.to_color();
     let muted_text = palette.text_muted.to_color();
     let accent_text = palette.primary_buttons.active.to_color();
+    let tag_bg = palette.subtle_buttons.active.to_color();
+    let tag_border = palette.widget_border_color();
 
     let mut entries = Column::new().spacing(4).width(Length::Fill);
 
@@ -589,7 +796,33 @@ pub fn connections_view<'a>(
                     .color(accent_text)
             };
 
-            let right_info = Column::new().spacing(4).align_x(Horizontal::Right).push(filters_text);
+            let tag = |label: &str| {
+                Container::new(fonts::primary_text(label, Some(-3.0)).color(muted_text))
+                    .padding([2, 6])
+                    .style(move |_| widget::container::Style {
+                        background: Some(tag_bg.into()),
+                        border: border::rounded(6).width(1).color(tag_border),
+                        ..Default::default()
+                    })
+            };
+
+            let mut tags_row = Row::new().spacing(6).align_y(Vertical::Center);
+            let mut has_tags = false;
+
+            if entry.auth.use_auth {
+                tags_row = tags_row.push(tag(tr("Auth")));
+                has_tags = true;
+            }
+            if entry.ssh_tunnel.enabled {
+                tags_row = tags_row.push(tag(tr("SSH")));
+                has_tags = true;
+            }
+
+            let mut right_info =
+                Column::new().spacing(4).align_x(Horizontal::Right).push(filters_text);
+            if has_tags {
+                right_info = right_info.push(tags_row);
+            }
 
             let row = Row::new()
                 .spacing(16)
@@ -827,6 +1060,27 @@ pub fn connection_form_view<'a>(
             .on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::Authorization));
     }
 
+    let ssh_active = state.active_tab == ConnectionFormTab::SshTunnel;
+    let ssh_label_color = if ssh_active { text_color } else { muted_text };
+    let mut ssh_button =
+        Button::new(fonts::primary_text(tr("SSH tunnel"), None).color(ssh_label_color))
+            .padding([6, 16])
+            .style({
+                let border_color = border_color;
+                let active_bg = tab_active_bg;
+                let inactive_bg = tab_inactive_bg;
+                move |_, _| button::Style {
+                    background: Some((if ssh_active { active_bg } else { inactive_bg }).into()),
+                    text_color: ssh_label_color,
+                    border: border::rounded(6).width(1).color(border_color),
+                    shadow: Shadow::default(),
+                }
+            });
+    if !ssh_active {
+        ssh_button =
+            ssh_button.on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::SshTunnel));
+    }
+
     let filter_active = state.active_tab == ConnectionFormTab::Filter;
     let filter_label_color = if filter_active { text_color } else { muted_text };
     let mut filter_button =
@@ -848,8 +1102,12 @@ pub fn connection_form_view<'a>(
             filter_button.on_press(Message::ConnectionFormTabChanged(ConnectionFormTab::Filter));
     }
 
-    let tabs_row =
-        Row::new().spacing(8).push(general_button).push(authorization_button).push(filter_button);
+    let tabs_row = Row::new()
+        .spacing(8)
+        .push(general_button)
+        .push(authorization_button)
+        .push(ssh_button)
+        .push(filter_button);
 
     let tab_content: Element<_> = match state.active_tab {
         ConnectionFormTab::General => {
@@ -959,6 +1217,106 @@ pub fn connection_form_view<'a>(
                 .push(fonts::primary_text(tr("Database"), None).color(text_color))
                 .push(database_input)
                 .into()
+        }
+        ConnectionFormTab::SshTunnel => {
+            let use_ssh = Checkbox::new(tr("Use"), state.ssh.use_ssh)
+                .on_toggle(Message::ConnectionFormSshUseChanged);
+
+            let host_input = text_input(tr("Server address"), &state.ssh.host)
+                .on_input(Message::ConnectionFormSshHostChanged)
+                .padding([6, 12])
+                .width(Length::Fill);
+
+            let port_input = text_input(tr("Server port"), &state.ssh.port)
+                .on_input(Message::ConnectionFormSshPortChanged)
+                .padding([6, 12])
+                .align_x(Horizontal::Center)
+                .width(Length::Fixed(120.0));
+
+            let user_input = text_input(tr("Username"), &state.ssh.username)
+                .on_input(Message::ConnectionFormSshUsernameChanged)
+                .padding([6, 12])
+                .width(Length::Fill);
+
+            let auth_method = PickList::new(
+                SSH_AUTH_METHOD_OPTIONS,
+                Some(state.ssh.auth_method),
+                Message::ConnectionFormSshAuthMethodChanged,
+            )
+            .width(Length::FillPortion(3));
+
+            let auth_method_row = Row::new()
+                .spacing(12)
+                .align_y(Vertical::Center)
+                .push(
+                    fonts::primary_text(tr("Authentication method"), None)
+                        .color(text_color)
+                        .width(Length::FillPortion(2)),
+                )
+                .push(auth_method)
+                .push(Space::with_width(Length::FillPortion(1)));
+
+            let mut column = Column::new()
+                .spacing(12)
+                .push(use_ssh)
+                .push(fonts::primary_text(tr("Server address"), None).color(text_color))
+                .push(host_input)
+                .push(fonts::primary_text(tr("Server port"), None).color(text_color))
+                .push(port_input)
+                .push(fonts::primary_text(tr("Username"), None).color(text_color))
+                .push(user_input)
+                .push(auth_method_row);
+
+            match state.ssh.auth_method {
+                SshAuthMethod::Password => {
+                    let mut password_input = text_input(tr("Password"), &state.ssh.password)
+                        .on_input(Message::ConnectionFormSshPasswordChanged)
+                        .padding([6, 12])
+                        .width(Length::Fill);
+                    #[allow(deprecated)]
+                    {
+                        password_input = password_input.secure(true);
+                    }
+                    column = column
+                        .push(fonts::primary_text(tr("Password"), None).color(text_color))
+                        .push(password_input);
+                }
+                SshAuthMethod::PrivateKey => {
+                    let private_key_input = text_input(tr("Text key"), &state.ssh.private_key)
+                        .on_input(Message::ConnectionFormSshPrivateKeyChanged)
+                        .padding([6, 12])
+                        .width(Length::Fill);
+
+                    let browse_button = Button::new(fonts::primary_text("...", None))
+                        .padding([6, 10])
+                        .style(subtle_button_style(palette.clone(), 6.0))
+                        .on_press(Message::ConnectionFormSshPrivateKeyBrowse)
+                        .width(Length::Fixed(36.0));
+
+                    let mut passphrase_input = text_input(tr("Passphrase"), &state.ssh.passphrase)
+                        .on_input(Message::ConnectionFormSshPassphraseChanged)
+                        .padding([6, 12])
+                        .width(Length::Fill);
+                    #[allow(deprecated)]
+                    {
+                        passphrase_input = passphrase_input.secure(true);
+                    }
+
+                    column = column
+                        .push(fonts::primary_text(tr("Private key"), None).color(text_color))
+                        .push(
+                            Row::new()
+                                .spacing(8)
+                                .align_y(Vertical::Center)
+                                .push(private_key_input)
+                                .push(browse_button),
+                        )
+                        .push(fonts::primary_text(tr("Passphrase"), None).color(text_color))
+                        .push(passphrase_input);
+                }
+            }
+
+            column.into()
         }
         ConnectionFormTab::Filter => {
             let include_editor = text_editor::TextEditor::new(&state.include_editor)

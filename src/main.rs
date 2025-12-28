@@ -29,9 +29,10 @@ use iced_fonts::REQUIRED_FONT_BYTES;
 use mongodb::bson::{self, Bson, Document, doc};
 use mongodb::options::ReturnDocument;
 use mongodb::sync::Client;
+use rfd::FileDialog;
 use std::collections::HashSet;
-use std::sync::Arc;
 use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::fonts::{MONO_FONT, MONO_FONT_BYTES};
@@ -42,12 +43,13 @@ use mongo::connection::{
 };
 use mongo::query::{QueryOperation, QueryResult, parse_collection_query, run_collection_query};
 use mongo::shell;
+use mongo::ssh_tunnel::SshTunnel;
 use settings::{AppSettings, ThemeChoice, ThemePalette};
 use ui::connections::{
     AuthMechanismChoice, ConnectionEntry, ConnectionFormMode, ConnectionFormState,
     ConnectionFormTab, ConnectionType, ConnectionsWindowState, ListClick, PasswordStorage,
-    TestFeedback, connection_form_view, connections_view, load_connections_from_disk,
-    save_connections_to_disk,
+    SshAuthMethod, TestFeedback, connection_form_view, connections_view,
+    load_connections_from_disk, save_connections_to_disk,
 };
 use ui::menues::{
     self, CollectionContextAction, ConnectionContextAction, DatabaseContextAction, MenuEntry,
@@ -234,6 +236,16 @@ pub(crate) enum Message {
     ConnectionFormPasswordStorageChanged(PasswordStorage),
     ConnectionFormAuthMechanismChanged(AuthMechanismChoice),
     ConnectionFormAuthDatabaseChanged(String),
+    ConnectionFormSshUseChanged(bool),
+    ConnectionFormSshHostChanged(String),
+    ConnectionFormSshPortChanged(String),
+    ConnectionFormSshUsernameChanged(String),
+    ConnectionFormSshAuthMethodChanged(SshAuthMethod),
+    ConnectionFormSshPasswordChanged(String),
+    ConnectionFormSshPrivateKeyChanged(String),
+    ConnectionFormSshPrivateKeyBrowse,
+    ConnectionFormSshPrivateKeyPicked(Option<String>),
+    ConnectionFormSshPassphraseChanged(String),
     ConnectionFormIncludeAction(TextEditorAction),
     ConnectionFormExcludeAction(TextEditorAction),
     ConnectionFormAddSystemFilters,
@@ -362,7 +374,7 @@ enum TableContextAction {
     CollapseHierarchy,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct OMDBClient {
     id: ClientId,
     name: String,
@@ -370,6 +382,8 @@ struct OMDBClient {
     expanded: bool,
     handle: Option<Arc<Client>>,
     databases: Vec<DatabaseNode>,
+    ssh_tunnel: Option<Arc<Mutex<SshTunnel>>>,
+    entry: ConnectionEntry,
 }
 
 #[derive(Debug, Clone)]
@@ -721,6 +735,7 @@ struct CollectionTab {
     text_result: Option<TextResultView>,
     skip_input: String,
     limit_input: String,
+    query_in_progress: bool,
     last_query_duration: Option<Duration>,
     last_result: Option<QueryResult>,
     palette: ThemePalette,
@@ -870,6 +885,7 @@ impl CollectionTab {
             text_result,
             skip_input: DEFAULT_RESULT_SKIP.to_string(),
             limit_input: DEFAULT_RESULT_LIMIT.to_string(),
+            query_in_progress: false,
             last_query_duration: None,
             last_result: Some(QueryResult::Documents(values)),
             palette,
@@ -894,10 +910,13 @@ impl CollectionTab {
         let skip_prev_tab_id = tab_id;
         let skip_next_tab_id = tab_id;
 
-        let duration_text = self
-            .last_query_duration
-            .map(Self::format_duration)
-            .unwrap_or_else(|| String::from(tr("—")));
+        let duration_text = if self.query_in_progress {
+            String::from(tr("Executing..."))
+        } else {
+            self.last_query_duration
+                .map(Self::format_duration)
+                .unwrap_or_else(|| String::from(tr("—")))
+        };
 
         let icon_size = fonts::active_fonts().primary_size * 1.5;
 
@@ -1462,17 +1481,20 @@ impl App {
             Message::ConnectionCompleted { client_id, result } => {
                 if let Some(client) = self.clients.iter_mut().find(|c| c.id == client_id) {
                     match result {
-                        Ok(ConnectionBootstrap { handle, mut databases }) => {
+                        Ok(ConnectionBootstrap { handle, mut databases, ssh_tunnel }) => {
                             databases.sort_unstable();
                             client.status = ConnectionStatus::Ready;
                             client.handle = Some(handle);
                             client.databases =
                                 databases.into_iter().map(DatabaseNode::new).collect();
                             client.expanded = true;
+                            client.ssh_tunnel = ssh_tunnel;
                         }
                         Err(error) => {
                             client.status = ConnectionStatus::Failed(error);
                             client.databases.clear();
+                            client.handle = None;
+                            client.ssh_tunnel = None;
                         }
                     }
                 }
@@ -2768,6 +2790,7 @@ impl App {
             Message::CollectionQueryCompleted { tab_id, result, duration } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     let collection = &mut tab.collection;
+                    collection.query_in_progress = false;
                     collection.last_query_duration = Some(duration);
                     match result {
                         Ok(query_result) => {
@@ -2959,6 +2982,81 @@ impl App {
                 }
                 Task::none()
             }
+            Message::ConnectionFormSshUseChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.ssh.use_ssh = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshHostChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.ssh.host = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshPortChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    let sanitized: String =
+                        value.chars().filter(|ch| ch.is_ascii_digit()).take(5).collect();
+                    form.ssh.port = sanitized;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshUsernameChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.ssh.username = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshAuthMethodChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.ssh.auth_method = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshPasswordChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.ssh.password = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshPrivateKeyChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.ssh.private_key = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshPrivateKeyBrowse => {
+                return Task::perform(
+                    async {
+                        FileDialog::new().pick_file().map(|path| path.to_string_lossy().to_string())
+                    },
+                    Message::ConnectionFormSshPrivateKeyPicked,
+                );
+            }
+            Message::ConnectionFormSshPrivateKeyPicked(path) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    if let Some(path) = path {
+                        form.ssh.private_key = path;
+                        form.validation_error = None;
+                    }
+                }
+                Task::none()
+            }
+            Message::ConnectionFormSshPassphraseChanged(value) => {
+                if let Some(form) = self.connection_form.as_mut() {
+                    form.ssh.passphrase = value;
+                    form.validation_error = None;
+                }
+                Task::none()
+            }
             Message::ConnectionFormIncludeAction(action) => {
                 if let Some(form) = self.connection_form.as_mut() {
                     form.include_action(action);
@@ -2979,11 +3077,12 @@ impl App {
             }
             Message::ConnectionFormTest => {
                 if let Some(form) = self.connection_form.as_mut() {
-                    match form.validate(true).and_then(|entry| entry.uri()) {
-                        Ok(uri) => {
+                    match form.validate(true) {
+                        Ok(entry) => {
                             form.validation_error = None;
                             form.testing = true;
                             form.test_feedback = None;
+
                             let auth_db = if form.auth.use_auth {
                                 form.auth.database.trim()
                             } else {
@@ -2991,8 +3090,25 @@ impl App {
                             };
                             let auth_db = if auth_db.is_empty() { "admin" } else { auth_db };
                             let auth_db = auth_db.to_string();
+
                             return Task::perform(
                                 async move {
+                                    let tunnel_guard = if entry.ssh_tunnel.enabled {
+                                        Some(SshTunnel::start(
+                                            &entry.ssh_tunnel,
+                                            &entry.host,
+                                            entry.port,
+                                        )?)
+                                    } else {
+                                        None
+                                    };
+
+                                    let uri = if let Some(ref tunnel) = tunnel_guard {
+                                        entry.uri_for_host_port("127.0.0.1", tunnel.local_port())?
+                                    } else {
+                                        entry.uri()?
+                                    };
+
                                     let client = Client::with_uri_str(&uri)
                                         .map_err(|err| err.to_string())?;
                                     let database = client.database(&auth_db);
@@ -4492,20 +4608,30 @@ impl App {
     }
 
     fn refresh_databases(&mut self, client_id: ClientId) -> Task<Message> {
-        let handle = match self
-            .clients
-            .iter()
-            .find(|client| client.id == client_id)
-            .and_then(|client| client.handle.clone())
-        {
-            Some(handle) => handle,
-            None => return Task::none(),
+        let Some(client) = self.clients.iter_mut().find(|client| client.id == client_id) else {
+            return Task::none();
         };
 
-        if let Some(client) = self.clients.iter_mut().find(|client| client.id == client_id) {
+        if client.entry.ssh_tunnel.enabled {
+            client.status = ConnectionStatus::Connecting;
+            client.handle = None;
+            client.ssh_tunnel = None;
             for database in &mut client.databases {
                 database.state = DatabaseState::Loading;
             }
+
+            let connection = OMDBConnection::from_entry(client.entry.clone());
+            return Task::perform(async move { connect_and_discover(connection) }, move |result| {
+                Message::ConnectionCompleted { client_id, result }
+            });
+        }
+
+        let Some(handle) = client.handle.clone() else {
+            return Task::none();
+        };
+
+        for database in &mut client.databases {
+            database.state = DatabaseState::Loading;
         }
 
         Task::perform(
@@ -4671,6 +4797,7 @@ impl App {
                 Ok(operation) => {
                     let skip = collection.skip_value();
                     let limit = collection.limit_value();
+                    collection.query_in_progress = true;
                     collection.last_query_duration = None;
                     request = Some((
                         collection.client_id,
@@ -4699,6 +4826,7 @@ impl App {
         else {
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                 tab.collection.set_tree_error(String::from(tr("No active connection")));
+                tab.collection.query_in_progress = false;
             }
             return Task::none();
         };
@@ -4825,18 +4953,13 @@ impl App {
         &mut self,
         entry: ConnectionEntry,
     ) -> Result<Task<Message>, String> {
-        let uri = entry.uri()?;
-        let connection = OMDBConnection::from_uri(
-            &uri,
-            &entry.include_filter,
-            &entry.exclude_filter,
-            entry.display_label(),
-        );
+        entry.uri()?;
+        entry.ssh_tunnel.validate()?;
+        let connection = OMDBConnection::from_entry(entry.clone());
         let client_id = self.next_client_id;
         self.next_client_id += 1;
 
-        let mut client = OMDBClient::new(client_id, connection.clone());
-        client.name = entry.name;
+        let client = OMDBClient::new(client_id, entry);
         self.clients.push(client);
 
         Ok(Task::perform(async move { connect_and_discover(connection) }, move |result| {
@@ -4876,14 +4999,16 @@ impl TabData {
 }
 
 impl OMDBClient {
-    fn new(id: ClientId, connection: OMDBConnection) -> Self {
+    fn new(id: ClientId, entry: ConnectionEntry) -> Self {
         Self {
             id,
-            name: connection.display_label(),
+            name: entry.name.clone(),
             status: ConnectionStatus::Connecting,
             expanded: true,
             handle: None,
             databases: Vec::new(),
+            ssh_tunnel: None,
+            entry,
         }
     }
 }

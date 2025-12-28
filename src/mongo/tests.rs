@@ -344,7 +344,11 @@ fn connection_flow_via_messages() {
     let client_id =
         app.test_last_client_id().expect("client should have been created during connect flow");
 
-    let bootstrap = ConnectionBootstrap { handle: shared_client.clone(), databases: Vec::new() };
+    let bootstrap = ConnectionBootstrap {
+        handle: shared_client.clone(),
+        databases: Vec::new(),
+        ssh_tunnel: None,
+    };
     let _ = app.update(Message::ConnectionCompleted { client_id, result: Ok(bootstrap) });
 
     //
