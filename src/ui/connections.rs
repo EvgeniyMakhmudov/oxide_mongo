@@ -757,6 +757,14 @@ pub fn connections_view<'a>(
     let accent_text = palette.primary_buttons.active.to_color();
     let tag_bg = palette.subtle_buttons.active.to_color();
     let tag_border = palette.widget_border_color();
+    let item_height = {
+        let fonts = fonts::active_fonts();
+        let name_size = fonts.primary_size + 4.0;
+        let details_size = fonts.primary_size - 1.0;
+        let labels_height = name_size + details_size + 4.0;
+        let content_height = labels_height.max(44.0);
+        content_height + 16.0
+    };
 
     let mut entries = Column::new().spacing(4).width(Length::Fill);
 
@@ -847,7 +855,7 @@ pub fn connections_view<'a>(
                 });
 
             let accent = Container::new(Space::with_width(Length::Fixed(4.0)))
-                .height(Length::Fixed(44.0))
+                .height(Length::Fixed(item_height))
                 .style(move |_| widget::container::Style {
                     background: Some(
                         if is_selected { accent_bar } else { Color::TRANSPARENT }.into(),
@@ -858,7 +866,7 @@ pub fn connections_view<'a>(
             let mut button =
                 Button::new(Row::new().spacing(0).width(Length::Fill).push(accent).push(container))
                     .width(Length::Fill)
-                    .style(subtle_button_style(palette.clone(), 6.0))
+                    .style(entry_button_style(palette.clone(), 6.0))
                     .on_press(Message::ConnectionsSelect(index));
 
             if state.last_click.map_or(false, |last| {
@@ -971,6 +979,17 @@ fn subtle_button_style(
     radius: f32,
 ) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_, status| palette.subtle_button_style(radius, status)
+}
+
+fn entry_button_style(
+    palette: ThemePalette,
+    radius: f32,
+) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |_, status| {
+        let mut style = palette.subtle_button_style(radius, status);
+        style.border = border::rounded(0).width(0).color(Color::TRANSPARENT);
+        style
+    }
 }
 
 fn primary_button_style(
