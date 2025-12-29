@@ -369,9 +369,106 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
                 "Недопустимый символ в имени коллекции:",
             ),
             (
-                "Query must start with db.<collection>, db.getCollection('<collection>'), or a supported method.",
-                "Запрос должен начинаться с db.<collection>, db.getCollection('<collection>') или поддерживаемого метода базы.",
+                "Query must start with db.<collection>, db.getCollection('<collection>'), rs.<method>, or a supported database method.",
+                "Запрос должен начинаться с db.<collection>, db.getCollection('<collection>'), rs.<method> или поддерживаемого метода базы.",
             ),
+            (
+                "Query must start with db.<collection>, db.getCollection('<collection>'), rs.<method>, or a supported method.",
+                "Запрос должен начинаться с db.<collection>, db.getCollection('<collection>'), rs.<method> или поддерживаемого метода.",
+            ),
+            (
+                "Only one method call is supported after specifying the replica set helper.",
+                "После указания помощника реплика-сета поддерживается только один вызов метода.",
+            ),
+            (
+                "Method rs.{} is not supported. Available methods: status, conf, isMaster, hello, printReplicationInfo, printSecondaryReplicationInfo, initiate, reconfig, stepDown, freeze, add, addArb, remove, syncFrom, slaveOk.",
+                "Метод rs.{} не поддерживается. Доступны: status, conf, isMaster, hello, printReplicationInfo, printSecondaryReplicationInfo, initiate, reconfig, stepDown, freeze, add, addArb, remove, syncFrom, slaveOk.",
+            ),
+            (
+                "Method rs.{} does not accept arguments.",
+                "Метод rs.{} не принимает аргументы.",
+            ),
+            (
+                "rs.initiate expects no arguments or a config document.",
+                "rs.initiate ожидает отсутствие аргументов или документ конфигурации.",
+            ),
+            (
+                "rs.reconfig expects a config document and an optional options document.",
+                "rs.reconfig ожидает документ конфигурации и необязательный документ options.",
+            ),
+            (
+                "rs.stepDown expects an optional number of seconds and an optional force flag.",
+                "rs.stepDown ожидает необязательное число секунд и необязательный флаг force.",
+            ),
+            (
+                "rs.freeze expects a number of seconds.",
+                "rs.freeze ожидает число секунд.",
+            ),
+            (
+                "rs.add expects a host string or a member document.",
+                "rs.add ожидает строку с адресом хоста или документ члена.",
+            ),
+            (
+                "rs.addArb expects a host string or a member document.",
+                "rs.addArb ожидает строку с адресом хоста или документ члена.",
+            ),
+            (
+                "rs.remove expects a host string.",
+                "rs.remove ожидает строку с адресом хоста.",
+            ),
+            (
+                "rs.syncFrom expects a host string.",
+                "rs.syncFrom ожидает строку с адресом хоста.",
+            ),
+            (
+                "Replica set config response does not contain a config document.",
+                "Ответ конфигурации реплика-сета не содержит документ config.",
+            ),
+            (
+                "Replica set config must contain a members array of documents.",
+                "Конфигурация реплика-сета должна содержать массив members из документов.",
+            ),
+            (
+                "Replica set member must include a host string.",
+                "Элемент реплика-сета должен содержать строковое поле host.",
+            ),
+            (
+                "Replica set member with host '{}' already exists.",
+                "Элемент реплика-сета с host '{}' уже существует.",
+            ),
+            (
+                "Replica set member with host '{}' not found.",
+                "Элемент реплика-сета с host '{}' не найден.",
+            ),
+            (
+                "Replica set config version must be a number.",
+                "Версия конфигурации реплика-сета должна быть числом.",
+            ),
+            (
+                "Oplog stats are unavailable.",
+                "Статистика oplog недоступна.",
+            ),
+            (
+                "Oplog is empty; cannot compute replication info.",
+                "Oplog пуст; невозможно вычислить информацию о репликации.",
+            ),
+            (
+                "Oplog entry does not contain a timestamp.",
+                "Запись oplog не содержит временной метки.",
+            ),
+            (
+                "Replica set status does not contain members.",
+                "Статус реплика-сета не содержит members.",
+            ),
+            (
+                "Primary member optime is not available.",
+                "Optime первичного узла недоступен.",
+            ),
+            (
+                "slaveOk has no effect in this client.",
+                "slaveOk не влияет на этот клиент.",
+            ),
+            ("unknown", "неизвестно"),
             (
                 "Single-quoted string contains an unfinished escape sequence.",
                 "Строка в одинарных кавычках содержит незавершённую escape-последовательность.",

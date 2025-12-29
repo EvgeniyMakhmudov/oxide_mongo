@@ -249,6 +249,24 @@ impl FindCursorChain {
 }
 
 #[derive(Debug, Clone)]
+pub enum ReplicaSetCommand {
+    Status,
+    Config,
+    IsMaster,
+    Hello,
+    PrintReplicationInfo,
+    PrintSecondaryReplicationInfo,
+    Initiate { config: Option<Document> },
+    Reconfig { config: Document, options: Option<Document> },
+    StepDown { seconds: i64, force: Option<bool> },
+    Freeze { seconds: i64 },
+    Add { member: Bson, arbiter: bool },
+    Remove { host: String },
+    SyncFrom { host: String },
+    SlaveOk,
+}
+
+#[derive(Debug, Clone)]
 pub enum QueryOperation {
     Find {
         filter: Document,
@@ -320,6 +338,9 @@ pub enum QueryOperation {
         options: Option<FindOneAndDeleteParsedOptions>,
     },
     ListIndexes,
+    ReplicaSetCommand {
+        command: ReplicaSetCommand,
+    },
     DatabaseCommand {
         db: String,
         command: Document,
@@ -345,11 +366,15 @@ impl<'a> QueryParser<'a> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(String::from(tr(
-                "Query must start with db.<collection>, db.getCollection('<collection>'), or a supported database method.",
+                "Query must start with db.<collection>, db.getCollection('<collection>'), rs.<method>, or a supported database method.",
             )));
         }
 
         let cleaned = trimmed.trim_end_matches(';').trim();
+
+        if let Some(result) = self.try_parse_replica_set_method(cleaned)? {
+            return Ok(result);
+        }
 
         if let Some(result) = self.try_parse_database_method(cleaned)? {
             return Ok(result);
@@ -1019,7 +1044,7 @@ impl<'a> QueryParser<'a> {
             Err(String::from(tr("Expected a method call after specifying the collection.")))
         } else {
             Err(String::from(tr(
-                "Query must start with db.<collection>, db.getCollection('<collection>'), or a supported method.",
+                "Query must start with db.<collection>, db.getCollection('<collection>'), rs.<method>, or a supported method.",
             )))
         }
     }
@@ -1207,6 +1232,30 @@ impl<'a> QueryParser<'a> {
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
     }
 
+    fn try_parse_replica_set_method(
+        &self,
+        cleaned: &str,
+    ) -> Result<Option<QueryOperation>, String> {
+        if let Some(rest) = cleaned.strip_prefix("rs.") {
+            let rest = rest.trim();
+            if let Some(paren_pos) = rest.find('(') {
+                let dot_pos = rest.find('.');
+                if dot_pos.is_none() || paren_pos < dot_pos.unwrap() {
+                    let synthetic = format!(".{rest}");
+                    let (method_name, args, remainder) = Self::extract_primary_method(&synthetic)?;
+                    if !remainder.trim().is_empty() {
+                        return Err(String::from(tr(
+                            "Only one method call is supported after specifying the replica set helper.",
+                        )));
+                    }
+                    return self.parse_replica_set_method(&method_name, &args).map(Some);
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     fn try_parse_database_method(&self, cleaned: &str) -> Result<Option<QueryOperation>, String> {
         if let Some(rest) = cleaned.strip_prefix("db.") {
             let rest = rest.trim();
@@ -1230,6 +1279,235 @@ impl<'a> QueryParser<'a> {
         }
 
         Ok(None)
+    }
+
+    fn parse_replica_set_method(&self, method: &str, args: &str) -> Result<QueryOperation, String> {
+        let args_trimmed = args.trim();
+        let ensure_no_args = |name: &str, args: &str| {
+            if args.is_empty() {
+                Ok(())
+            } else {
+                Err(tr_format("Method rs.{} does not accept arguments.", &[name]))
+            }
+        };
+
+        match method {
+            "status" => {
+                ensure_no_args(method, args_trimmed)?;
+                Ok(QueryOperation::ReplicaSetCommand { command: ReplicaSetCommand::Status })
+            }
+            "conf" => {
+                ensure_no_args(method, args_trimmed)?;
+                Ok(QueryOperation::ReplicaSetCommand { command: ReplicaSetCommand::Config })
+            }
+            "isMaster" => {
+                ensure_no_args(method, args_trimmed)?;
+                Ok(QueryOperation::ReplicaSetCommand { command: ReplicaSetCommand::IsMaster })
+            }
+            "hello" => {
+                ensure_no_args(method, args_trimmed)?;
+                Ok(QueryOperation::ReplicaSetCommand { command: ReplicaSetCommand::Hello })
+            }
+            "printReplicationInfo" => {
+                ensure_no_args(method, args_trimmed)?;
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::PrintReplicationInfo,
+                })
+            }
+            "printSecondaryReplicationInfo" => {
+                ensure_no_args(method, args_trimmed)?;
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::PrintSecondaryReplicationInfo,
+                })
+            }
+            "initiate" => {
+                let config = if args_trimmed.is_empty() {
+                    None
+                } else {
+                    let value = Self::parse_shell_bson_value(args_trimmed)?;
+                    match value {
+                        Bson::Document(doc) => Some(doc),
+                        _ => {
+                            return Err(String::from(tr(
+                                "rs.initiate expects no arguments or a config document.",
+                            )));
+                        }
+                    }
+                };
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::Initiate { config },
+                })
+            }
+            "reconfig" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(tr(
+                        "rs.reconfig expects a config document and an optional options document.",
+                    )));
+                }
+
+                let config_value = Self::parse_shell_bson_value(&parts[0])?;
+                let config = match config_value {
+                    Bson::Document(doc) => doc,
+                    _ => {
+                        return Err(String::from(tr(
+                            "rs.reconfig expects a config document and an optional options document.",
+                        )));
+                    }
+                };
+
+                let options = if let Some(options_source) = parts.get(1) {
+                    let options_value = Self::parse_shell_bson_value(options_source)?;
+                    match options_value {
+                        Bson::Document(doc) => Some(doc),
+                        _ => {
+                            return Err(String::from(tr(
+                                "rs.reconfig expects a config document and an optional options document.",
+                            )));
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::Reconfig { config, options },
+                })
+            }
+            "stepDown" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() > 2 {
+                    return Err(String::from(tr(
+                        "rs.stepDown expects an optional number of seconds and an optional force flag.",
+                    )));
+                }
+
+                let seconds = if let Some(first) = parts.get(0) {
+                    Self::parse_non_negative_i64_argument(first, "seconds")?
+                } else {
+                    60
+                };
+                let force = if let Some(force_source) = parts.get(1) {
+                    let value = Self::parse_shell_json_value(force_source)?;
+                    Some(Self::value_as_bool(&value)?)
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::StepDown { seconds, force },
+                })
+            }
+            "freeze" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() != 1 {
+                    return Err(String::from(tr("rs.freeze expects a number of seconds.")));
+                }
+                let seconds = Self::parse_non_negative_i64_argument(&parts[0], "seconds")?;
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::Freeze { seconds },
+                })
+            }
+            "add" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() != 1 {
+                    return Err(String::from(tr(
+                        "rs.add expects a host string or a member document.",
+                    )));
+                }
+                let member = Self::parse_shell_bson_value(&parts[0])?;
+                match member {
+                    Bson::String(_) | Bson::Document(_) => Ok(QueryOperation::ReplicaSetCommand {
+                        command: ReplicaSetCommand::Add { member, arbiter: false },
+                    }),
+                    _ => {
+                        Err(String::from(tr("rs.add expects a host string or a member document.")))
+                    }
+                }
+            }
+            "addArb" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() != 1 {
+                    return Err(String::from(tr(
+                        "rs.addArb expects a host string or a member document.",
+                    )));
+                }
+                let member = Self::parse_shell_bson_value(&parts[0])?;
+                match member {
+                    Bson::String(_) | Bson::Document(_) => Ok(QueryOperation::ReplicaSetCommand {
+                        command: ReplicaSetCommand::Add { member, arbiter: true },
+                    }),
+                    _ => Err(String::from(tr(
+                        "rs.addArb expects a host string or a member document.",
+                    ))),
+                }
+            }
+            "remove" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() != 1 {
+                    return Err(String::from(tr("rs.remove expects a host string.")));
+                }
+                let value = Self::parse_shell_bson_value(&parts[0])?;
+                let host = match value {
+                    Bson::String(host) => host,
+                    _ => return Err(String::from(tr("rs.remove expects a host string."))),
+                };
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::Remove { host },
+                })
+            }
+            "syncFrom" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+                if parts.len() != 1 {
+                    return Err(String::from(tr("rs.syncFrom expects a host string.")));
+                }
+                let value = Self::parse_shell_bson_value(&parts[0])?;
+                let host = match value {
+                    Bson::String(host) => host,
+                    _ => return Err(String::from(tr("rs.syncFrom expects a host string."))),
+                };
+                Ok(QueryOperation::ReplicaSetCommand {
+                    command: ReplicaSetCommand::SyncFrom { host },
+                })
+            }
+            "slaveOk" => {
+                ensure_no_args(method, args_trimmed)?;
+                Ok(QueryOperation::ReplicaSetCommand { command: ReplicaSetCommand::SlaveOk })
+            }
+            other => Err(tr_format(
+                "Method rs.{} is not supported. Available methods: status, conf, isMaster, hello, printReplicationInfo, printSecondaryReplicationInfo, initiate, reconfig, stepDown, freeze, add, addArb, remove, syncFrom, slaveOk.",
+                &[other],
+            )),
+        }
     }
 
     fn parse_database_method(&self, method: &str, args: &str) -> Result<QueryOperation, String> {
@@ -2233,6 +2511,44 @@ impl<'a> QueryParser<'a> {
         }
     }
 
+    fn parse_non_negative_i64_argument(source: &str, field: &str) -> Result<i64, String> {
+        let bson = Self::parse_shell_bson_value(source)?;
+        match bson {
+            Bson::Int32(value) => {
+                if value >= 0 {
+                    Ok(value as i64)
+                } else {
+                    Err(tr_format("Parameter '{}' must be a non-negative integer.", &[field]))
+                }
+            }
+            Bson::Int64(value) => {
+                if value >= 0 {
+                    Ok(value)
+                } else {
+                    Err(tr_format("Parameter '{}' must be a non-negative integer.", &[field]))
+                }
+            }
+            Bson::Double(value) => {
+                if value >= 0.0 {
+                    Ok(value as i64)
+                } else {
+                    Err(tr_format("Parameter '{}' must be a non-negative integer.", &[field]))
+                }
+            }
+            Bson::String(text) => {
+                let parsed = text.parse::<i64>().map_err(|_| {
+                    tr_format("Parameter '{}' must be a non-negative integer.", &[field])
+                })?;
+                if parsed >= 0 {
+                    Ok(parsed)
+                } else {
+                    Err(tr_format("Parameter '{}' must be a non-negative integer.", &[field]))
+                }
+            }
+            _ => Err(tr_format("Parameter '{}' must be a non-negative integer.", &[field])),
+        }
+    }
+
     fn split_arguments(args: &str) -> Vec<String> {
         let mut result = Vec::new();
         let mut current = String::new();
@@ -3171,6 +3487,379 @@ fn u64_to_bson(value: u64) -> Bson {
     }
 }
 
+fn run_replica_set_command(
+    client: Arc<Client>,
+    command: ReplicaSetCommand,
+) -> Result<QueryResult, String> {
+    match command {
+        ReplicaSetCommand::Status => {
+            let document = run_admin_command(&client, doc! { "replSetGetStatus": 1 })?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::Config => {
+            let document = fetch_replica_set_config(&client)?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::IsMaster => {
+            let document = run_admin_command(&client, doc! { "isMaster": 1 })?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::Hello => {
+            let document = run_admin_command(&client, doc! { "hello": 1 })?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::PrintReplicationInfo => {
+            let document = build_replication_info(&client)?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::PrintSecondaryReplicationInfo => {
+            let documents = build_secondary_replication_info(&client)?;
+            Ok(QueryResult::Documents(documents))
+        }
+        ReplicaSetCommand::Initiate { config } => {
+            let mut command = Document::new();
+            match config {
+                Some(config) => {
+                    command.insert("replSetInitiate", Bson::Document(config));
+                }
+                None => {
+                    command.insert("replSetInitiate", Bson::Int32(1));
+                }
+            }
+            let document = run_admin_command(&client, command)?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::Reconfig { mut config, options } => {
+            increment_config_version(&mut config)?;
+            let mut command = Document::new();
+            command.insert("replSetReconfig", Bson::Document(config));
+            if let Some(options) = options {
+                for (key, value) in options {
+                    command.insert(key, value);
+                }
+            }
+            let document = run_admin_command(&client, command)?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::StepDown { seconds, force } => {
+            let mut command = doc! { "replSetStepDown": seconds };
+            if let Some(force) = force {
+                command.insert("force", Bson::Boolean(force));
+            }
+            let document = run_admin_command(&client, command)?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::Freeze { seconds } => {
+            let document = run_admin_command(&client, doc! { "replSetFreeze": seconds })?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::Add { member, arbiter } => {
+            let mut config = fetch_replica_set_config(&client)?;
+            let mut members = extract_member_documents(&config)?;
+            let (mut new_member, host) = normalize_new_member(member, arbiter)?;
+            for member in &members {
+                if member_host(member)? == host {
+                    return Err(tr_format(
+                        "Replica set member with host '{}' already exists.",
+                        &[&host],
+                    ));
+                }
+            }
+            if !new_member.contains_key("_id") {
+                let next_id = next_member_id(&members);
+                new_member.insert("_id", Bson::Int64(next_id));
+            }
+            members.push(new_member);
+            config
+                .insert("members", Bson::Array(members.into_iter().map(Bson::Document).collect()));
+            increment_config_version(&mut config)?;
+            let document = run_admin_command(&client, doc! { "replSetReconfig": config })?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::Remove { host } => {
+            let mut config = fetch_replica_set_config(&client)?;
+            let members = extract_member_documents(&config)?;
+            let mut kept = Vec::new();
+            let mut removed = false;
+            for member in members {
+                let member_host_value = member_host(&member)?;
+                if member_host_value == host {
+                    removed = true;
+                } else {
+                    kept.push(member);
+                }
+            }
+            if !removed {
+                return Err(tr_format("Replica set member with host '{}' not found.", &[&host]));
+            }
+            config.insert("members", Bson::Array(kept.into_iter().map(Bson::Document).collect()));
+            increment_config_version(&mut config)?;
+            let document = run_admin_command(&client, doc! { "replSetReconfig": config })?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::SyncFrom { host } => {
+            let document = run_admin_command(&client, doc! { "replSetSyncFrom": host })?;
+            Ok(QueryResult::SingleDocument { document })
+        }
+        ReplicaSetCommand::SlaveOk => {
+            let mut document = Document::new();
+            document.insert("ok", Bson::Int32(1));
+            document.insert(
+                "message",
+                Bson::String(String::from(tr("slaveOk has no effect in this client."))),
+            );
+            Ok(QueryResult::SingleDocument { document })
+        }
+    }
+}
+
+fn run_admin_command(client: &Client, command: Document) -> Result<Document, String> {
+    client.database("admin").run_command(command).run().map_err(|err| err.to_string())
+}
+
+fn fetch_replica_set_config(client: &Client) -> Result<Document, String> {
+    let response = run_admin_command(client, doc! { "replSetGetConfig": 1 })?;
+    match response.get("config") {
+        Some(Bson::Document(config)) => Ok(config.clone()),
+        _ => {
+            Err(String::from(tr("Replica set config response does not contain a config document.")))
+        }
+    }
+}
+
+fn increment_config_version(config: &mut Document) -> Result<(), String> {
+    let version = config
+        .get("version")
+        .and_then(bson_to_i64)
+        .ok_or_else(|| String::from(tr("Replica set config version must be a number.")))?;
+    let next_version = version.saturating_add(1);
+    config.insert("version", Bson::Int64(next_version));
+    Ok(())
+}
+
+fn extract_member_documents(config: &Document) -> Result<Vec<Document>, String> {
+    let members = match config.get("members") {
+        Some(Bson::Array(items)) => items,
+        _ => {
+            return Err(String::from(tr(
+                "Replica set config must contain a members array of documents.",
+            )));
+        }
+    };
+
+    let mut result = Vec::new();
+    for item in members {
+        match item {
+            Bson::Document(doc) => result.push(doc.clone()),
+            _ => {
+                return Err(String::from(tr(
+                    "Replica set config must contain a members array of documents.",
+                )));
+            }
+        }
+    }
+    Ok(result)
+}
+
+fn member_host(member: &Document) -> Result<String, String> {
+    match member.get("host") {
+        Some(Bson::String(host)) => Ok(host.clone()),
+        _ => Err(String::from(tr("Replica set member must include a host string."))),
+    }
+}
+
+fn next_member_id(members: &[Document]) -> i64 {
+    members
+        .iter()
+        .filter_map(|member| member.get("_id").and_then(bson_to_i64))
+        .max()
+        .unwrap_or(-1)
+        .saturating_add(1)
+}
+
+fn normalize_new_member(member: Bson, arbiter: bool) -> Result<(Document, String), String> {
+    let mut document = match member {
+        Bson::String(host) => doc! { "host": host },
+        Bson::Document(doc) => doc,
+        _ => {
+            return Err(String::from(tr("rs.add expects a host string or a member document.")));
+        }
+    };
+    if arbiter {
+        document.insert("arbiterOnly", Bson::Boolean(true));
+    }
+    let host = member_host(&document)?;
+    Ok((document, host))
+}
+
+fn bson_to_i64(value: &Bson) -> Option<i64> {
+    match value {
+        Bson::Int32(v) => Some(*v as i64),
+        Bson::Int64(v) => Some(*v),
+        Bson::Double(v) => Some(*v as i64),
+        Bson::String(text) => text.parse::<i64>().ok(),
+        _ => None,
+    }
+}
+
+fn bson_to_f64(value: &Bson) -> Option<f64> {
+    match value {
+        Bson::Int32(v) => Some(*v as f64),
+        Bson::Int64(v) => Some(*v as f64),
+        Bson::Double(v) => Some(*v),
+        Bson::String(text) => text.parse::<f64>().ok(),
+        _ => None,
+    }
+}
+
+fn fetch_oplog_document(
+    collection: &mongodb::sync::Collection<Document>,
+    sort_direction: i32,
+) -> Result<Option<Document>, String> {
+    let cursor = collection
+        .find(Document::new())
+        .sort(doc! { "$natural": sort_direction })
+        .limit(1)
+        .run()
+        .map_err(|err| err.to_string())?;
+
+    if let Some(result) = cursor.into_iter().next() {
+        let document = result.map_err(|err| err.to_string())?;
+        Ok(Some(document))
+    } else {
+        Ok(None)
+    }
+}
+
+fn oplog_timestamp_millis(document: &Document) -> Result<i64, String> {
+    match document.get("ts") {
+        Some(Bson::Timestamp(ts)) => Ok(ts.time as i64 * 1000),
+        Some(Bson::DateTime(dt)) => Ok(dt.timestamp_millis()),
+        _ => Err(String::from(tr("Oplog entry does not contain a timestamp."))),
+    }
+}
+
+fn build_replication_info(client: &Client) -> Result<Document, String> {
+    let local_db = client.database("local");
+    let stats = local_db
+        .run_command(doc! { "collStats": "oplog.rs" })
+        .run()
+        .map_err(|err| err.to_string())?;
+    let max_size = stats
+        .get("maxSize")
+        .and_then(bson_to_f64)
+        .ok_or_else(|| String::from(tr("Oplog stats are unavailable.")))?;
+    let size = stats
+        .get("size")
+        .and_then(bson_to_f64)
+        .ok_or_else(|| String::from(tr("Oplog stats are unavailable.")))?;
+
+    let oplog = local_db.collection::<Document>("oplog.rs");
+    let first = fetch_oplog_document(&oplog, 1)?
+        .ok_or_else(|| String::from(tr("Oplog is empty; cannot compute replication info.")))?;
+    let last = fetch_oplog_document(&oplog, -1)?
+        .ok_or_else(|| String::from(tr("Oplog is empty; cannot compute replication info.")))?;
+
+    let first_ts = oplog_timestamp_millis(&first)?;
+    let last_ts = oplog_timestamp_millis(&last)?;
+    let diff_ms = (last_ts - first_ts).max(0);
+    let diff_secs = diff_ms / 1000;
+
+    let mut info = Document::new();
+    info.insert("logSizeMB", Bson::Double(max_size / 1024.0 / 1024.0));
+    info.insert("usedMB", Bson::Double(size / 1024.0 / 1024.0));
+    info.insert("timeDiffSeconds", Bson::Int64(diff_secs));
+    info.insert("timeDiffHours", Bson::Double(diff_secs as f64 / 3600.0));
+    info.insert("timeDiffDays", Bson::Double(diff_secs as f64 / 86400.0));
+    info.insert("tFirst", Bson::DateTime(DateTime::from_millis(first_ts)));
+    info.insert("tLast", Bson::DateTime(DateTime::from_millis(last_ts)));
+    info.insert("now", Bson::DateTime(DateTime::now()));
+    Ok(info)
+}
+
+fn member_optime_millis(member: &Document) -> Option<i64> {
+    if let Some(Bson::DateTime(dt)) = member.get("optimeDate") {
+        return Some(dt.timestamp_millis());
+    }
+    if let Some(Bson::Document(optime)) = member.get("optime") {
+        if let Some(Bson::Timestamp(ts)) = optime.get("ts") {
+            return Some(ts.time as i64 * 1000);
+        }
+        if let Some(Bson::DateTime(dt)) = optime.get("ts") {
+            return Some(dt.timestamp_millis());
+        }
+    }
+    None
+}
+
+fn build_secondary_replication_info(client: &Client) -> Result<Vec<Bson>, String> {
+    let status = run_admin_command(client, doc! { "replSetGetStatus": 1 })?;
+    let members = match status.get("members") {
+        Some(Bson::Array(items)) => items,
+        _ => {
+            return Err(String::from(tr("Replica set status does not contain members.")));
+        }
+    };
+
+    let primary_optime = members.iter().find_map(|member| {
+        if let Bson::Document(doc) = member {
+            let state_str = doc.get("stateStr").and_then(|value| value.as_str());
+            let state_code = doc.get("state").and_then(bson_to_i64);
+            let is_primary = state_str == Some("PRIMARY") || state_code == Some(1);
+            if is_primary {
+                return member_optime_millis(doc);
+            }
+        }
+        None
+    });
+
+    let primary_optime = primary_optime
+        .ok_or_else(|| String::from(tr("Primary member optime is not available.")))?;
+
+    let mut output = Vec::new();
+    for member in members {
+        let doc = match member {
+            Bson::Document(doc) => doc,
+            _ => continue,
+        };
+        let state_str = doc.get("stateStr").and_then(|value| value.as_str());
+        let state_code = doc.get("state").and_then(bson_to_i64);
+        let is_secondary = state_str == Some("SECONDARY") || state_code == Some(2);
+        if !is_secondary {
+            continue;
+        }
+
+        let name = doc
+            .get("name")
+            .and_then(|value| value.as_str())
+            .map(|value| value.to_string())
+            .or_else(|| member_host(doc).ok())
+            .unwrap_or_else(|| String::from(tr("unknown")));
+        let optime = member_optime_millis(doc);
+        let lag_seconds = optime.map(|optime| (primary_optime - optime).max(0) / 1000);
+
+        let mut entry = Document::new();
+        entry.insert("member", Bson::String(name));
+        if let Some(state) = state_str {
+            entry.insert("state", Bson::String(state.to_string()));
+        } else if let Some(state) = state_code {
+            entry.insert("state", Bson::Int64(state));
+        }
+        if let Some(optime) = optime {
+            entry.insert("optimeDate", Bson::DateTime(DateTime::from_millis(optime)));
+        }
+        if let Some(lag) = lag_seconds {
+            entry.insert("lagSeconds", Bson::Int64(lag));
+        }
+        if let Some(syncing_to) = doc.get("syncingTo") {
+            entry.insert("syncingTo", syncing_to.clone());
+        }
+        output.push(Bson::Document(entry));
+    }
+
+    Ok(output)
+}
+
 pub fn run_collection_query(
     client: Arc<Client>,
     db_name: String,
@@ -3773,6 +4462,7 @@ pub fn run_collection_query(
             }
             Ok(QueryResult::Indexes(documents))
         }
+        QueryOperation::ReplicaSetCommand { command } => run_replica_set_command(client, command),
         QueryOperation::DatabaseCommand { db, command } => {
             let database = client.database(&db);
             let action = database.run_command(command);
@@ -3790,6 +4480,33 @@ mod tests {
 
     fn parse(query: &str) -> QueryOperation {
         parse_collection_query("testdb", "users", query).expect("query should parse")
+    }
+
+    #[test]
+    fn parses_rs_status() {
+        let operation = parse("rs.status()");
+        match operation {
+            QueryOperation::ReplicaSetCommand { command: ReplicaSetCommand::Status } => {}
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_rs_add_member() {
+        let operation = parse("rs.add(\"localhost:27017\")");
+        match operation {
+            QueryOperation::ReplicaSetCommand { command } => match command {
+                ReplicaSetCommand::Add { member, arbiter } => {
+                    assert!(!arbiter);
+                    match member {
+                        Bson::String(host) => assert_eq!(host, "localhost:27017"),
+                        other => panic!("unexpected member: {:?}", other),
+                    }
+                }
+                other => panic!("unexpected command: {:?}", other),
+            },
+            other => panic!("unexpected operation: {:?}", other),
+        }
     }
 
     #[test]
