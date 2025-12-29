@@ -372,6 +372,8 @@ enum TableContextAction {
     UnhideIndex,
     ExpandHierarchy,
     CollapseHierarchy,
+    ExpandHierarchyAll,
+    CollapseHierarchyAll,
 }
 
 #[derive(Debug)]
@@ -1048,7 +1050,9 @@ impl CollectionTab {
             | TableContextAction::HideIndex
             | TableContextAction::UnhideIndex
             | TableContextAction::ExpandHierarchy
-            | TableContextAction::CollapseHierarchy => None,
+            | TableContextAction::CollapseHierarchy
+            | TableContextAction::ExpandHierarchyAll
+            | TableContextAction::CollapseHierarchyAll => None,
         }
     }
 
@@ -2762,6 +2766,18 @@ impl App {
                 TableContextAction::CollapseHierarchy => {
                     if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                         tab.collection.bson_tree.collapse_recursive(node_id);
+                    }
+                    Task::none()
+                }
+                TableContextAction::ExpandHierarchyAll => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                        tab.collection.bson_tree.expand_all();
+                    }
+                    Task::none()
+                }
+                TableContextAction::CollapseHierarchyAll => {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                        tab.collection.bson_tree.collapse_all();
                     }
                     Task::none()
                 }

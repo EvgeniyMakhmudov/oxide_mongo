@@ -714,6 +714,43 @@ impl BsonTree {
                     ));
                 }
 
+                let expand_all_button = style_menu_button(
+                    Button::new(fonts::primary_text(tr("Expand All Hierarchically"), None))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::ExpandHierarchyAll,
+                        }),
+                    &menu_colors,
+                    menu_border,
+                );
+
+                let collapse_all_button = style_menu_button(
+                    Button::new(fonts::primary_text(tr("Collapse All Hierarchically"), None))
+                        .padding([4, 12])
+                        .width(Length::Shrink)
+                        .on_press(Message::TableContextMenu {
+                            tab_id: menu_tab_id,
+                            node_id: menu_node_id,
+                            action: TableContextAction::CollapseHierarchyAll,
+                        }),
+                    &menu_colors,
+                    menu_border,
+                );
+
+                menu = menu.push(menu_item_container(
+                    expand_all_button.into(),
+                    &menu_colors,
+                    menu_border,
+                ));
+                menu = menu.push(menu_item_container(
+                    collapse_all_button.into(),
+                    &menu_colors,
+                    menu_border,
+                ));
+
                 let copy_json = style_menu_button(
                     Button::new(fonts::primary_text(tr("Copy JSON"), None))
                         .padding([4, 12])
@@ -951,6 +988,20 @@ impl BsonTree {
             }
         }
         self.expanded.remove(&node_id);
+    }
+
+    pub fn expand_all(&mut self) {
+        let root_ids: Vec<usize> = self.roots.iter().map(|node| node.id).collect();
+        for root_id in root_ids {
+            self.expand_recursive(root_id);
+        }
+    }
+
+    pub fn collapse_all(&mut self) {
+        let root_ids: Vec<usize> = self.roots.iter().map(|node| node.id).collect();
+        for root_id in root_ids {
+            self.collapse_recursive(root_id);
+        }
     }
 
     pub fn is_root_node(&self, node_id: usize) -> bool {
