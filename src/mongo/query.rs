@@ -1576,8 +1576,38 @@ impl<'a> QueryParser<'a> {
 
                 Ok(QueryOperation::DatabaseCommand { db: self.db_name.to_string(), command })
             }
+            "adminCommand" => {
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
+                } else {
+                    Self::split_arguments(args_trimmed)
+                };
+
+                if parts.is_empty() {
+                    return Err(String::from(tr(
+                        "db.adminCommand expects a document describing the command.",
+                    )));
+                }
+                if parts.len() > 1 {
+                    return Err(String::from(tr(
+                        "db.adminCommand supports only one argument (the command document).",
+                    )));
+                }
+
+                let command_bson = Self::parse_shell_bson_value(&parts[0])?;
+                let command = match command_bson {
+                    Bson::Document(doc) => doc,
+                    _ => {
+                        return Err(String::from(tr(
+                            "The first argument to db.adminCommand must be a document.",
+                        )));
+                    }
+                };
+
+                Ok(QueryOperation::DatabaseCommand { db: String::from("admin"), command })
+            }
             other => Err(tr_format(
-                "Method db.{} is not supported. Available methods: stats, runCommand.",
+                "Method db.{} is not supported. Available methods: stats, runCommand, adminCommand.",
                 &[other],
             )),
         }
@@ -3329,7 +3359,8 @@ impl<'a> QueryParser<'a> {
     }
 
     fn parse_shell_bson_value(source: &str) -> Result<Bson, String> {
-        let normalized = Self::preprocess_shell_json(source)?;
+        let quoted = quote_unquoted_keys(source);
+        let normalized = Self::preprocess_shell_json(&quoted)?;
         crate::mongo::shell::parse_shell_bson_value(&normalized)
     }
 
@@ -4505,6 +4536,18 @@ mod tests {
                 }
                 other => panic!("unexpected command: {:?}", other),
             },
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_db_admin_command() {
+        let operation = parse("db.adminCommand({ serverStatus: 1 })");
+        match operation {
+            QueryOperation::DatabaseCommand { db, command } => {
+                assert_eq!(db, "admin");
+                assert_eq!(command, doc! { "serverStatus": 1i64 });
+            }
             other => panic!("unexpected operation: {:?}", other),
         }
     }

@@ -85,7 +85,7 @@
 - [DONE] runCommand - служебные команды коллекции
 - [DONE] listIndexes / createIndex / dropIndex и т.п. — основные операции с индексами
 - [DONE] цепочки операций find.sort, find.hint...
-- db.adminCommand
+- [DONE] db.adminCommand
 
 
 ### Операции с репликами
