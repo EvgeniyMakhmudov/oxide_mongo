@@ -54,6 +54,8 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
         HashMap::from([
             ("Expand Hierarchically", "Развернуть иерархично"),
             ("Collapse Hierarchically", "Свернуть иерархично"),
+            ("Expand All Hierarchically", "Развернуть иерархично всё"),
+            ("Collapse All Hierarchically", "Свернуть иерархично всё"),
             ("Copy JSON", "Копировать JSON"),
             ("View", "Вид"),
             ("Table", "Таблица"),
