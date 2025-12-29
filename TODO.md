@@ -89,12 +89,12 @@
 
 
 ### Операции с репликами
-- status
+- [DONE] status
 - conf
-- isMaster
-- hello
-- printReplicationInfo
-- printSecondaryReplicationInfo
+- [DONE] isMaster
+- [DONE] hello
+- [DONE] printReplicationInfo
+- [DONE] printSecondaryReplicationInfo
 - initiate
 - reconfig
 - stepDown
@@ -103,7 +103,7 @@
 - addArb
 - remove
 - syncFrom
-- slaveOk
+- [DONE] slaveOk
 
 
 # Интернационализация
