@@ -213,6 +213,18 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
                 "SSH private key text is not supported on this platform",
                 "Текстовый приватный ключ SSH не поддерживается на этой платформе",
             ),
+            (
+                "SSH password authentication failed. Check username and password.",
+                "Не удалось пройти SSH-аутентификацию по паролю. Проверьте имя пользователя и пароль.",
+            ),
+            (
+                "SSH private key passphrase is required.",
+                "Для приватного ключа SSH требуется парольная фраза.",
+            ),
+            (
+                "SSH private key passphrase is incorrect.",
+                "Неверная парольная фраза приватного ключа SSH.",
+            ),
             ("Database name", "Название базы данных"),
             ("First collection name", "Имя первой коллекции"),
             ("Collection Name", "Имя коллекции"),

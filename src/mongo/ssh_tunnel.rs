@@ -70,6 +70,37 @@ impl Drop for SshTunnel {
     }
 }
 
+fn is_auth_error(err: &ssh2::Error) -> bool {
+    let message = err.message().to_lowercase();
+    message.contains("auth")
+        || message.contains("password")
+        || message.contains("keyfile")
+        || message.contains("public key")
+}
+
+fn auth_failure_message(method: SshAuthMethod, passphrase_present: bool) -> String {
+    match method {
+        SshAuthMethod::Password => {
+            String::from(tr("SSH password authentication failed. Check username and password."))
+        }
+        SshAuthMethod::PrivateKey => {
+            if passphrase_present {
+                String::from(tr("SSH private key passphrase is incorrect."))
+            } else {
+                String::from(tr("SSH private key passphrase is required."))
+            }
+        }
+    }
+}
+
+fn map_auth_error(method: SshAuthMethod, passphrase_present: bool, err: ssh2::Error) -> String {
+    if is_auth_error(&err) {
+        auth_failure_message(method, passphrase_present)
+    } else {
+        err.to_string()
+    }
+}
+
 fn run_tunnel(
     settings: SshTunnelSettings,
     remote_host: String,
@@ -77,26 +108,34 @@ fn run_tunnel(
     shutdown_rx: Receiver<()>,
     ready_tx: Sender<Result<u16, String>>,
 ) -> Result<(), String> {
+    let send_error = |error: String| {
+        let _ = ready_tx.send(Err(error.clone()));
+        error
+    };
+
     let tcp = TcpStream::connect((settings.host.as_str(), settings.port))
-        .map_err(|err| err.to_string())?;
+        .map_err(|err| send_error(err.to_string()))?;
 
-    let mut session = Session::new().map_err(|err| err.to_string())?;
+    let mut session = Session::new().map_err(|err| send_error(err.to_string()))?;
     session.set_tcp_stream(tcp);
-    session.handshake().map_err(|err| err.to_string())?;
-    verify_known_host(&session, &settings.host, settings.port)?;
+    session.handshake().map_err(|err| send_error(err.to_string()))?;
+    verify_known_host(&session, &settings.host, settings.port).map_err(send_error)?;
 
+    let mut passphrase_present = false;
     match settings.auth_method {
         SshAuthMethod::Password => {
             let password = settings.password.as_deref().unwrap_or_default();
             session
                 .userauth_password(&settings.username, password)
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| send_error(map_auth_error(SshAuthMethod::Password, false, err)))?;
         }
         SshAuthMethod::PrivateKey => {
             let key_input = settings.private_key.as_deref().unwrap_or_default().trim();
             let passphrase = settings.passphrase.as_deref().filter(|value| !value.is_empty());
+            passphrase_present = passphrase.is_some();
             if looks_like_private_key(key_input) {
-                userauth_private_key_memory(&session, &settings.username, key_input, passphrase)?;
+                userauth_private_key_memory(&session, &settings.username, key_input, passphrase)
+                    .map_err(send_error)?;
             } else {
                 session
                     .userauth_pubkey_file(
@@ -105,13 +144,19 @@ fn run_tunnel(
                         Path::new(key_input),
                         passphrase,
                     )
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err| {
+                        send_error(map_auth_error(
+                            SshAuthMethod::PrivateKey,
+                            passphrase_present,
+                            err,
+                        ))
+                    })?;
             }
         }
     }
 
     if !session.authenticated() {
-        return Err(String::from("SSH authentication failed"));
+        return Err(send_error(auth_failure_message(settings.auth_method, passphrase_present)));
     }
 
     let _ = session.set_keepalive(true, KEEPALIVE_INTERVAL.as_secs() as u32);
@@ -225,7 +270,7 @@ fn userauth_private_key_memory(
     {
         session
             .userauth_pubkey_memory(username, None, key_data, passphrase)
-            .map_err(|err| err.to_string())
+            .map_err(|err| map_auth_error(SshAuthMethod::PrivateKey, passphrase.is_some(), err))
     }
 
     #[cfg(not(unix))]
