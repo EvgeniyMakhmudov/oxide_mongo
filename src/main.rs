@@ -22,7 +22,8 @@ use iced::widget::{
 };
 use iced::window;
 use iced::{
-    Color, Element, Font, Length, Shadow, Subscription, Task, Theme, application, clipboard,
+    Color, Element, Font, Length, Padding, Shadow, Size, Subscription, Task, Theme, application,
+    clipboard,
 };
 use iced_aw::ContextMenu;
 use iced_fonts::REQUIRED_FONT_BYTES;
@@ -63,6 +64,17 @@ pub(crate) type ClientId = u32;
 pub(crate) const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const DEFAULT_RESULT_LIMIT: i64 = 50;
 const DEFAULT_RESULT_SKIP: u64 = 0;
+const PANE_GRID_SPACING: f32 = 8.0;
+const MAIN_PANEL_PADDING: f32 = 8.0;
+const TAB_HEADER_PADDING_X: f32 = 4.0;
+const TAB_ROW_SPACING: f32 = 8.0;
+const TAB_INNER_SPACING: f32 = 4.0;
+const TAB_TITLE_PADDING_X: f32 = 12.0;
+const TAB_CONTAINER_PADDING_X: f32 = 8.0;
+const TAB_CLOSE_PADDING_X: f32 = 8.0;
+const TAB_CHAR_WIDTH_FACTOR: f32 = 0.6;
+const TAB_WIDTH_TOLERANCE: f32 = 12.0;
+const TAB_SCROLLBAR_PADDING: f32 = 10.0;
 const WINDOW_ICON_BYTES: &[u8] = include_bytes!("../assests/icons/oxide_mongo_256x256.png");
 pub(crate) const ICON_NETWORK_BYTES: &[u8] = include_bytes!("../assests/icons/network_115x128.png");
 const ICON_DATABASE_BYTES: &[u8] = include_bytes!("../assests/icons/database_105x128.png");
@@ -107,6 +119,7 @@ pub(crate) struct App {
     database_modal: Option<DatabaseModalState>,
     document_modal: Option<DocumentModalState>,
     value_edit_modal: Option<ValueEditModalState>,
+    window_size: Option<Size>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -138,6 +151,7 @@ pub(crate) enum Message {
     MenuItemSelected(TopMenu, MenuEntry),
     TabSelected(TabId),
     TabClosed(TabId),
+    WindowEvent(window::Event),
     PaneResized(ResizeEvent),
     ConnectionCompleted {
         client_id: ClientId,
@@ -1401,6 +1415,7 @@ impl App {
             database_modal: None,
             document_modal: None,
             value_edit_modal: None,
+            window_size: None,
         }
     }
 
@@ -1475,6 +1490,15 @@ impl App {
                             .or_else(|| self.tabs.get(position))
                             .map(|tab| tab.id);
                     }
+                }
+                Task::none()
+            }
+            Message::WindowEvent(event) => {
+                match event {
+                    window::Event::Opened { size, .. } | window::Event::Resized(size) => {
+                        self.window_size = Some(size);
+                    }
+                    _ => {}
                 }
                 Task::none()
             }
@@ -3467,7 +3491,7 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        Subscription::none()
+        window::events().map(|(_id, event)| Message::WindowEvent(event))
     }
 
     fn main_view(&self) -> Element<'_, Message> {
@@ -3479,7 +3503,7 @@ impl App {
                 PaneContent::Main => pane_grid::Content::new(self.main_panel()),
             })
             .on_resize(8, Message::PaneResized)
-            .spacing(8)
+            .spacing(PANE_GRID_SPACING)
             .height(Length::Fill);
 
         Column::new().push(menu_bar).push(content_grid).spacing(0).height(Length::Fill).into()
@@ -4352,6 +4376,51 @@ impl App {
         }
     }
 
+    fn tab_bar_available_width(&self) -> Option<f32> {
+        let window_size = self.window_size?;
+        let regions = self.panes.layout().pane_regions(PANE_GRID_SPACING, window_size);
+        let main_pane = self
+            .panes
+            .iter()
+            .find(|(_, content)| **content == PaneContent::Main)
+            .map(|(pane, _)| *pane)?;
+        let bounds = regions.get(&main_pane)?;
+        let mut width = bounds.width - (MAIN_PANEL_PADDING * 2.0) - (TAB_HEADER_PADDING_X * 2.0);
+        if width < 0.0 {
+            width = 0.0;
+        }
+        Some(width)
+    }
+
+    fn estimate_tab_width(&self, title: &str) -> f32 {
+        let font_size = fonts::active_fonts().primary_size;
+        let char_width = font_size * TAB_CHAR_WIDTH_FACTOR;
+        let title_width = title.chars().count() as f32 * char_width;
+        let close_width = char_width;
+        let padding = (TAB_TITLE_PADDING_X + TAB_CONTAINER_PADDING_X + TAB_CLOSE_PADDING_X) * 2.0;
+        title_width + close_width + padding + TAB_INNER_SPACING
+    }
+
+    fn estimate_tabs_row_width(&self) -> f32 {
+        let mut width = 0.0;
+        for (index, tab) in self.tabs.iter().enumerate() {
+            if index > 0 {
+                width += TAB_ROW_SPACING;
+            }
+            width += self.estimate_tab_width(&tab.title);
+        }
+        width
+    }
+
+    fn should_reserve_tab_scrollbar(&self) -> bool {
+        let Some(available) = self.tab_bar_available_width() else {
+            return false;
+        };
+        let threshold =
+            if available > TAB_WIDTH_TOLERANCE { available - TAB_WIDTH_TOLERANCE } else { 0.0 };
+        self.estimate_tabs_row_width() > threshold
+    }
+
     fn main_panel(&self) -> Element<'_, Message> {
         let palette = self.active_palette();
         let pane_bg = palette.widget_background_color();
@@ -4374,7 +4443,7 @@ impl App {
         } else {
             let active_id = self.active_tab.or_else(|| self.tabs.first().map(|tab| tab.id));
 
-            let mut tabs_row = Row::new().spacing(8).align_y(Vertical::Center);
+            let mut tabs_row = Row::new().spacing(TAB_ROW_SPACING).align_y(Vertical::Center);
 
             let active_bg = palette.subtle_buttons.hover.to_color();
             let inactive_bg = palette.subtle_buttons.active.to_color();
@@ -4383,50 +4452,60 @@ impl App {
             for tab in &self.tabs {
                 let is_active = active_id == Some(tab.id);
 
-                let title_label =
-                    Container::new(fonts::primary_text(tab.title.clone(), None)).padding([4, 12]);
+                let title_label = Container::new(fonts::primary_text(tab.title.clone(), None))
+                    .padding([4.0, TAB_TITLE_PADDING_X]);
 
                 let title_area = mouse_area(title_label).on_press(Message::TabSelected(tab.id));
 
                 let close_button = Button::new(fonts::primary_text(tr("×"), None))
-                    .padding([4, 8])
+                    .padding([4.0, TAB_CLOSE_PADDING_X])
                     .on_press(Message::TabClosed(tab.id));
 
                 let tab_inner = Row::new()
-                    .spacing(4)
+                    .spacing(TAB_INNER_SPACING)
                     .align_y(Vertical::Center)
                     .push(title_area)
                     .push(close_button);
 
-                let tab_container = Container::new(tab_inner).padding([4, 8]).style(move |_| {
-                    if is_active {
-                        container::Style {
-                            background: Some(active_bg.into()),
-                            text_color: Some(text_color),
-                            border: border::rounded(6).width(1).color(border_color),
-                            ..Default::default()
+                let tab_container = Container::new(tab_inner)
+                    .padding([4.0, TAB_CONTAINER_PADDING_X])
+                    .style(move |_| {
+                        if is_active {
+                            container::Style {
+                                background: Some(active_bg.into()),
+                                text_color: Some(text_color),
+                                border: border::rounded(6).width(1).color(border_color),
+                                ..Default::default()
+                            }
+                        } else {
+                            container::Style {
+                                background: Some(inactive_bg.into()),
+                                text_color: Some(text_color),
+                                border: border::rounded(6).width(1).color(border_color),
+                                ..Default::default()
+                            }
                         }
-                    } else {
-                        container::Style {
-                            background: Some(inactive_bg.into()),
-                            text_color: Some(text_color),
-                            border: border::rounded(6).width(1).color(border_color),
-                            ..Default::default()
-                        }
-                    }
-                });
+                    });
 
                 tabs_row = tabs_row.push(tab_container);
             }
 
+            let tabs_content = if self.should_reserve_tab_scrollbar() {
+                Container::new(tabs_row).padding(Padding::default().bottom(TAB_SCROLLBAR_PADDING))
+            } else {
+                Container::new(tabs_row)
+            };
+
             let header_scroll = Scrollable::with_direction(
-                tabs_row,
+                tabs_content,
                 scrollable::Direction::Horizontal(scrollable::Scrollbar::default()),
             )
             .height(Length::Shrink)
             .width(Length::Fill);
 
-            let header = Container::new(header_scroll).width(Length::Fill).padding([0, 4]);
+            let header = Container::new(header_scroll)
+                .width(Length::Fill)
+                .padding([0.0, TAB_HEADER_PADDING_X]);
 
             let content = active_id
                 .and_then(|id| self.tabs.iter().find(|tab| tab.id == id))
@@ -4448,7 +4527,7 @@ impl App {
                 .height(Length::Fill);
 
             Container::new(layout)
-                .padding(8)
+                .padding(MAIN_PANEL_PADDING)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .style(move |_| container::Style {
