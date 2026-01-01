@@ -95,6 +95,7 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("No collections", "Нет коллекций"),
             ("Open Empty Tab", "Открыть пустую вкладку"),
             ("View Documents", "Посмотреть документы"),
+            ("Change Stream", "Стрим изменений"),
             ("Delete Documents...", "Удалить документы..."),
             ("Delete All Documents...", "Удалить все документы..."),
             ("Rename Collection...", "Переименовать коллекцию..."),
@@ -375,8 +376,20 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
                 "deleteMany принимает фильтр и необязательный объект options.",
             ),
             (
-                "Method {} is not supported. Available methods: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
-                "Метод {} не поддерживается. Доступны: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
+                "Method {} is not supported. Available methods: find, watch, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
+                "Метод {} не поддерживается. Доступны: find, watch, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
+            ),
+            (
+                "watch accepts at most one argument (the pipeline array).",
+                "watch принимает не более одного аргумента (массив pipeline).",
+            ),
+            (
+                "watch pipeline element at index {} must be an object.",
+                "Элемент pipeline watch с индексом {} должен быть объектом.",
+            ),
+            (
+                "watch pipeline must be an array of stages or a single stage object.",
+                "Pipeline watch должен быть массивом стадий или одним объектом стадии.",
             ),
             (
                 "Invalid character in the collection name:",
@@ -635,7 +648,7 @@ fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("The first argument to db.adminCommand must be a document.", "Первый аргумент db.adminCommand должен быть документом."),
             ("Code point 0x{} is not a valid character.", "Кодовая точка 0x{value:04X} не является допустимым символом."),
             ("Constructor '{}' is not supported.", "Конструктор '{identifier}' не поддерживается."),
-            ("Method db.{} is not supported. Available methods: stats, runCommand, adminCommand.", "Метод db.{other} не поддерживается. Доступны: stats, runCommand, adminCommand."),
+            ("Method db.{} is not supported. Available methods: stats, runCommand, adminCommand, watch.", "Метод db.{other} не поддерживается. Доступны: stats, runCommand, adminCommand, watch."),
             ("Collection filters configured", "Настроены фильтры коллекций"),
             ("Failed to determine the tab to refresh indexes.", "Не удалось определить вкладку для обновления индексов."),
             ("Failed to convert Decimal128 to a number.", "Не удалось преобразовать Decimal128 в число."),

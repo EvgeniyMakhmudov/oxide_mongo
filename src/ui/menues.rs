@@ -14,7 +14,6 @@ use crate::{ClientId, Message, ResponseViewMode};
 pub(crate) enum TopMenu {
     File,
     View,
-    Windows,
     Help,
 }
 
@@ -23,7 +22,6 @@ impl TopMenu {
         match self {
             TopMenu::File => "File",
             TopMenu::View => "View",
-            TopMenu::Windows => "Windows",
             TopMenu::Help => "Help",
         }
     }
@@ -56,6 +54,7 @@ pub(crate) enum ConnectionContextAction {
 pub(crate) enum CollectionContextAction {
     OpenEmptyTab,
     ViewDocuments,
+    ChangeStream,
     DeleteTemplate,
     DeleteAllDocuments,
     DeleteCollection,
@@ -96,11 +95,6 @@ pub(crate) fn build_menu_bar<'a>(palette: ThemePalette) -> MenuBar<'a, Message, 
             MenuEntry::ViewMode(ResponseViewMode::Table),
             MenuEntry::ViewMode(ResponseViewMode::Text),
         ],
-    ));
-    roots.push(menu_root(
-        &palette,
-        TopMenu::Windows,
-        &[MenuEntry::Action("Cascade"), MenuEntry::Action("Tile")],
     ));
     roots.push(menu_root(
         &palette,
@@ -242,6 +236,7 @@ pub(crate) fn collection_context_menu<'a>(
 
         menu = menu.push(make_button(tr("Open Empty Tab"), CollectionContextAction::OpenEmptyTab));
         menu = menu.push(make_button(tr("View Documents"), CollectionContextAction::ViewDocuments));
+        menu = menu.push(make_button(tr("Change Stream"), CollectionContextAction::ChangeStream));
         menu = menu
             .push(make_button(tr("Delete Documents..."), CollectionContextAction::DeleteTemplate));
         menu = menu.push(make_button(

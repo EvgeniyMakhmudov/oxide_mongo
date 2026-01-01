@@ -9,6 +9,7 @@ use mongodb::bson::{
     self, Binary, Bson, DateTime, Decimal128, Document, JavaScriptCodeWithScope, Regex,
     Timestamp as BsonTimestamp, doc, oid::ObjectId,
 };
+use mongodb::change_stream::event::ChangeStreamEvent;
 use mongodb::options::{Acknowledgment, Collation, Hint, ReturnDocument, WriteConcern};
 use mongodb::sync::Client;
 use serde_json::Value;
@@ -266,6 +267,12 @@ pub enum ReplicaSetCommand {
     SlaveOk,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WatchTarget {
+    Collection,
+    Database,
+}
+
 #[derive(Debug, Clone)]
 pub enum QueryOperation {
     Find {
@@ -291,6 +298,10 @@ pub enum QueryOperation {
     },
     Aggregate {
         pipeline: Vec<Document>,
+    },
+    Watch {
+        pipeline: Vec<Document>,
+        target: WatchTarget,
     },
     InsertOne {
         document: Document,
@@ -390,6 +401,15 @@ impl<'a> QueryParser<'a> {
                 Self::parse_json_object(args.trim())?
             };
             return self.parse_find_chain(filter, remainder);
+        }
+        if method_name == "watch" {
+            if !remainder.trim().is_empty() {
+                return Err(String::from(tr(
+                    "Only a single method call is supported after specifying the collection.",
+                )));
+            }
+            let pipeline = self.parse_watch_pipeline(args.trim())?;
+            return Ok(QueryOperation::Watch { pipeline, target: WatchTarget::Collection });
         }
 
         if !remainder.trim().is_empty() {
@@ -992,7 +1012,7 @@ impl<'a> QueryParser<'a> {
                 Ok(QueryOperation::DeleteMany { filter, options })
             }
             other => Err(tr_format(
-                "Method {} is not supported. Available methods: find, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
+                "Method {} is not supported. Available methods: find, watch, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
                 &[other],
             )),
         }
@@ -1606,10 +1626,54 @@ impl<'a> QueryParser<'a> {
 
                 Ok(QueryOperation::DatabaseCommand { db: String::from("admin"), command })
             }
+            "watch" => {
+                let pipeline = self.parse_watch_pipeline(args_trimmed)?;
+                Ok(QueryOperation::Watch { pipeline, target: WatchTarget::Database })
+            }
             other => Err(tr_format(
-                "Method db.{} is not supported. Available methods: stats, runCommand, adminCommand.",
+                "Method db.{} is not supported. Available methods: stats, runCommand, adminCommand, watch.",
                 &[other],
             )),
+        }
+    }
+
+    fn parse_watch_pipeline(&self, source: &str) -> Result<Vec<Document>, String> {
+        if source.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let parts = Self::split_arguments(source);
+        if parts.len() > 1 {
+            return Err(String::from(tr(
+                "watch accepts at most one argument (the pipeline array).",
+            )));
+        }
+
+        let value: Value = Self::parse_shell_json_value(&parts[0])?;
+        match value {
+            Value::Array(items) => {
+                let mut pipeline = Vec::with_capacity(items.len());
+                for (index, item) in items.iter().enumerate() {
+                    let object = item.as_object().ok_or_else(|| {
+                        tr_format(
+                            "watch pipeline element at index {} must be an object.",
+                            &[&index.to_string()],
+                        )
+                    })?;
+                    let document = bson::to_document(object)
+                        .map_err(|error| format!("BSON conversion error: {error}"))?;
+                    pipeline.push(document);
+                }
+                Ok(pipeline)
+            }
+            Value::Object(object) => {
+                let document = bson::to_document(&object)
+                    .map_err(|error| format!("BSON conversion error: {error}"))?;
+                Ok(vec![document])
+            }
+            _ => Err(String::from(tr(
+                "watch pipeline must be an array of stages or a single stage object.",
+            ))),
         }
     }
 
@@ -3510,6 +3574,58 @@ fn resolve_effective_limit(ui_limit: u64, chain_limit: Option<u64>) -> u64 {
     }
 }
 
+pub(crate) fn open_change_stream(
+    client: &Client,
+    db_name: &str,
+    collection_name: &str,
+    target: WatchTarget,
+    pipeline: Vec<Document>,
+) -> Result<mongodb::sync::ChangeStream<ChangeStreamEvent<Document>>, String> {
+    match target {
+        WatchTarget::Collection => {
+            let collection = client.database(db_name).collection::<Document>(collection_name);
+            let watch = collection.watch();
+            if pipeline.is_empty() {
+                watch.run().map_err(|err| err.to_string())
+            } else {
+                watch.pipeline(pipeline).run().map_err(|err| err.to_string())
+            }
+        }
+        WatchTarget::Database => {
+            let database = client.database(db_name);
+            let watch = database.watch();
+            if pipeline.is_empty() {
+                watch.run().map_err(|err| err.to_string())
+            } else {
+                watch.pipeline(pipeline).run().map_err(|err| err.to_string())
+            }
+        }
+    }
+}
+
+fn collect_watch_documents(
+    stream: mongodb::sync::ChangeStream<ChangeStreamEvent<Document>>,
+    limit: u64,
+) -> Result<Vec<Bson>, String> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let max_items = if limit > usize::MAX as u64 { usize::MAX } else { limit as usize };
+
+    let mut documents = Vec::new();
+    for result in stream {
+        let event = result.map_err(|err| err.to_string())?;
+        let bson =
+            bson::to_bson(&event).map_err(|error| format!("BSON conversion error: {error}"))?;
+        documents.push(bson);
+        if documents.len() >= max_items {
+            break;
+        }
+    }
+    Ok(documents)
+}
+
 fn u64_to_bson(value: u64) -> Bson {
     if value <= i64::MAX as u64 {
         Bson::Int64(value as i64)
@@ -4086,6 +4202,11 @@ pub fn run_collection_query(
                 documents.push(Bson::Document(document));
             }
 
+            Ok(QueryResult::Documents(documents))
+        }
+        QueryOperation::Watch { pipeline, target } => {
+            let stream = open_change_stream(&client, &db_name, &collection_name, target, pipeline)?;
+            let documents = collect_watch_documents(stream, limit)?;
             Ok(QueryResult::Documents(documents))
         }
         QueryOperation::InsertOne { document, options } => {

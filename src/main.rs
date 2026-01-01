@@ -8,6 +8,7 @@ use i18n::{tr, tr_format};
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
 use iced::font::Weight;
+use iced::futures::stream;
 use iced::keyboard::{self, key};
 use iced::widget::image::Handle;
 use iced::widget::pane_grid::ResizeEvent;
@@ -28,6 +29,7 @@ use iced::{
 use iced_aw::ContextMenu;
 use iced_fonts::REQUIRED_FONT_BYTES;
 use mongodb::bson::{self, Bson, Document, doc};
+use mongodb::change_stream::event::ChangeStreamEvent;
 use mongodb::options::ReturnDocument;
 use mongodb::sync::Client;
 use rfd::FileDialog;
@@ -42,7 +44,10 @@ use mongo::bson_tree::{BsonTree, BsonTreeOptions};
 use mongo::connection::{
     ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections,
 };
-use mongo::query::{QueryOperation, QueryResult, parse_collection_query, run_collection_query};
+use mongo::query::{
+    QueryOperation, QueryResult, WatchTarget, open_change_stream, parse_collection_query,
+    run_collection_query,
+};
 use mongo::shell;
 use mongo::ssh_tunnel::SshTunnel;
 use settings::{AppSettings, ThemeChoice, ThemePalette};
@@ -225,6 +230,10 @@ pub(crate) enum Message {
     },
     CollectionSkipPrev(TabId),
     CollectionSkipNext(TabId),
+    CollectionWatchProgress {
+        tab_id: TabId,
+        documents: Vec<Bson>,
+    },
     CollectionQueryCompleted {
         tab_id: TabId,
         result: Result<QueryResult, String>,
@@ -736,6 +745,21 @@ struct CollectionClick {
     db_name: String,
     collection: String,
     at: Instant,
+}
+
+#[derive(Debug)]
+enum WatchStreamEvent {
+    Progress(Vec<Bson>),
+    Finished { result: Result<QueryResult, String>, duration: Duration },
+}
+
+struct WatchStreamState {
+    change_stream: Option<mongodb::sync::ChangeStream<ChangeStreamEvent<Document>>>,
+    documents: Vec<Bson>,
+    limit: usize,
+    started: Instant,
+    finished: bool,
+    error: Option<String>,
 }
 
 #[derive(Debug)]
@@ -1687,6 +1711,21 @@ impl App {
                             db_name.clone(),
                             collection.clone(),
                         );
+                        self.collection_query_task(tab_id)
+                    }
+                    CollectionContextAction::ChangeStream => {
+                        let tab_id = self.open_collection_tab(
+                            client_id,
+                            db_name.clone(),
+                            collection.clone(),
+                        );
+                        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                            let query = format!(
+                                "db.getCollection('{collection_name}').watch()",
+                                collection_name = collection
+                            );
+                            tab.collection.editor = TextEditorContent::with_text(&query);
+                        }
                         self.collection_query_task(tab_id)
                     }
                     CollectionContextAction::DeleteTemplate => {
@@ -2826,6 +2865,13 @@ impl App {
                     tab.collection.increment_skip_by_limit();
                 }
                 self.collection_query_task(tab_id)
+            }
+            Message::CollectionWatchProgress { tab_id, documents } => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    let result = QueryResult::Documents(documents);
+                    tab.collection.set_query_result(result, &self.settings);
+                }
+                Task::none()
             }
             Message::CollectionQueryCompleted { tab_id, result, duration } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
@@ -4930,26 +4976,163 @@ impl App {
         let timeout =
             if timeout_secs == 0 { None } else { Some(Duration::from_secs(timeout_secs)) };
 
-        Task::perform(
-            async move {
-                let started = Instant::now();
-                let result = run_collection_query(
+        match operation {
+            QueryOperation::Watch { pipeline, target } => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.collection
+                        .set_query_result(QueryResult::Documents(Vec::new()), &self.settings);
+                }
+                self.collection_watch_task(
+                    tab_id,
                     handle,
                     db_name,
                     collection_name,
-                    operation,
-                    skip,
+                    target,
+                    pipeline,
                     limit,
-                    timeout,
-                );
-                (result, started.elapsed())
+                )
+            }
+            operation => Task::perform(
+                async move {
+                    let started = Instant::now();
+                    let result = run_collection_query(
+                        handle,
+                        db_name,
+                        collection_name,
+                        operation,
+                        skip,
+                        limit,
+                        timeout,
+                    );
+                    (result, started.elapsed())
+                },
+                move |(result, duration)| Message::CollectionQueryCompleted {
+                    tab_id,
+                    result,
+                    duration,
+                },
+            ),
+        }
+    }
+
+    fn collection_watch_task(
+        &self,
+        tab_id: TabId,
+        handle: Arc<Client>,
+        db_name: String,
+        collection_name: String,
+        target: WatchTarget,
+        pipeline: Vec<Document>,
+        limit: u64,
+    ) -> Task<Message> {
+        let started = Instant::now();
+        let capped_limit = if limit > usize::MAX as u64 { usize::MAX } else { limit as usize };
+
+        let state = match open_change_stream(&handle, &db_name, &collection_name, target, pipeline)
+        {
+            Ok(change_stream) => WatchStreamState {
+                change_stream: Some(change_stream),
+                documents: Vec::new(),
+                limit: capped_limit,
+                started,
+                finished: false,
+                error: None,
             },
-            move |(result, duration)| Message::CollectionQueryCompleted {
-                tab_id,
-                result,
-                duration,
+            Err(error) => WatchStreamState {
+                change_stream: None,
+                documents: Vec::new(),
+                limit: capped_limit,
+                started,
+                finished: false,
+                error: Some(error),
             },
-        )
+        };
+
+        let stream = stream::unfold(state, |mut state| async move {
+            if state.finished {
+                return None;
+            }
+
+            if let Some(error) = state.error.take() {
+                state.finished = true;
+                let duration = state.started.elapsed();
+                return Some((WatchStreamEvent::Finished { result: Err(error), duration }, state));
+            }
+
+            if state.limit == 0 {
+                state.finished = true;
+                let duration = state.started.elapsed();
+                let result = Ok(QueryResult::Documents(Vec::new()));
+                return Some((WatchStreamEvent::Finished { result, duration }, state));
+            }
+
+            let mut change_stream = match state.change_stream.take() {
+                Some(stream) => stream,
+                None => {
+                    state.finished = true;
+                    let duration = state.started.elapsed();
+                    let documents = std::mem::take(&mut state.documents);
+                    let result = Ok(QueryResult::Documents(documents));
+                    return Some((WatchStreamEvent::Finished { result, duration }, state));
+                }
+            };
+
+            let next_event = change_stream.next();
+            state.change_stream = Some(change_stream);
+
+            match next_event {
+                Some(Ok(event)) => {
+                    let bson = match bson::to_bson(&event) {
+                        Ok(bson) => bson,
+                        Err(error) => {
+                            state.finished = true;
+                            let duration = state.started.elapsed();
+                            let message = format!("BSON conversion error: {error}");
+                            return Some((
+                                WatchStreamEvent::Finished { result: Err(message), duration },
+                                state,
+                            ));
+                        }
+                    };
+
+                    state.documents.push(bson);
+                    if state.documents.len() >= state.limit {
+                        state.finished = true;
+                        let duration = state.started.elapsed();
+                        let documents = std::mem::take(&mut state.documents);
+                        let result = Ok(QueryResult::Documents(documents));
+                        Some((WatchStreamEvent::Finished { result, duration }, state))
+                    } else {
+                        let snapshot = state.documents.clone();
+                        Some((WatchStreamEvent::Progress(snapshot), state))
+                    }
+                }
+                Some(Err(error)) => {
+                    state.finished = true;
+                    let duration = state.started.elapsed();
+                    Some((
+                        WatchStreamEvent::Finished { result: Err(error.to_string()), duration },
+                        state,
+                    ))
+                }
+                None => {
+                    state.finished = true;
+                    let duration = state.started.elapsed();
+                    let documents = std::mem::take(&mut state.documents);
+                    let result = Ok(QueryResult::Documents(documents));
+                    Some((WatchStreamEvent::Finished { result, duration }, state))
+                }
+            }
+        });
+
+        Task::run(stream, move |event| match event {
+            WatchStreamEvent::Progress(documents) => {
+                Message::CollectionWatchProgress { tab_id, documents }
+            }
+            WatchStreamEvent::Finished { result, duration } => {
+                Message::CollectionQueryCompleted { tab_id, result, duration }
+            }
+        })
     }
 
     fn open_connections_window(&mut self) {
