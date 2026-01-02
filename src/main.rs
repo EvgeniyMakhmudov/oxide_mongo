@@ -83,8 +83,12 @@ const TAB_SCROLLBAR_PADDING: f32 = 10.0;
 const WINDOW_ICON_BYTES: &[u8] = include_bytes!("../assests/icons/oxide_mongo_256x256.png");
 pub(crate) const ICON_NETWORK_BYTES: &[u8] = include_bytes!("../assests/icons/network_115x128.png");
 const ICON_DATABASE_BYTES: &[u8] = include_bytes!("../assests/icons/database_105x128.png");
+const ABOUT_HOMEPAGE: &str = "https://github.com/EvgeniyMakhmudov/oxide_mongo";
+const ABOUT_AUTHOR: &str = "Evgeniy Makhmudov";
+const ABOUT_SINCE: &str = "2025";
 const ICON_COLLECTION_BYTES: &[u8] = include_bytes!("../assests/icons/collection_108x128.png");
 pub(crate) static ICON_NETWORK_HANDLE: OnceLock<Handle> = OnceLock::new();
+static ICON_APP_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_DATABASE_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_COLLECTION_HANDLE: OnceLock<Handle> = OnceLock::new();
 
@@ -204,6 +208,7 @@ pub(crate) enum Message {
         tab_id: TabId,
         result: Result<Document, String>,
     },
+    AboutModalClose,
     CollectionContextMenu {
         client_id: ClientId,
         db_name: String,
@@ -593,6 +598,7 @@ pub(crate) enum AppMode {
     ConnectionForm,
     Settings,
     SettingsLoadError,
+    About,
     CollectionModal,
     DatabaseModal,
     DocumentModal,
@@ -1478,6 +1484,8 @@ impl App {
                     MenuEntry::Action(label) => {
                         if menu == TopMenu::File && label == "Connections" {
                             self.open_connections_window();
+                        } else if menu == TopMenu::Help && label == "About" {
+                            self.open_about_modal();
                         } else {
                             println!("Menu '{menu:?}' entry '{label}' clicked");
                         }
@@ -2887,6 +2895,10 @@ impl App {
                 }
                 Task::none()
             }
+            Message::AboutModalClose => {
+                self.close_about_modal();
+                Task::none()
+            }
             Message::ConnectionsCancel => {
                 self.close_connections_window();
                 Task::none()
@@ -3588,6 +3600,7 @@ impl App {
                     self.main_view()
                 }
             }
+            AppMode::About => self.about_modal_view(),
             AppMode::CollectionModal => {
                 if let Some(state) = &self.collection_modal {
                     self.collection_modal_view(state)
@@ -3647,6 +3660,68 @@ impl App {
 
         let content: Element<Message> =
             Column::new().spacing(16).push(title).push(message).push(buttons).into();
+
+        modal_layout(palette, content, Length::Fixed(520.0), 24, 12.0)
+    }
+
+    fn about_modal_view(&self) -> Element<'_, Message> {
+        let palette = self.active_palette();
+        let text_primary = palette.text_primary.to_color();
+        let muted = palette.text_muted.to_color();
+        let fonts_state = fonts::active_fonts();
+        let bold_font = Font { weight: Weight::Bold, ..fonts_state.primary_font };
+
+        let title = fonts::primary_text(tr("About"), Some(6.0)).color(text_primary);
+        let title_name =
+            fonts::primary_text("oxide_mongo", Some(6.0)).color(text_primary).font(bold_font);
+        let title_row = Row::new()
+            .align_y(Vertical::Center)
+            .push(title)
+            .push(Space::with_width(Length::Fixed(6.0)))
+            .push(title_name);
+        let icon_size = (fonts::active_fonts().primary_size * 3.0).max(48.0);
+        let icon = Image::new(shared_icon_handle(&ICON_APP_HANDLE, WINDOW_ICON_BYTES))
+            .width(Length::Fixed(icon_size))
+            .height(Length::Fixed(icon_size));
+        let header = Row::new()
+            .align_y(Vertical::Center)
+            .push(title_row)
+            .push(Space::with_width(Length::Fill))
+            .push(icon);
+        let summary = fonts::primary_text(
+            tr("MongoDB GUI client for browsing collections, running queries, and managing data."),
+            Some(-1.0),
+        )
+        .color(text_primary)
+        .wrapping(Wrapping::Word)
+        .width(Length::Fill);
+
+        let label = |text: &str| fonts::primary_text(text.to_string(), None).color(muted);
+        let value = |text: &str| fonts::primary_text(text.to_string(), None).color(text_primary);
+
+        let homepage_row =
+            Row::new().spacing(8).push(label(tr("Homepage"))).push(value(ABOUT_HOMEPAGE));
+        let since_row =
+            Row::new().spacing(8).push(label(tr("Project started"))).push(value(ABOUT_SINCE));
+        let author_row = Row::new().spacing(8).push(label(tr("Author"))).push(value(ABOUT_AUTHOR));
+
+        let close_button = Button::new(fonts::primary_text(tr("Close"), None))
+            .padding([6, 16])
+            .on_press(Message::AboutModalClose)
+            .style({
+                let palette = palette.clone();
+                move |_, status| palette.subtle_button_style(6.0, status)
+            });
+
+        let content: Element<Message> = Column::new()
+            .spacing(12)
+            .push(header)
+            .push(summary)
+            .push(homepage_row)
+            .push(since_row)
+            .push(author_row)
+            .push(close_button)
+            .into();
 
         modal_layout(palette, content, Length::Fixed(520.0), 24, 12.0)
     }
@@ -5187,8 +5262,16 @@ impl App {
         self.mode = AppMode::Settings;
     }
 
+    fn open_about_modal(&mut self) {
+        self.mode = AppMode::About;
+    }
+
     fn close_settings_window(&mut self) {
         self.settings_window = None;
+        self.mode = AppMode::Main;
+    }
+
+    fn close_about_modal(&mut self) {
         self.mode = AppMode::Main;
     }
 
