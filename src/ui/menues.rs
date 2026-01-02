@@ -121,7 +121,11 @@ fn menu_root<'a>(
         entries
             .iter()
             .map(move |entry| {
-                let entry_label = fonts::primary_text(entry.label(), None);
+                let entry_text = match entry {
+                    MenuEntry::Action(label) => tr(label),
+                    MenuEntry::ViewMode(_) => entry.label(),
+                };
+                let entry_label = fonts::primary_text(entry_text, None);
                 let entry_palette = menu_palette.clone();
                 let entry_button = button(entry_label)
                     .on_press(Message::MenuItemSelected(menu, *entry))
