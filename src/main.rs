@@ -37,6 +37,7 @@ use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use webbrowser;
 
 use crate::fonts::{MONO_FONT, MONO_FONT_BYTES};
 use mongo::bson_edit::ValueEditKind;
@@ -209,6 +210,7 @@ pub(crate) enum Message {
         result: Result<Document, String>,
     },
     AboutModalClose,
+    AboutOpenHomepage,
     CollectionContextMenu {
         client_id: ClientId,
         db_name: String,
@@ -2899,6 +2901,12 @@ impl App {
                 self.close_about_modal();
                 Task::none()
             }
+            Message::AboutOpenHomepage => {
+                if let Err(error) = webbrowser::open(ABOUT_HOMEPAGE) {
+                    eprintln!("Failed to open homepage: {error}");
+                }
+                Task::none()
+            }
             Message::ConnectionsCancel => {
                 self.close_connections_window();
                 Task::none()
@@ -3699,8 +3707,31 @@ impl App {
         let label = |text: &str| fonts::primary_text(text.to_string(), None).color(muted);
         let value = |text: &str| fonts::primary_text(text.to_string(), None).color(text_primary);
 
-        let homepage_row =
-            Row::new().spacing(8).push(label(tr("Homepage"))).push(value(ABOUT_HOMEPAGE));
+        let homepage_link = Button::new(value(ABOUT_HOMEPAGE))
+            .padding(0)
+            .on_press(Message::AboutOpenHomepage)
+            .style({
+                let palette = palette.clone();
+                move |_, status| {
+                    let text_color = match status {
+                        button::Status::Active => palette.primary_buttons.active.to_color(),
+                        button::Status::Hovered => palette.primary_buttons.hover.to_color(),
+                        button::Status::Pressed => palette.primary_buttons.pressed.to_color(),
+                        button::Status::Disabled => palette.text_muted.to_color(),
+                    };
+
+                    button::Style {
+                        background: None,
+                        text_color,
+                        border: border::rounded(0.0)
+                            .width(0)
+                            .color(Color::from_rgba8(0, 0, 0, 0.0)),
+                        shadow: Shadow::default(),
+                        ..Default::default()
+                    }
+                }
+            });
+        let homepage_row = Row::new().spacing(8).push(label(tr("Homepage"))).push(homepage_link);
         let since_row =
             Row::new().spacing(8).push(label(tr("Project started"))).push(value(ABOUT_SINCE));
         let author_row = Row::new().spacing(8).push(label(tr("Author"))).push(value(ABOUT_AUTHOR));
