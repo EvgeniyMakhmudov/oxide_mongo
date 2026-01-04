@@ -99,7 +99,11 @@ pub(crate) fn build_menu_bar<'a>(palette: ThemePalette) -> MenuBar<'a, Message, 
     roots.push(menu_root(
         &palette,
         TopMenu::Help,
-        &[MenuEntry::Action("Documentation"), MenuEntry::Action("About")],
+        &[
+            MenuEntry::Action("Documentation"),
+            MenuEntry::Action("Licenses"),
+            MenuEntry::Action("About"),
+        ],
     ));
 
     MenuBar::new(roots).width(Length::Fill)
