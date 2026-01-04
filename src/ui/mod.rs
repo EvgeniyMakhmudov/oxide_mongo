@@ -1,3 +1,4 @@
+pub mod about;
 pub mod connections;
 pub mod fonts_dropdown;
 pub mod menues;

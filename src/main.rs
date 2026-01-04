@@ -4,6 +4,7 @@ mod mongo;
 mod settings;
 mod ui;
 
+use crate::fonts::{MONO_FONT, MONO_FONT_BYTES};
 use i18n::{tr, tr_format};
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
@@ -28,18 +29,6 @@ use iced::{
 };
 use iced_aw::ContextMenu;
 use iced_fonts::REQUIRED_FONT_BYTES;
-use mongodb::bson::{self, Bson, Document, doc};
-use mongodb::change_stream::event::ChangeStreamEvent;
-use mongodb::options::ReturnDocument;
-use mongodb::sync::Client;
-use rfd::FileDialog;
-use std::collections::HashSet;
-use std::sync::OnceLock;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
-use webbrowser;
-
-use crate::fonts::{MONO_FONT, MONO_FONT_BYTES};
 use mongo::bson_edit::ValueEditKind;
 use mongo::bson_tree::{BsonTree, BsonTreeOptions};
 use mongo::connection::{
@@ -51,7 +40,16 @@ use mongo::query::{
 };
 use mongo::shell;
 use mongo::ssh_tunnel::SshTunnel;
+use mongodb::bson::{self, Bson, Document, doc};
+use mongodb::change_stream::event::ChangeStreamEvent;
+use mongodb::options::ReturnDocument;
+use mongodb::sync::Client;
+use rfd::FileDialog;
 use settings::{AppSettings, ThemeChoice, ThemePalette};
+use std::collections::HashSet;
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use ui::connections::{
     AuthMechanismChoice, ConnectionEntry, ConnectionFormMode, ConnectionFormState,
     ConnectionFormTab, ConnectionType, ConnectionsWindowState, ListClick, PasswordStorage,
@@ -84,9 +82,6 @@ const TAB_SCROLLBAR_PADDING: f32 = 10.0;
 const WINDOW_ICON_BYTES: &[u8] = include_bytes!("../assests/icons/oxide_mongo_256x256.png");
 pub(crate) const ICON_NETWORK_BYTES: &[u8] = include_bytes!("../assests/icons/network_115x128.png");
 const ICON_DATABASE_BYTES: &[u8] = include_bytes!("../assests/icons/database_105x128.png");
-const ABOUT_HOMEPAGE: &str = "https://github.com/EvgeniyMakhmudov/oxide_mongo";
-const ABOUT_AUTHOR: &str = "Evgeniy Makhmudov";
-const ABOUT_SINCE: &str = "2025";
 const ICON_COLLECTION_BYTES: &[u8] = include_bytes!("../assests/icons/collection_108x128.png");
 pub(crate) static ICON_NETWORK_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_APP_HANDLE: OnceLock<Handle> = OnceLock::new();
@@ -210,7 +205,8 @@ pub(crate) enum Message {
         result: Result<Document, String>,
     },
     AboutModalClose,
-    AboutOpenHomepage,
+    LicensesModalClose,
+    OpenUrl(&'static str),
     CollectionContextMenu {
         client_id: ClientId,
         db_name: String,
@@ -601,6 +597,7 @@ pub(crate) enum AppMode {
     Settings,
     SettingsLoadError,
     About,
+    Licenses,
     CollectionModal,
     DatabaseModal,
     DocumentModal,
@@ -1488,6 +1485,8 @@ impl App {
                             self.open_connections_window();
                         } else if menu == TopMenu::Help && label == "About" {
                             self.open_about_modal();
+                        } else if menu == TopMenu::Help && label == "Licenses" {
+                            self.open_licenses_modal();
                         } else {
                             println!("Menu '{menu:?}' entry '{label}' clicked");
                         }
@@ -2901,9 +2900,13 @@ impl App {
                 self.close_about_modal();
                 Task::none()
             }
-            Message::AboutOpenHomepage => {
-                if let Err(error) = webbrowser::open(ABOUT_HOMEPAGE) {
-                    eprintln!("Failed to open homepage: {error}");
+            Message::LicensesModalClose => {
+                self.close_licenses_modal();
+                Task::none()
+            }
+            Message::OpenUrl(url) => {
+                if let Err(error) = webbrowser::open(url) {
+                    eprintln!("Failed to open url {url}: {error}");
                 }
                 Task::none()
             }
@@ -3608,7 +3611,15 @@ impl App {
                     self.main_view()
                 }
             }
-            AppMode::About => self.about_modal_view(),
+            AppMode::About => {
+                let palette = self.active_palette();
+                let icon_handle = shared_icon_handle(&ICON_APP_HANDLE, WINDOW_ICON_BYTES);
+                ui::about::about_modal_view(palette, icon_handle)
+            }
+            AppMode::Licenses => {
+                let palette = self.active_palette();
+                ui::about::licenses_modal_view(palette)
+            }
             AppMode::CollectionModal => {
                 if let Some(state) = &self.collection_modal {
                     self.collection_modal_view(state)
@@ -3668,91 +3679,6 @@ impl App {
 
         let content: Element<Message> =
             Column::new().spacing(16).push(title).push(message).push(buttons).into();
-
-        modal_layout(palette, content, Length::Fixed(520.0), 24, 12.0)
-    }
-
-    fn about_modal_view(&self) -> Element<'_, Message> {
-        let palette = self.active_palette();
-        let text_primary = palette.text_primary.to_color();
-        let muted = palette.text_muted.to_color();
-        let fonts_state = fonts::active_fonts();
-        let bold_font = Font { weight: Weight::Bold, ..fonts_state.primary_font };
-
-        let title = fonts::primary_text(tr("About"), Some(6.0)).color(text_primary);
-        let title_name =
-            fonts::primary_text("oxide_mongo", Some(6.0)).color(text_primary).font(bold_font);
-        let title_row = Row::new()
-            .align_y(Vertical::Center)
-            .push(title)
-            .push(Space::with_width(Length::Fixed(6.0)))
-            .push(title_name);
-        let icon_size = (fonts::active_fonts().primary_size * 3.0).max(48.0);
-        let icon = Image::new(shared_icon_handle(&ICON_APP_HANDLE, WINDOW_ICON_BYTES))
-            .width(Length::Fixed(icon_size))
-            .height(Length::Fixed(icon_size));
-        let header = Row::new()
-            .align_y(Vertical::Center)
-            .push(title_row)
-            .push(Space::with_width(Length::Fill))
-            .push(icon);
-        let summary = fonts::primary_text(
-            tr("MongoDB GUI client for browsing collections, running queries, and managing data."),
-            Some(-1.0),
-        )
-        .color(text_primary)
-        .wrapping(Wrapping::Word)
-        .width(Length::Fill);
-
-        let label = |text: &str| fonts::primary_text(text.to_string(), None).color(muted);
-        let value = |text: &str| fonts::primary_text(text.to_string(), None).color(text_primary);
-
-        let homepage_link = Button::new(value(ABOUT_HOMEPAGE))
-            .padding(0)
-            .on_press(Message::AboutOpenHomepage)
-            .style({
-                let palette = palette.clone();
-                move |_, status| {
-                    let text_color = match status {
-                        button::Status::Active => palette.primary_buttons.active.to_color(),
-                        button::Status::Hovered => palette.primary_buttons.hover.to_color(),
-                        button::Status::Pressed => palette.primary_buttons.pressed.to_color(),
-                        button::Status::Disabled => palette.text_muted.to_color(),
-                    };
-
-                    button::Style {
-                        background: None,
-                        text_color,
-                        border: border::rounded(0.0)
-                            .width(0)
-                            .color(Color::from_rgba8(0, 0, 0, 0.0)),
-                        shadow: Shadow::default(),
-                        ..Default::default()
-                    }
-                }
-            });
-        let homepage_row = Row::new().spacing(8).push(label(tr("Homepage"))).push(homepage_link);
-        let since_row =
-            Row::new().spacing(8).push(label(tr("Project started"))).push(value(ABOUT_SINCE));
-        let author_row = Row::new().spacing(8).push(label(tr("Author"))).push(value(ABOUT_AUTHOR));
-
-        let close_button = Button::new(fonts::primary_text(tr("Close"), None))
-            .padding([6, 16])
-            .on_press(Message::AboutModalClose)
-            .style({
-                let palette = palette.clone();
-                move |_, status| palette.subtle_button_style(6.0, status)
-            });
-
-        let content: Element<Message> = Column::new()
-            .spacing(12)
-            .push(header)
-            .push(summary)
-            .push(homepage_row)
-            .push(since_row)
-            .push(author_row)
-            .push(close_button)
-            .into();
 
         modal_layout(palette, content, Length::Fixed(520.0), 24, 12.0)
     }
@@ -5297,12 +5223,20 @@ impl App {
         self.mode = AppMode::About;
     }
 
+    fn open_licenses_modal(&mut self) {
+        self.mode = AppMode::Licenses;
+    }
+
     fn close_settings_window(&mut self) {
         self.settings_window = None;
         self.mode = AppMode::Main;
     }
 
     fn close_about_modal(&mut self) {
+        self.mode = AppMode::Main;
+    }
+
+    fn close_licenses_modal(&mut self) {
         self.mode = AppMode::Main;
     }
 
