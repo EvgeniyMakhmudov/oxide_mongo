@@ -47,6 +47,12 @@ const COLOR_SCHEME_LICENSES: &[LicenseEntry] = &[
     },
 ];
 
+const FONT_LICENSES: &[LicenseEntry] = &[LicenseEntry {
+    name: "DejaVu Sans Mono",
+    license: "Bitstream Vera License",
+    url: "https://github.com/dejavu-fonts/dejavu-fonts",
+}];
+
 pub fn about_modal_view(palette: ThemePalette, icon_handle: Handle) -> Element<'static, Message> {
     let text_primary = palette.text_primary.to_color();
     let muted = palette.text_muted.to_color();
@@ -147,7 +153,8 @@ pub fn licenses_modal_view(palette: ThemePalette) -> Element<'static, Message> {
     let scroll_content = Column::new()
         .spacing(16)
         .push(section_view("Primary licenses", PRIMARY_LICENSES))
-        .push(section_view("Color schemes", COLOR_SCHEME_LICENSES));
+        .push(section_view("Color schemes", COLOR_SCHEME_LICENSES))
+        .push(section_view("Fonts", FONT_LICENSES));
 
     let scrollable =
         Scrollable::new(scroll_content).width(Length::Fill).height(Length::Fixed(360.0));
