@@ -56,6 +56,7 @@ use ui::connections::{
     SshAuthMethod, TestFeedback, connection_form_view, connections_view,
     load_connections_from_disk, save_connections_to_disk,
 };
+use ui::help_docs::{HelpDocsState, help_docs_view};
 use ui::menues::{
     self, CollectionContextAction, ConnectionContextAction, DatabaseContextAction, MenuEntry,
     TopMenu,
@@ -120,6 +121,7 @@ pub(crate) struct App {
     connection_form: Option<ConnectionFormState>,
     settings_window: Option<SettingsWindowState>,
     settings_error_modal: Option<SettingsErrorModalState>,
+    help_docs_state: Option<HelpDocsState>,
     collection_modal: Option<CollectionModalState>,
     database_modal: Option<DatabaseModalState>,
     document_modal: Option<DocumentModalState>,
@@ -206,6 +208,9 @@ pub(crate) enum Message {
     },
     AboutModalClose,
     LicensesModalClose,
+    HelpDocsClose,
+    HelpDocsSectionSelected(usize),
+    HelpDocsSearchChanged(String),
     OpenUrl(&'static str),
     CollectionContextMenu {
         client_id: ClientId,
@@ -598,6 +603,7 @@ pub(crate) enum AppMode {
     SettingsLoadError,
     About,
     Licenses,
+    HelpDocs,
     CollectionModal,
     DatabaseModal,
     DocumentModal,
@@ -1440,6 +1446,7 @@ impl App {
             connection_form: None,
             settings_window: None,
             settings_error_modal: None,
+            help_docs_state: None,
             collection_modal: None,
             database_modal: None,
             document_modal: None,
@@ -1483,6 +1490,8 @@ impl App {
                     MenuEntry::Action(label) => {
                         if menu == TopMenu::File && label == "Connections" {
                             self.open_connections_window();
+                        } else if menu == TopMenu::Help && label == "Documentation" {
+                            self.open_help_docs_window();
                         } else if menu == TopMenu::Help && label == "About" {
                             self.open_about_modal();
                         } else if menu == TopMenu::Help && label == "Licenses" {
@@ -2904,6 +2913,22 @@ impl App {
                 self.close_licenses_modal();
                 Task::none()
             }
+            Message::HelpDocsClose => {
+                self.close_help_docs_window();
+                Task::none()
+            }
+            Message::HelpDocsSectionSelected(index) => {
+                if let Some(state) = self.help_docs_state.as_mut() {
+                    state.selected_index = index;
+                }
+                Task::none()
+            }
+            Message::HelpDocsSearchChanged(value) => {
+                if let Some(state) = self.help_docs_state.as_mut() {
+                    state.search = value;
+                }
+                Task::none()
+            }
             Message::OpenUrl(url) => {
                 if let Err(error) = webbrowser::open(url) {
                     eprintln!("Failed to open url {url}: {error}");
@@ -3619,6 +3644,14 @@ impl App {
             AppMode::Licenses => {
                 let palette = self.active_palette();
                 ui::about::licenses_modal_view(palette)
+            }
+            AppMode::HelpDocs => {
+                if let Some(state) = &self.help_docs_state {
+                    let palette = self.active_palette();
+                    help_docs_view(palette, state)
+                } else {
+                    self.main_view()
+                }
             }
             AppMode::CollectionModal => {
                 if let Some(state) = &self.collection_modal {
@@ -5227,6 +5260,13 @@ impl App {
         self.mode = AppMode::Licenses;
     }
 
+    fn open_help_docs_window(&mut self) {
+        if self.help_docs_state.is_none() {
+            self.help_docs_state = Some(HelpDocsState::new());
+        }
+        self.mode = AppMode::HelpDocs;
+    }
+
     fn close_settings_window(&mut self) {
         self.settings_window = None;
         self.mode = AppMode::Main;
@@ -5237,6 +5277,10 @@ impl App {
     }
 
     fn close_licenses_modal(&mut self) {
+        self.mode = AppMode::Main;
+    }
+
+    fn close_help_docs_window(&mut self) {
         self.mode = AppMode::Main;
     }
 
