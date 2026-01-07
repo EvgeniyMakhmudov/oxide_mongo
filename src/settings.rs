@@ -2,6 +2,7 @@ use crate::fonts;
 use crate::i18n::Language;
 use iced::widget::button;
 use iced::{Color, Shadow, border};
+use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::fs;
@@ -10,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock, RwLockWriteGuard};
 
 pub const SETTINGS_FILE_NAME: &str = "settings.toml";
+pub const DEFAULT_LOG_FILE_NAME: &str = "oxide_mongo.log";
 
 static GLOBAL_SETTINGS: OnceLock<RwLock<AppSettings>> = OnceLock::new();
 
@@ -58,6 +60,50 @@ impl Default for ThemeChoice {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogLevel {
+    pub const fn label(self) -> &'static str {
+        match self {
+            LogLevel::Error => "Error",
+            LogLevel::Warn => "Warn",
+            LogLevel::Info => "Info",
+            LogLevel::Debug => "Debug",
+            LogLevel::Trace => "Trace",
+        }
+    }
+
+    pub const fn to_level_filter(self) -> LevelFilter {
+        match self {
+            LogLevel::Error => LevelFilter::Error,
+            LogLevel::Warn => LevelFilter::Warn,
+            LogLevel::Info => LevelFilter::Info,
+            LogLevel::Debug => LevelFilter::Debug,
+            LogLevel::Trace => LevelFilter::Trace,
+        }
+    }
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+impl Default for LogLevel {
+    fn default() -> Self {
+        LogLevel::Info
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -66,6 +112,9 @@ pub struct AppSettings {
     pub query_timeout_secs: u64,
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
+    pub logging_enabled: bool,
+    pub logging_level: LogLevel,
+    pub logging_path: String,
     pub primary_font: String,
     pub primary_font_size: u16,
     pub result_font: String,
@@ -82,6 +131,9 @@ impl Default for AppSettings {
             query_timeout_secs: 600,
             sort_fields_alphabetically: false,
             sort_index_names_alphabetically: false,
+            logging_enabled: false,
+            logging_level: LogLevel::Info,
+            logging_path: DEFAULT_LOG_FILE_NAME.to_string(),
             primary_font: fonts::default_font_id().to_string(),
             primary_font_size: 16,
             result_font: fonts::default_font_id().to_string(),
@@ -745,12 +797,14 @@ pub fn load_from_disk() -> Result<AppSettings, SettingsLoadError> {
         Ok(contents) => toml::from_str::<AppSettings>(&contents)
             .map(|mut settings| {
                 settings.normalize_fonts();
+                settings.normalize_logging();
                 settings
             })
             .map_err(SettingsLoadError::Parse),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             let mut settings = AppSettings::default();
             settings.normalize_fonts();
+            settings.normalize_logging();
             Ok(settings)
         }
         Err(error) => Err(SettingsLoadError::Io(error)),
@@ -792,10 +846,19 @@ pub const ALL_THEMES: &[ThemeChoice] = &[
     ThemeChoice::OneDark,
 ];
 
+pub const ALL_LOG_LEVELS: &[LogLevel] =
+    &[LogLevel::Error, LogLevel::Warn, LogLevel::Info, LogLevel::Debug, LogLevel::Trace];
+
 impl AppSettings {
     pub fn normalize_fonts(&mut self) {
         self.primary_font = normalize_font_id(&self.primary_font);
         self.result_font = normalize_font_id(&self.result_font);
+    }
+
+    pub fn normalize_logging(&mut self) {
+        if self.logging_path.trim().is_empty() {
+            self.logging_path = DEFAULT_LOG_FILE_NAME.to_string();
+        }
     }
 
     pub fn active_palette(&self) -> &ThemePalette {

@@ -10,7 +10,10 @@ use iced::{Color, Element, Length, Shadow, border};
 use crate::Message;
 use crate::fonts;
 use crate::i18n::{ALL_LANGUAGES, Language, tr, tr_format};
-use crate::settings::{ALL_THEMES, AppSettings, RgbaColor, ThemeChoice, ThemeColors, ThemePalette};
+use crate::settings::{
+    ALL_LOG_LEVELS, ALL_THEMES, AppSettings, DEFAULT_LOG_FILE_NAME, LogLevel, RgbaColor,
+    ThemeChoice, ThemeColors, ThemePalette,
+};
 use crate::ui::fonts_dropdown::{self, FontDropdown};
 use crate::ui::modal::modal_layout;
 use iced_aw::ColorPicker;
@@ -96,6 +99,9 @@ pub struct SettingsWindowState {
     pub query_timeout_secs: String,
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
+    pub logging_enabled: bool,
+    pub logging_level: LogLevel,
+    pub logging_path: String,
     pub language: Language,
     pub font_options: Vec<fonts_dropdown::FontOption>,
     pub primary_font_open: bool,
@@ -140,6 +146,9 @@ impl SettingsWindowState {
             query_timeout_secs: settings.query_timeout_secs.to_string(),
             sort_fields_alphabetically: settings.sort_fields_alphabetically,
             sort_index_names_alphabetically: settings.sort_index_names_alphabetically,
+            logging_enabled: settings.logging_enabled,
+            logging_level: settings.logging_level,
+            logging_path: settings.logging_path.clone(),
             language: settings.language,
             font_options,
             primary_font_open: false,
@@ -169,6 +178,11 @@ impl SettingsWindowState {
             parse_integer::<u64>(&self.query_timeout_secs, tr("Query timeout (seconds)"))?;
         let primary_size = parse_integer::<u16>(&self.primary_font_size, tr("Primary Font"))?;
         let result_size = parse_integer::<u16>(&self.result_font_size, tr("Query Result Font"))?;
+        let log_path = if self.logging_path.trim().is_empty() {
+            DEFAULT_LOG_FILE_NAME.to_string()
+        } else {
+            self.logging_path.trim().to_string()
+        };
 
         if primary_size == 0 || result_size == 0 {
             return Err(tr("Font size must be greater than zero").to_owned());
@@ -179,6 +193,9 @@ impl SettingsWindowState {
             query_timeout_secs: timeout,
             sort_fields_alphabetically: self.sort_fields_alphabetically,
             sort_index_names_alphabetically: self.sort_index_names_alphabetically,
+            logging_enabled: self.logging_enabled,
+            logging_level: self.logging_level,
+            logging_path: log_path,
             language: self.language,
             primary_font: self.primary_font_id.clone(),
             primary_font_size: primary_size,
@@ -398,12 +415,42 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
         Checkbox::new(tr("Sort index names alphabetically"), state.sort_index_names_alphabetically)
             .on_toggle(Message::SettingsToggleSortIndexes);
 
+    let logging_enabled = Checkbox::new(tr("Enable logging"), state.logging_enabled)
+        .on_toggle(Message::SettingsToggleLogging);
+
+    let log_level_row = Row::new()
+        .spacing(12)
+        .align_y(Vertical::Center)
+        .push(fonts::primary_text(tr("Log level"), None).color(text_color))
+        .push(
+            PickList::new(
+                ALL_LOG_LEVELS,
+                Some(state.logging_level),
+                Message::SettingsLogLevelChanged,
+            )
+            .width(Length::Fixed(180.0)),
+        );
+
+    let log_path_row = Row::new()
+        .spacing(12)
+        .align_y(Vertical::Center)
+        .push(fonts::primary_text(tr("Log file path"), None).color(text_color))
+        .push(
+            text_input(tr("Path"), &state.logging_path)
+                .on_input(Message::SettingsLogPathChanged)
+                .padding([6, 10])
+                .width(Length::Fill),
+        );
+
     Column::new()
         .spacing(16)
         .push(expand_checkbox)
         .push(timeout_row)
         .push(sort_fields)
         .push(sort_indexes)
+        .push(logging_enabled)
+        .push(log_level_row)
+        .push(log_path_row)
         .into()
 }
 
