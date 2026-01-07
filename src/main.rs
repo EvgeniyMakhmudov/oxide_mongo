@@ -1,5 +1,6 @@
 mod fonts;
 mod i18n;
+mod logging;
 mod mongo;
 mod settings;
 mod ui;
@@ -45,7 +46,7 @@ use mongodb::change_stream::event::ChangeStreamEvent;
 use mongodb::options::ReturnDocument;
 use mongodb::sync::Client;
 use rfd::FileDialog;
-use settings::{AppSettings, ThemeChoice, ThemePalette};
+use settings::{AppSettings, LogLevel, ThemeChoice, ThemePalette};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
@@ -301,6 +302,9 @@ pub(crate) enum Message {
     SettingsQueryTimeoutChanged(String),
     SettingsToggleSortFields(bool),
     SettingsToggleSortIndexes(bool),
+    SettingsToggleLogging(bool),
+    SettingsLogLevelChanged(LogLevel),
+    SettingsLogPathChanged(String),
     SettingsLanguageChanged(i18n::Language),
     SettingsPrimaryFontDropdownToggled,
     SettingsPrimaryFontChanged(String),
@@ -846,9 +850,12 @@ impl CollectionTab {
         let elapsed = start.elapsed();
         let count = Self::result_count(result);
         let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-        println!(
+        log::debug!(
             "[results] collection='{}' view=Text documents={} clone_ms=0.000 text_ms={:.3} tree_ms=0.000 apply_ms=0.000 total_ms={:.3}",
-            self.collection, count, elapsed_ms, elapsed_ms
+            self.collection,
+            count,
+            elapsed_ms,
+            elapsed_ms
         );
         elapsed
     }
@@ -1375,7 +1382,7 @@ impl CollectionTab {
         let apply_elapsed = apply_start.elapsed();
 
         let elapsed = total_start.elapsed();
-        println!(
+        log::debug!(
             "[results] collection='{}' view={:?} documents={} clone_ms={:.3} text_ms={:.3} tree_ms={:.3} apply_ms={:.3} total_ms={:.3}",
             self.collection,
             self.response_view_mode,
@@ -1456,7 +1463,7 @@ impl App {
         panes.resize(split, 0.20);
 
         let connections = load_connections_from_disk().unwrap_or_else(|error| {
-            eprintln!("Failed to load connections: {error}");
+            log::warn!("Failed to load connections: {error}");
             Vec::new()
         });
 
@@ -1501,6 +1508,11 @@ impl App {
         );
         settings::initialize(settings.clone());
         i18n::init_language(settings.language);
+        logging::apply_settings(
+            settings.logging_enabled,
+            settings.logging_level.to_level_filter(),
+            &settings.logging_path,
+        );
 
         let mut app = Self::new(settings);
 
@@ -1527,7 +1539,7 @@ impl App {
                         } else if menu == TopMenu::Help && label == "Licenses" {
                             self.open_licenses_modal();
                         } else {
-                            println!("Menu '{menu:?}' entry '{label}' clicked");
+                            log::debug!("Menu '{menu:?}' entry '{label}' clicked");
                         }
                     }
                     MenuEntry::ViewMode(mode) => {
@@ -2271,9 +2283,13 @@ impl App {
                 match result {
                     Ok(()) => return self.collection_query_task(tab_id),
                     Err(error) => {
-                        eprintln!(
+                        log::error!(
                             "hideIndex failed: client_id={} db={} collection={} index={} error={}",
-                            client_id, db_name, collection, index_name, error
+                            client_id,
+                            db_name,
+                            collection,
+                            index_name,
+                            error
                         );
                     }
                 }
@@ -2290,9 +2306,13 @@ impl App {
                 match result {
                     Ok(()) => return self.collection_query_task(tab_id),
                     Err(error) => {
-                        eprintln!(
+                        log::error!(
                             "unhideIndex failed: client_id={} db={} collection={} index={} error={}",
-                            client_id, db_name, collection, index_name, error
+                            client_id,
+                            db_name,
+                            collection,
+                            index_name,
+                            error
                         );
                     }
                 }
@@ -2720,10 +2740,7 @@ impl App {
                             client.databases = names.into_iter().map(DatabaseNode::new).collect();
                         }
                         Err(error) => {
-                            eprintln!(
-                                "{}",
-                                format!("{} {}", tr("Failed to refresh database list:"), error)
-                            );
+                            log::error!("{} {}", tr("Failed to refresh database list:"), error);
                             for database in &mut client.databases {
                                 database.state = DatabaseState::Error(error.clone());
                             }
@@ -3006,7 +3023,7 @@ impl App {
             }
             Message::OpenUrl(url) => {
                 if let Err(error) = webbrowser::open(url) {
-                    eprintln!("Failed to open url {url}: {error}");
+                    log::warn!("Failed to open url {url}: {error}");
                 }
                 Task::none()
             }
@@ -3436,6 +3453,27 @@ impl App {
             Message::SettingsToggleSortIndexes(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.sort_index_names_alphabetically = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::SettingsToggleLogging(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.logging_enabled = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::SettingsLogLevelChanged(level) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.logging_level = level;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::SettingsLogPathChanged(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.logging_path = value;
                     state.validation_error = None;
                 }
                 Task::none()
@@ -5446,6 +5484,11 @@ impl App {
             settings.primary_font_size as f32,
             &settings.result_font,
             settings.result_font_size as f32,
+        );
+        logging::apply_settings(
+            settings.logging_enabled,
+            settings.logging_level.to_level_filter(),
+            &settings.logging_path,
         );
 
         for tab in &mut self.tabs {
