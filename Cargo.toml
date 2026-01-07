@@ -20,6 +20,7 @@ fontdb = "0.15"
 ssh2 = "0.9"
 rfd = "0.14"
 webbrowser = "0.8"
+log = "0.4"
 
 [dev-dependencies]
 iced_runtime = "0.13.2"
