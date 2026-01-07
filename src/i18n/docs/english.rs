@@ -139,6 +139,19 @@ The stream stops automatically when the number of received elements reaches the 
 "#,
                 },
             ),
+            (
+                "hotkeys",
+                DocSection {
+                    title: "Hotkeys",
+                    markdown: r#"# Hotkeys
+
+- F2 — switch results to Table view
+- F4 — switch results to Text view
+- Ctrl+Enter — run the current query
+- Ctrl+W — close the active tab
+"#,
+                },
+            ),
         ])
     })
 }

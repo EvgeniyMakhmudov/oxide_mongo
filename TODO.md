@@ -1,9 +1,12 @@
+# Общее
+- централизованное логирование
+- [DONE] горячие клавиши
+
 # Основное окно
 - [DONE] В списке документов должен быть номер документов, что бы понимать количество
 - Текстовое поле запроса должно быть более продвинутым текстовым редактором.
 - [DONE] В текстовом редакторе нужно уметь отправлять запрос по нажатию лавиш Ctrl + Enter
 - [DONE] Когда вкладок становится много, то горизонтальный скролбар налезает на контент
-- Данные таблицы можно выделять и копировать как простой текст
 
 # Окно Соединения
 - [DONE] Настройки Фильтры в соединении должны учитываться в списке баз данных.
@@ -54,11 +57,13 @@
 - [DONE] Удалить документы
 - [DONE] Удалить все документы
 - [DONE] Переименовать коллекцию
-- Дублировать коллекцию
 - [DONE] Удалить коллекцию
 - [DONE] Статистика
 - [DONE] Индексы
-- Watch (change stream)
+- [DONE] Watch (change stream)
+
+## Вкладка с результатами
+- Дублирование вкладки
 
 ## Таблица с данными
 - [DONE] Развенуть или свернуть документ иерархически
@@ -81,7 +86,7 @@
 - [DONE] distinct — набор уникальных значений поля
 - [DONE] aggregate — конвейер агрегаций
 - bulkWrite — пакетное выполнение разных операций (insert/update/delete)
-- watch (change streams) — подписка на изменения
+- [DONE] watch (change streams) — подписка на изменения
 - [DONE] runCommand - служебные команды коллекции
 - [DONE] listIndexes / createIndex / dropIndex и т.п. — основные операции с индексами
 - [DONE] цепочки операций find.sort, find.hint...
@@ -90,19 +95,19 @@
 
 ### Операции с репликами
 - [DONE] status
-- conf
+- [NEEDTESTING] conf
 - [DONE] isMaster
 - [DONE] hello
 - [DONE] printReplicationInfo
 - [DONE] printSecondaryReplicationInfo
-- initiate
-- reconfig
-- stepDown
-- freeze
-- add
-- addArb
-- remove
-- syncFrom
+- [NEEDTESTING] initiate
+- [NEEDTESTING] reconfig
+- [NEEDTESTING] stepDown
+- [NEEDTESTING] freeze
+- [NEEDTESTING] add
+- [NEEDTESTING] addArb
+- [NEEDTESTING] remove
+- [NEEDTESTING] syncFrom
 - [DONE] slaveOk
 
 

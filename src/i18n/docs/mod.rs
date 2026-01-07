@@ -14,7 +14,7 @@ pub struct DocSection {
 }
 
 const DOC_SECTION_ORDER: &[&str] =
-    &["general", "quick-start", "supported-commands", "change-stream"];
+    &["general", "quick-start", "supported-commands", "change-stream", "hotkeys"];
 
 pub fn doc_section_order() -> &'static [&'static str] {
     DOC_SECTION_ORDER
