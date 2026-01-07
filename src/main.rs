@@ -27,7 +27,7 @@ use iced::{
     Color, Element, Font, Length, Padding, Shadow, Size, Subscription, Task, Theme, application,
     clipboard,
 };
-use iced_aw::ContextMenu;
+use iced_aw::{ColorPicker, ContextMenu};
 use iced_fonts::REQUIRED_FONT_BYTES;
 use mongo::bson_edit::ValueEditKind;
 use mongo::bson_tree::{BsonTree, BsonTreeOptions};
@@ -61,7 +61,7 @@ use ui::menues::{
     self, CollectionContextAction, ConnectionContextAction, DatabaseContextAction, MenuEntry,
     TopMenu,
 };
-use ui::modal::{error_accent_color, modal_layout, success_accent_color};
+use ui::modal::{color_luminance, error_accent_color, modal_layout, success_accent_color};
 use ui::settings::{SettingsTab, SettingsWindowState, ThemeColorField, settings_view};
 pub(crate) type TabId = u32;
 pub(crate) type ClientId = u32;
@@ -127,6 +127,7 @@ pub(crate) struct App {
     document_modal: Option<DocumentModalState>,
     value_edit_modal: Option<ValueEditModalState>,
     window_size: Option<Size>,
+    tab_color_picker: Option<TabId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +141,7 @@ struct TabData {
     id: TabId,
     title: String,
     collection: CollectionTab,
+    color: Option<Color>,
 }
 
 #[derive(Debug, Clone)]
@@ -158,6 +160,15 @@ pub(crate) enum Message {
     MenuItemSelected(TopMenu, MenuEntry),
     TabSelected(TabId),
     TabClosed(TabId),
+    CloseActiveTab,
+    DuplicateTab(TabId),
+    TabColorPickerOpened(TabId),
+    TabColorPickerCanceled,
+    TabColorChanged {
+        tab_id: TabId,
+        color: Color,
+    },
+    TabColorReset(TabId),
     WindowEvent(window::Event),
     PaneResized(ResizeEvent),
     ConnectionCompleted {
@@ -1114,8 +1125,11 @@ impl CollectionTab {
         let editor = text_editor::TextEditor::new(&self.editor)
             .key_binding(move |key_press| {
                 let is_enter = matches!(key_press.key, keyboard::Key::Named(key::Named::Enter));
+                let is_delete = matches!(key_press.key, keyboard::Key::Named(key::Named::Delete));
                 if is_enter && key_press.modifiers.command() {
                     Some(TextEditorBinding::Custom(Message::CollectionSend(send_tab_id)))
+                } else if is_delete {
+                    Some(TextEditorBinding::Delete)
                 } else {
                     TextEditorBinding::from_key_press(key_press)
                 }
@@ -1413,6 +1427,21 @@ impl Default for App {
 }
 
 impl App {
+    fn handle_hotkey(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
+        match key.as_ref() {
+            keyboard::Key::Named(key::Named::F2) => Some(Message::MenuItemSelected(
+                TopMenu::View,
+                MenuEntry::ViewMode(ResponseViewMode::Table),
+            )),
+            keyboard::Key::Named(key::Named::F4) => Some(Message::MenuItemSelected(
+                TopMenu::View,
+                MenuEntry::ViewMode(ResponseViewMode::Text),
+            )),
+            keyboard::Key::Character("w") if modifiers.command() => Some(Message::CloseActiveTab),
+            _ => None,
+        }
+    }
+
     fn new(settings: AppSettings) -> Self {
         fonts::set_active_fonts(
             &settings.primary_font,
@@ -1452,6 +1481,7 @@ impl App {
             document_modal: None,
             value_edit_modal: None,
             window_size: None,
+            tab_color_picker: None,
         }
     }
 
@@ -1525,6 +1555,9 @@ impl App {
             Message::TabClosed(id) => {
                 if let Some(position) = self.tabs.iter().position(|tab| tab.id == id) {
                     self.tabs.remove(position);
+                    if self.tab_color_picker == Some(id) {
+                        self.tab_color_picker = None;
+                    }
                     if self.active_tab == Some(id) {
                         self.active_tab = self
                             .tabs
@@ -1533,6 +1566,48 @@ impl App {
                             .map(|tab| tab.id);
                     }
                 }
+                Task::none()
+            }
+            Message::CloseActiveTab => {
+                if let Some(active_id) = self.active_tab {
+                    if let Some(position) = self.tabs.iter().position(|tab| tab.id == active_id) {
+                        self.tabs.remove(position);
+                        if self.tab_color_picker == Some(active_id) {
+                            self.tab_color_picker = None;
+                        }
+                        self.active_tab = self
+                            .tabs
+                            .get(position.saturating_sub(1))
+                            .or_else(|| self.tabs.get(position))
+                            .map(|tab| tab.id);
+                    }
+                }
+                Task::none()
+            }
+            Message::DuplicateTab(tab_id) => {
+                self.duplicate_collection_tab(tab_id);
+                Task::none()
+            }
+            Message::TabColorPickerOpened(tab_id) => {
+                self.tab_color_picker = Some(tab_id);
+                Task::none()
+            }
+            Message::TabColorPickerCanceled => {
+                self.tab_color_picker = None;
+                Task::none()
+            }
+            Message::TabColorChanged { tab_id, color } => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.color = Some(color);
+                }
+                self.tab_color_picker = None;
+                Task::none()
+            }
+            Message::TabColorReset(tab_id) => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.color = None;
+                }
+                self.tab_color_picker = None;
                 Task::none()
             }
             Message::WindowEvent(event) => {
@@ -3585,7 +3660,10 @@ impl App {
     }
 
     fn subscription(&self) -> Subscription<Message> {
-        window::events().map(|(_id, event)| Message::WindowEvent(event))
+        Subscription::batch([
+            window::events().map(|(_id, event)| Message::WindowEvent(event)),
+            keyboard::on_key_press(Self::handle_hotkey),
+        ])
     }
 
     fn main_view(&self) -> Element<'_, Message> {
@@ -4562,6 +4640,13 @@ impl App {
 
             for tab in &self.tabs {
                 let is_active = active_id == Some(tab.id);
+                let tab_background =
+                    tab.color.unwrap_or_else(|| if is_active { active_bg } else { inactive_bg });
+                let tab_text_color = if let Some(custom_color) = tab.color {
+                    if color_luminance(custom_color) > 0.5 { Color::BLACK } else { Color::WHITE }
+                } else {
+                    text_color
+                };
 
                 let title_label = Container::new(fonts::primary_text(tab.title.clone(), None))
                     .padding([4.0, TAB_TITLE_PADDING_X]);
@@ -4580,25 +4665,71 @@ impl App {
 
                 let tab_container = Container::new(tab_inner)
                     .padding([4.0, TAB_CONTAINER_PADDING_X])
-                    .style(move |_| {
-                        if is_active {
-                            container::Style {
-                                background: Some(active_bg.into()),
-                                text_color: Some(text_color),
-                                border: border::rounded(6).width(1).color(border_color),
-                                ..Default::default()
-                            }
-                        } else {
-                            container::Style {
-                                background: Some(inactive_bg.into()),
-                                text_color: Some(text_color),
-                                border: border::rounded(6).width(1).color(border_color),
-                                ..Default::default()
-                            }
-                        }
+                    .style(move |_| container::Style {
+                        background: Some(tab_background.into()),
+                        text_color: Some(tab_text_color),
+                        border: border::rounded(6).width(1).color(border_color),
+                        ..Default::default()
                     });
 
-                tabs_row = tabs_row.push(tab_container);
+                let menu_palette = palette.clone();
+                let menu_border = palette.clone();
+                let menu_tab_id = tab.id;
+                let menu = move || {
+                    let item_palette = menu_palette.clone();
+                    let border_palette = menu_border.clone();
+                    let duplicate_button =
+                        Button::new(fonts::primary_text(tr("Duplicate Tab"), None))
+                            .padding([4, 8])
+                            .on_press(Message::DuplicateTab(menu_tab_id))
+                            .style(move |_, status| item_palette.menu_button_style(6.0, status));
+                    let color_palette = menu_palette.clone();
+                    let color_button = Button::new(fonts::primary_text(tr("Tab Color"), None))
+                        .padding([4, 8])
+                        .on_press(Message::TabColorPickerOpened(menu_tab_id))
+                        .style(move |_, status| color_palette.menu_button_style(6.0, status));
+                    let reset_palette = menu_palette.clone();
+                    let reset_button =
+                        Button::new(fonts::primary_text(tr("Reset Tab Color"), None))
+                            .padding([4, 8])
+                            .on_press(Message::TabColorReset(menu_tab_id))
+                            .style(move |_, status| reset_palette.menu_button_style(6.0, status));
+                    let content = Column::new()
+                        .spacing(6)
+                        .push(color_button)
+                        .push(reset_button)
+                        .push(duplicate_button);
+                    Container::new(content)
+                        .style(move |_| iced::widget::container::Style {
+                            background: Some(border_palette.menu.background.to_color().into()),
+                            border: border::rounded(6.0)
+                                .width(1)
+                                .color(border_palette.widget_border_color()),
+                            shadow: Shadow {
+                                color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                                offset: iced::Vector::new(0.0, 3.0),
+                                blur_radius: 10.0,
+                            },
+                            ..Default::default()
+                        })
+                        .padding([4, 6])
+                        .into()
+                };
+
+                let tab_with_menu = ContextMenu::new(tab_container, menu);
+                let show_picker = self.tab_color_picker == Some(tab.id);
+                let picker_color = tab_background;
+                let tab_with_picker = ColorPicker::new(
+                    show_picker,
+                    picker_color,
+                    tab_with_menu,
+                    Message::TabColorPickerCanceled,
+                    move |selected| Message::TabColorChanged {
+                        tab_id: menu_tab_id,
+                        color: selected,
+                    },
+                );
+                tabs_row = tabs_row.push(tab_with_picker);
             }
 
             let tabs_content = if self.should_reserve_tab_scrollbar() {
@@ -4684,6 +4815,26 @@ impl App {
         ));
         self.active_tab = Some(id);
         id
+    }
+
+    fn duplicate_collection_tab(&mut self, tab_id: TabId) {
+        let snapshot = self.tabs.iter().find(|tab| tab.id == tab_id).map(|tab| {
+            (
+                tab.collection.client_id,
+                tab.collection.db_name.clone(),
+                tab.collection.collection.clone(),
+                tab.collection.editor.text().to_string(),
+                tab.color,
+            )
+        });
+
+        if let Some((client_id, db_name, collection, query_text, color)) = snapshot {
+            let new_tab_id = self.open_collection_tab(client_id, db_name, collection);
+            if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == new_tab_id) {
+                tab.collection.editor = TextEditorContent::with_text(&query_text);
+                tab.color = color;
+            }
+        }
     }
 
     fn open_database_stats_tab(&mut self, client_id: ClientId, db_name: String) -> TabId {
@@ -5360,6 +5511,7 @@ impl TabData {
                 values,
                 settings,
             ),
+            color: None,
         }
     }
 
