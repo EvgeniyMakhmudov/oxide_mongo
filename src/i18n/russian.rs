@@ -75,6 +75,7 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("License", "Лицензия"),
             ("Link", "Ссылка"),
             ("Unknown", "Не указана"),
+            ("Version", "Версия"),
             ("Homepage", "Домашняя страница"),
             ("Project started", "Год начала проекта"),
             ("Author", "Автор"),
