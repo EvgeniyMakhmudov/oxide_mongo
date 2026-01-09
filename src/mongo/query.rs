@@ -4667,7 +4667,7 @@ mod tests {
         match operation {
             QueryOperation::DatabaseCommand { db, command } => {
                 assert_eq!(db, "admin");
-                assert_eq!(command, doc! { "serverStatus": 1i64 });
+                assert_eq!(command, doc! { "serverStatus": 1i32 });
             }
             other => panic!("unexpected operation: {:?}", other),
         }
