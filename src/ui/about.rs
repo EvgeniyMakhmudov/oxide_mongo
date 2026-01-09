@@ -13,6 +13,7 @@ use crate::ui::modal::modal_layout;
 const ABOUT_HOMEPAGE: &str = "https://github.com/EvgeniyMakhmudov/oxide_mongo";
 const ABOUT_AUTHOR: &str = "Evgeniy Makhmudov";
 const ABOUT_SINCE: &str = "2025";
+const ABOUT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Copy)]
 struct LicenseEntry {
@@ -87,6 +88,7 @@ pub fn about_modal_view(palette: ThemePalette, icon_handle: Handle) -> Element<'
     let value = |text: &str| fonts::primary_text(text.to_string(), None).color(text_primary);
     let homepage_link = link_button(&palette, value(ABOUT_HOMEPAGE), ABOUT_HOMEPAGE);
 
+    let version_row = Row::new().spacing(8).push(label(tr("Version"))).push(value(ABOUT_VERSION));
     let homepage_row = Row::new().spacing(8).push(label(tr("Homepage"))).push(homepage_link);
     let since_row =
         Row::new().spacing(8).push(label(tr("Project started"))).push(value(ABOUT_SINCE));
@@ -104,6 +106,7 @@ pub fn about_modal_view(palette: ThemePalette, icon_handle: Handle) -> Element<'
         .spacing(12)
         .push(header)
         .push(summary)
+        .push(version_row)
         .push(homepage_row)
         .push(since_row)
         .push(author_row)
