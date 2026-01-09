@@ -1,57 +1,84 @@
 # Oxide Mongo
 
-![Oxide Mongo icon](icons/oxide_mongo_256x256.png)
+# About
 
-Oxide Mongo is a desktop GUI client for MongoDB, written by [Rust](https://www.rust-lang.org/)
- built with [Iced](https://github.com/iced-rs/iced).
+![Oxide Mongo icon](assests/icons/oxide_mongo_256x256.png)
 
-TODO
+Oxide Mongo is a fast, lightweight, cross-platform GUI client for MongoDB.
+Inspired by Robomongo/Robo3T and built in [Rust](https://www.rust-lang.org/) with
+[Iced](https://github.com/iced-rs/iced), it focuses on everyday work: browsing data,
+running queries, and managing collections without extra overhead.
+
+All source code in this project was generated with the assistance of AI tools (OpenAI Codex, GPT-4/5, Google Gemini).
+
+To ensure the project is safe for production use, a strict integration test is included. The test verifies that the system behaves exactly as expected and nothing more.
+The test logic, expected results, and acceptance criteria were defined and reviewed by a human under direct supervision.
+
+This approach ensures production readiness regardless of the code generation method.
 
 ## Features
 
-- TODO
+- Connection profiles with optional authentication and SSH tunneling.
+- Mongo shell-like query editor with commonly used commands.
+- Change Streams (`watch`) that stream results until the limit is reached.
+- Results view in tree-like table or JSON-like text.
+- Database and collection actions: create, drop, rename, stats, indexes.
+- Replica set helpers (`rs.*`) and admin commands (`db.adminCommand`).
+- Theme and font customization.
+- Internalization UI.
+
+## Download
+
+Prebuilt binaries are published on GitHub Releases:
+https://github.com/EvgeniyMakhmudov/oxide_mongo/releases
+
 
 ## Getting Started
 
 ### Prerequisites
 
-- Rust toolchain (stable channel) installed via [rustup](https://rustup.rs/)
-- Optional: `cargo install cargo-watch` for iterative development
+- Rust toolchain (stable) via [rustup](https://rustup.rs/)
+- A MongoDB instance to connect to
 
-### Build & Run
+On Linux you may need X11/Wayland development packages (see CI workflow for the list).
+
+### Build and Run
 
 ```bash
 cargo run
 ```
 
-### Format & Lint
+### Format and Lint
 
 ```bash
 cargo fmt
-cargo clippy -- -D warnings
+cargo check
 ```
 
-### Test
+### Tests
 
 ```bash
+# unit tests
+cargo test
+
+# integration tests (requires a running MongoDB instance)
+OXIDE_MONGO_TEST_URI=mongodb://localhost:27017
 cargo test
 ```
 
-## Project Structure
+## Documentation
 
-TODO
+Built-in documentation is available in the app menu: Help -> Documentation.
 
-```
-```
+## Known Issues
 
-## Knowing Issues
-
-1. After computer's hibernate wake up  the application not working, main window freeze. This is issue of GPU subsystem of Linux and not proglem directly Oxide Mongo. This issue happens in other differents software, which uses similar techmologies.
+1. After waking a Linux system from hibernation, the main window may freeze.
+   This is a GPU subsystem issue and affects other GUI applications as well.
 
 ## Contributing
 
 1. Fork the repository and create a feature branch.
-2. Keep the code formatted (`cargo fmt`) and free of warnings (`cargo clippy -- -D warnings`).
+2. Keep the code formatted (`cargo fmt`) and free of warnings (`cargo check`).
 3. Run the test suite (`cargo test`).
 4. Submit a pull request with a clear description of the changes.
 
