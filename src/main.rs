@@ -36,8 +36,8 @@ use mongo::connection::{
     ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections,
 };
 use mongo::query::{
-    QueryOperation, QueryResult, WatchTarget, open_change_stream, parse_collection_query,
-    run_collection_query,
+    QueryOperation, QueryResult, ReplicaSetCommand, WatchTarget, open_change_stream,
+    parse_collection_query, run_collection_query,
 };
 use mongo::shell;
 use mongo::ssh_tunnel::SshTunnel;
@@ -847,27 +847,7 @@ impl CollectionTab {
     fn build_text_result(&mut self, result: &QueryResult) -> Duration {
         let start = Instant::now();
         self.text_result = TextResultView::from_query_result(result);
-        let elapsed = start.elapsed();
-        let count = Self::result_count(result);
-        let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-        log::debug!(
-            "[results] collection='{}' view=Text documents={} clone_ms=0.000 text_ms={:.3} tree_ms=0.000 apply_ms=0.000 total_ms={:.3}",
-            self.collection,
-            count,
-            elapsed_ms,
-            elapsed_ms
-        );
-        elapsed
-    }
-
-    fn result_count(result: &QueryResult) -> usize {
-        match result {
-            QueryResult::Documents(values) => values.len(),
-            QueryResult::Indexes(values) => values.len(),
-            QueryResult::SingleDocument { .. } => 1,
-            QueryResult::Distinct { values, .. } => values.len(),
-            QueryResult::Count { .. } => 1,
-        }
+        start.elapsed()
     }
 }
 
@@ -1338,64 +1318,35 @@ impl CollectionTab {
     }
 
     fn set_query_result(&mut self, result: QueryResult, settings: &AppSettings) {
-        let total_start = Instant::now();
         self.palette = settings.active_palette().clone();
 
-        let clone_start = Instant::now();
         let cached = result.clone();
         self.last_result = Some(cached);
-        let clone_elapsed = clone_start.elapsed();
 
-        let text_elapsed = if self.response_view_mode == ResponseViewMode::Text {
-            self.build_text_result(&result)
+        if self.response_view_mode == ResponseViewMode::Text {
+            let _ = self.build_text_result(&result);
         } else {
             self.text_result = None;
-            Duration::ZERO
         };
 
         let options = BsonTreeOptions::from(settings);
 
-        let tree_start = Instant::now();
-        let (tree, count) = match result {
-            QueryResult::Documents(values) => {
-                let count = values.len();
-                (BsonTree::from_values(&values, options), count)
-            }
-            QueryResult::Indexes(values) => {
-                let count = values.len();
-                (BsonTree::from_indexes(&values, options), count)
-            }
-            QueryResult::SingleDocument { document } => {
-                (BsonTree::from_document(document, options), 1)
-            }
+        let tree = match result {
+            QueryResult::Documents(values) => BsonTree::from_values(&values, options),
+            QueryResult::Indexes(values) => BsonTree::from_indexes(&values, options),
+            QueryResult::SingleDocument { document } => BsonTree::from_document(document, options),
             QueryResult::Distinct { field, values } => {
-                let count = values.len();
-                (BsonTree::from_distinct(field, values, options), count)
+                BsonTree::from_distinct(field, values, options)
             }
-            QueryResult::Count { value } => (BsonTree::from_count(value, options), 1),
+            QueryResult::Count { value } => BsonTree::from_count(value, options),
         };
-        let tree_elapsed = tree_start.elapsed();
 
-        let apply_start = Instant::now();
         self.bson_tree = tree;
         self.apply_behavior_settings(settings);
-        let apply_elapsed = apply_start.elapsed();
-
-        let elapsed = total_start.elapsed();
-        log::debug!(
-            "[results] collection='{}' view={:?} documents={} clone_ms={:.3} text_ms={:.3} tree_ms={:.3} apply_ms={:.3} total_ms={:.3}",
-            self.collection,
-            self.response_view_mode,
-            count,
-            clone_elapsed.as_secs_f64() * 1000.0,
-            text_elapsed.as_secs_f64() * 1000.0,
-            tree_elapsed.as_secs_f64() * 1000.0,
-            apply_elapsed.as_secs_f64() * 1000.0,
-            elapsed.as_secs_f64() * 1000.0
-        );
     }
 
     fn set_tree_error(&mut self, error: String) {
+        log::error!("{error}");
         self.bson_tree = BsonTree::from_error(error);
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
@@ -1518,6 +1469,7 @@ impl App {
 
         if let Some(error) = load_error {
             let message = format!("{} {}", tr("Failed to load settings:"), error);
+            log::error!("{message}");
             app.settings_error_modal = Some(SettingsErrorModalState::new(message));
             app.mode = AppMode::SettingsLoadError;
         }
@@ -1547,6 +1499,7 @@ impl App {
                             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == active_id)
                             {
                                 tab.collection.response_view_mode = mode;
+                                log::debug!("View mode set to {:?} tab_id={}", mode, active_id);
                                 if mode == ResponseViewMode::Text {
                                     if let Some(result) = tab.collection.last_result.clone() {
                                         tab.collection.build_text_result(&result);
@@ -1561,6 +1514,7 @@ impl App {
             Message::TabSelected(id) => {
                 if self.tabs.iter().any(|tab| tab.id == id) {
                     self.active_tab = Some(id);
+                    log::debug!("Tab selected id={}", id);
                 }
                 Task::none()
             }
@@ -1577,6 +1531,7 @@ impl App {
                             .or_else(|| self.tabs.get(position))
                             .map(|tab| tab.id);
                     }
+                    log::debug!("Tab closed id={}", id);
                 }
                 Task::none()
             }
@@ -1592,11 +1547,13 @@ impl App {
                             .get(position.saturating_sub(1))
                             .or_else(|| self.tabs.get(position))
                             .map(|tab| tab.id);
+                        log::debug!("Tab closed id={}", active_id);
                     }
                 }
                 Task::none()
             }
             Message::DuplicateTab(tab_id) => {
+                log::debug!("Tab duplicated id={}", tab_id);
                 self.duplicate_collection_tab(tab_id);
                 Task::none()
             }
@@ -1640,6 +1597,11 @@ impl App {
                     match result {
                         Ok(ConnectionBootstrap { handle, mut databases, ssh_tunnel }) => {
                             databases.sort_unstable();
+                            log::debug!(
+                                "Connection established client_id={} databases={}",
+                                client_id,
+                                databases.len()
+                            );
                             client.status = ConnectionStatus::Ready;
                             client.handle = Some(handle);
                             client.databases =
@@ -1648,6 +1610,7 @@ impl App {
                             client.ssh_tunnel = ssh_tunnel;
                         }
                         Err(error) => {
+                            log::error!("{error}");
                             client.status = ConnectionStatus::Failed(error);
                             client.databases.clear();
                             client.handle = None;
@@ -1678,9 +1641,9 @@ impl App {
                                     if let Some(handle) = client.handle.clone() {
                                         request = Some((handle, database.name.clone()));
                                     } else {
-                                        database.state = DatabaseState::Error(String::from(tr(
-                                            "No active connection",
-                                        )));
+                                        let message = String::from(tr("No active connection"));
+                                        log::error!("{message}");
+                                        database.state = DatabaseState::Error(message);
                                     }
                                 }
                                 DatabaseState::Loading | DatabaseState::Loaded => {}
@@ -1717,6 +1680,7 @@ impl App {
                                     names.into_iter().map(CollectionNode::new).collect();
                             }
                             Err(error) => {
+                                log::error!("{error}");
                                 database.state = DatabaseState::Error(error);
                                 database.collections.clear();
                             }
@@ -1917,38 +1881,45 @@ impl App {
                 match modal.kind {
                     CollectionModalKind::CreateCollection => {
                         if trimmed_input.is_empty() {
-                            modal.error =
-                                Some(String::from(tr("Collection name cannot be empty.")));
+                            let message = String::from(tr("Collection name cannot be empty."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
                     }
                     CollectionModalKind::DeleteAllDocuments
                     | CollectionModalKind::DeleteCollection => {
                         if trimmed_input != modal.collection {
-                            modal.error = Some(String::from(tr(
-                                "Enter the exact collection name to confirm.",
-                            )));
+                            let message =
+                                String::from(tr("Enter the exact collection name to confirm."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
                     }
                     CollectionModalKind::RenameCollection => {
                         if trimmed_input.is_empty() {
-                            modal.error =
-                                Some(String::from(tr("New collection name cannot be empty.")));
+                            let message = String::from(tr("New collection name cannot be empty."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
 
                         if trimmed_input == modal.collection {
-                            modal.error = Some(String::from(tr(
+                            let message = String::from(tr(
                                 "New collection name must differ from the current one.",
-                            )));
+                            ));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
                     }
                     CollectionModalKind::DropIndex { ref index_name } => {
                         if trimmed_input != *index_name {
-                            modal.error =
-                                Some(String::from(tr("Enter the exact index name to confirm.")));
+                            let message =
+                                String::from(tr("Enter the exact index name to confirm."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
                     }
@@ -1968,7 +1939,9 @@ impl App {
                 {
                     Some(handle) => handle,
                     None => {
-                        modal.error = Some(String::from(tr("No active connection.")));
+                        let message = String::from(tr("No active connection."));
+                        log::error!("{message}");
+                        modal.error = Some(message);
                         return Task::none();
                     }
                 };
@@ -1980,9 +1953,10 @@ impl App {
                             client.databases.iter().find(|db| db.name == db_name)
                         {
                             if database.collections.iter().any(|node| node.name == trimmed_input) {
-                                modal.error = Some(String::from(tr(
-                                    "A collection with this name already exists.",
-                                )));
+                                let message =
+                                    String::from(tr("A collection with this name already exists."));
+                                log::error!("{message}");
+                                modal.error = Some(message);
                                 return Task::none();
                             }
                         }
@@ -1996,6 +1970,11 @@ impl App {
                     CollectionModalKind::CreateCollection => {
                         let new_collection = trimmed_input.clone();
                         modal.collection = new_collection.clone();
+                        log::debug!(
+                            "Create collection requested db={} collection={}",
+                            db_name,
+                            new_collection
+                        );
 
                         let future_db = db_name.clone();
                         let message_db = db_name.clone();
@@ -2023,6 +2002,11 @@ impl App {
                         let future_collection = collection.clone();
                         let message_db = db_name.clone();
                         let message_collection = collection.clone();
+                        log::debug!(
+                            "Delete all documents requested db={} collection={}",
+                            db_name,
+                            collection
+                        );
                         let handle_task = handle.clone();
                         Task::perform(
                             async move {
@@ -2046,6 +2030,11 @@ impl App {
                         let future_collection = collection.clone();
                         let message_db = db_name.clone();
                         let message_collection = collection.clone();
+                        log::debug!(
+                            "Drop collection requested db={} collection={}",
+                            db_name,
+                            collection
+                        );
                         let handle_task = handle.clone();
                         Task::perform(
                             async move {
@@ -2069,6 +2058,12 @@ impl App {
                         let message_db = db_name.clone();
                         let message_old = collection.clone();
                         let message_new = new_name.clone();
+                        log::debug!(
+                            "Rename collection requested db={} from={} to={}",
+                            db_name,
+                            collection,
+                            new_name
+                        );
                         let handle_task = handle.clone();
                         Task::perform(
                             async move {
@@ -2096,9 +2091,10 @@ impl App {
                     CollectionModalKind::DropIndex { index_name } => {
                         let Some(tab_id_value) = origin_tab else {
                             modal.processing = false;
-                            modal.error = Some(String::from(tr(
-                                "Failed to determine the tab to refresh indexes.",
-                            )));
+                            let message =
+                                String::from(tr("Failed to determine the tab to refresh indexes."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         };
 
@@ -2108,6 +2104,12 @@ impl App {
                         let message_db = db_name.clone();
                         let message_collection = collection.clone();
                         let message_index = index_name.clone();
+                        log::debug!(
+                            "Drop index requested db={} collection={} index={}",
+                            db_name,
+                            collection,
+                            index_name
+                        );
                         let handle_task = handle.clone();
 
                         Task::perform(
@@ -2149,6 +2151,7 @@ impl App {
                             }
                             Err(error) => {
                                 modal.processing = false;
+                                log::error!("{error}");
                                 modal.error = Some(error);
                             }
                         }
@@ -2176,6 +2179,7 @@ impl App {
                             }
                             Err(error) => {
                                 modal.processing = false;
+                                log::error!("{error}");
                                 modal.error = Some(error);
                             }
                         }
@@ -2198,6 +2202,7 @@ impl App {
                             }
                             Err(error) => {
                                 modal.processing = false;
+                                log::error!("{error}");
                                 modal.error = Some(error);
                             }
                         }
@@ -2231,6 +2236,7 @@ impl App {
                             }
                             Err(error) => {
                                 modal.processing = false;
+                                log::error!("{error}");
                                 modal.error = Some(error);
                             }
                         }
@@ -2260,12 +2266,14 @@ impl App {
                             }
                             Err(error) => {
                                 modal.processing = false;
-                                modal.error = Some(format!(
+                                let message = format!(
                                     "{} \"{}\": {}",
                                     tr("Failed to delete index"),
                                     index_name,
                                     error
-                                ));
+                                );
+                                log::error!("{message}");
+                                modal.error = Some(message);
                             }
                         }
                     }
@@ -2350,8 +2358,10 @@ impl App {
                 match &modal.mode {
                     DatabaseModalMode::Drop { db_name } => {
                         if modal.input.trim() != db_name {
-                            modal.error =
-                                Some(String::from(tr("Enter the exact database name to confirm.")));
+                            let message =
+                                String::from(tr("Enter the exact database name to confirm."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
 
@@ -2363,7 +2373,9 @@ impl App {
                         {
                             Some(handle) => handle,
                             None => {
-                                modal.error = Some(String::from(tr("No active connection.")));
+                                let message = String::from(tr("No active connection."));
+                                log::error!("{message}");
+                                modal.error = Some(message);
                                 return Task::none();
                             }
                         };
@@ -2371,6 +2383,7 @@ impl App {
                         modal.processing = true;
                         modal.error = None;
 
+                        log::debug!("Drop database requested db={}", db_name);
                         let future_db = db_name.clone();
                         let handle_task = handle.clone();
                         let message_db = db_name.clone();
@@ -2392,14 +2405,18 @@ impl App {
                         let collection_name_input = modal.collection_input.trim();
 
                         if db_name_input.is_empty() {
-                            modal.error = Some(String::from(tr("Provide a database name.")));
+                            let message = String::from(tr("Provide a database name."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
 
                         if collection_name_input.is_empty() {
-                            modal.error = Some(String::from(tr(
+                            let message = String::from(tr(
                                 "Enter the name of the first collection for the new database.",
-                            )));
+                            ));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
 
@@ -2415,19 +2432,28 @@ impl App {
                             .unwrap_or((None, false));
 
                         if exists {
-                            modal.error =
-                                Some(String::from(tr("A database with this name already exists.")));
+                            let message =
+                                String::from(tr("A database with this name already exists."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
 
                         let Some(handle) = handle else {
-                            modal.error = Some(String::from(tr("No active connection.")));
+                            let message = String::from(tr("No active connection."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         };
 
                         modal.processing = true;
                         modal.error = None;
 
+                        log::debug!(
+                            "Create database requested db={} collection={}",
+                            db_name_input,
+                            collection_name_input
+                        );
                         let db_name = db_name_input.to_string();
                         let collection_name = collection_name_input.to_string();
                         let handle_task = handle.clone();
@@ -2464,6 +2490,7 @@ impl App {
                                     }
                                     Err(error) => {
                                         modal.processing = false;
+                                        log::error!("{error}");
                                         modal.error = Some(error);
                                     }
                                 }
@@ -2486,6 +2513,7 @@ impl App {
                             }
                             Err(error) => {
                                 modal.processing = false;
+                                log::error!("{error}");
                                 modal.error = Some(error);
                             }
                         }
@@ -2519,20 +2547,24 @@ impl App {
                         let object = match value.as_object() {
                             Some(obj) => obj,
                             None => {
-                                modal.error =
-                                    Some(String::from(tr("Document must be a JSON object.")));
+                                let message = String::from(tr("Document must be a JSON object."));
+                                log::error!("{message}");
+                                modal.error = Some(message);
                                 return Task::none();
                             }
                         };
                         match bson::to_document(object) {
                             Ok(doc) => doc,
                             Err(error) => {
-                                modal.error = Some(format!("BSON conversion error: {error}"));
+                                let message = format!("BSON conversion error: {error}");
+                                log::error!("{message}");
+                                modal.error = Some(message);
                                 return Task::none();
                             }
                         }
                     }
                     Err(error) => {
+                        log::error!("{error}");
                         modal.error = Some(error);
                         return Task::none();
                     }
@@ -2545,7 +2577,9 @@ impl App {
                     .and_then(|client| client.handle.clone());
 
                 let Some(handle) = client_handle else {
-                    modal.error = Some(String::from(tr("No active connection.")));
+                    let message = String::from(tr("No active connection."));
+                    log::error!("{message}");
+                    modal.error = Some(message);
                     return Task::none();
                 };
 
@@ -2564,6 +2598,11 @@ impl App {
                             replacement.insert("_id", original_id);
                         }
 
+                        log::debug!(
+                            "Document save requested db={} collection={}",
+                            db_name,
+                            collection_name
+                        );
                         let filter_clone = filter;
                         let replacement_clone = replacement.clone();
                         let handle_task = handle.clone();
@@ -2597,19 +2636,29 @@ impl App {
                             .map(|value| value.to_string())
                         else {
                             modal.processing = false;
-                            modal.error = Some(String::from(tr(
+                            let message = String::from(tr(
                                 "Index document must contain a string field named name.",
-                            )));
+                            ));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         };
 
                         if name_value != name {
                             modal.processing = false;
-                            modal.error =
-                                Some(String::from(tr("Index name cannot be changed via collMod.")));
+                            let message =
+                                String::from(tr("Index name cannot be changed via collMod."));
+                            log::error!("{message}");
+                            modal.error = Some(message);
                             return Task::none();
                         }
 
+                        log::debug!(
+                            "Index update requested db={} collection={} index={}",
+                            db_name,
+                            collection_name,
+                            name
+                        );
                         let handle_task = handle.clone();
                         let db_name_clone = db_name.clone();
                         let collection_clone = collection_name.clone();
@@ -2641,6 +2690,7 @@ impl App {
                 Err(error) => {
                     if let Some(modal) = self.document_modal.as_mut() {
                         modal.processing = false;
+                        log::error!("{error}");
                         modal.error = Some(error);
                     }
                     Task::none()
@@ -2669,6 +2719,7 @@ impl App {
                 let new_value = match modal.prepare_value() {
                     Ok(value) => value,
                     Err(error) => {
+                        log::error!("{error}");
                         modal.error = Some(error);
                         return Task::none();
                     }
@@ -2680,7 +2731,9 @@ impl App {
                     .find(|client| client.id == modal.client_id)
                     .and_then(|client| client.handle.clone())
                 else {
-                    modal.error = Some(String::from(tr("No active connection.")));
+                    let message = String::from(tr("No active connection."));
+                    log::error!("{message}");
+                    modal.error = Some(message);
                     return Task::none();
                 };
 
@@ -2700,6 +2753,12 @@ impl App {
                 let update_clone = update_doc.clone();
                 let handle_task = handle.clone();
 
+                log::debug!(
+                    "Value edit requested db={} collection={} path={}",
+                    db_name,
+                    collection_name,
+                    modal.path
+                );
                 Task::perform(
                     async move {
                         let collection =
@@ -2727,6 +2786,7 @@ impl App {
                 Err(error) => {
                     if let Some(modal) = self.value_edit_modal.as_mut() {
                         modal.processing = false;
+                        log::error!("{error}");
                         modal.error = Some(error);
                     }
                     Task::none()
@@ -2990,6 +3050,16 @@ impl App {
                     collection.last_query_duration = Some(duration);
                     match result {
                         Ok(query_result) => {
+                            let (kind, count) = Self::query_result_metrics(&query_result);
+                            log::debug!(
+                                "Query completed tab_id={} db={} collection={} result={} count={} duration_ms={:.3}",
+                                tab_id,
+                                collection.db_name,
+                                collection.collection,
+                                kind,
+                                count,
+                                duration.as_secs_f64() * 1000.0
+                            );
                             collection.set_query_result(query_result, &self.settings)
                         }
                         Err(error) => collection.set_tree_error(error),
@@ -3053,6 +3123,7 @@ impl App {
                         }
                         Err(error) => {
                             if let Some(window) = self.connections_window.as_mut() {
+                                log::error!("{error}");
                                 window.feedback = Some(error);
                             }
                         }
@@ -3092,10 +3163,16 @@ impl App {
                 if let Some(state) = self.connections_window.as_mut() {
                     if let Some(index) = state.selected {
                         if index < self.connections.len() {
+                            let removed_name =
+                                self.connections.get(index).map(|entry| entry.name.clone());
                             self.connections.remove(index);
+                            if let Some(name) = removed_name {
+                                log::debug!("Connection deleted name={}", name);
+                            }
                             match save_connections_to_disk(&self.connections) {
                                 Ok(()) => state.feedback = Some(String::from(tr("Deleted"))),
                                 Err(error) => {
+                                    log::error!("{error}");
                                     state.feedback =
                                         Some(format!("{}{}", tr("Save error: "), error));
                                 }
@@ -3122,6 +3199,7 @@ impl App {
                                 }
                                 Err(error) => {
                                     if let Some(window) = self.connections_window.as_mut() {
+                                        log::error!("{error}");
                                         window.feedback = Some(error);
                                     }
                                 }
@@ -3308,6 +3386,13 @@ impl App {
                             form.validation_error = None;
                             form.testing = true;
                             form.test_feedback = None;
+                            log::debug!(
+                                "Connection test started name={} host={} port={} ssh_tunnel={}",
+                                entry.name,
+                                entry.host,
+                                entry.port,
+                                entry.ssh_tunnel.enabled
+                            );
 
                             let auth_db = if form.auth.use_auth {
                                 form.auth.database.trim()
@@ -3351,7 +3436,10 @@ impl App {
                                 Message::ConnectionFormTestResult,
                             );
                         }
-                        Err(error) => form.validation_error = Some(error),
+                        Err(error) => {
+                            log::error!("{error}");
+                            form.validation_error = Some(error);
+                        }
                     }
                 }
                 Task::none()
@@ -3360,8 +3448,14 @@ impl App {
                 if let Some(form) = self.connection_form.as_mut() {
                     form.testing = false;
                     form.test_feedback = Some(match result {
-                        Ok(()) => TestFeedback::Success(String::from(tr("Connection established"))),
-                        Err(error) => TestFeedback::Failure(error),
+                        Ok(()) => {
+                            log::debug!("Connection test succeeded");
+                            TestFeedback::Success(String::from(tr("Connection established")))
+                        }
+                        Err(error) => {
+                            log::error!("{error}");
+                            TestFeedback::Failure(error)
+                        }
                     });
                 }
                 Task::none()
@@ -3371,6 +3465,7 @@ impl App {
                     let require_password = form.auth.password_storage == PasswordStorage::File;
                     match form.validate(require_password) {
                         Ok(entry) => {
+                            let entry_name = entry.name.clone();
                             let result = match form.mode {
                                 ConnectionFormMode::Create => {
                                     self.connections.push(entry);
@@ -3388,9 +3483,11 @@ impl App {
 
                             match result {
                                 Ok(selected_index) => {
+                                    log::debug!("Connection saved name={}", entry_name);
                                     if let Err(error) = save_connections_to_disk(&self.connections)
                                     {
                                         if let Some(window) = self.connections_window.as_mut() {
+                                            log::error!("{error}");
                                             window.feedback =
                                                 Some(format!("{}{}", tr("Save error: "), error));
                                         }
@@ -3403,12 +3500,14 @@ impl App {
                                     }
                                 }
                                 Err(error) => {
+                                    log::error!("{error}");
                                     form.validation_error = Some(error);
                                     return Task::none();
                                 }
                             }
                         }
                         Err(error) => {
+                            log::error!("{error}");
                             form.validation_error = Some(error);
                         }
                     }
@@ -3581,6 +3680,7 @@ impl App {
             Message::SettingsApply => {
                 if let Some(mut state) = self.settings_window.take() {
                     if let Err(error) = self.apply_settings_from_state(&mut state) {
+                        log::error!("{error}");
                         state.validation_error = Some(error);
                     }
                     self.settings_window = Some(state);
@@ -3595,6 +3695,7 @@ impl App {
                 };
 
                 if let Err(error) = self.apply_settings_from_state(&mut state) {
+                    log::error!("{error}");
                     state.validation_error = Some(error);
                     self.settings_window = Some(state);
                     return Task::none();
@@ -3604,12 +3705,14 @@ impl App {
 
                 match settings::save_to_disk(&self.settings) {
                     Ok(()) => {
+                        log::debug!("Settings saved");
                         self.close_settings_window();
                     }
                     Err(error) => {
                         if let Some(mut state) = self.settings_window.take() {
-                            state.validation_error =
-                                Some(format!("{} {}", tr("Save error: "), error));
+                            let message = format!("{} {}", tr("Save error: "), error);
+                            log::error!("{message}");
+                            state.validation_error = Some(message);
                             self.settings_window = Some(state);
                         }
                     }
@@ -3629,6 +3732,7 @@ impl App {
 
                 if let Err(error) = self.apply_settings_to_runtime(&defaults) {
                     let message = format!("{} {}", tr("Failed to apply settings:"), error);
+                    log::error!("{message}");
                     self.settings_error_modal = Some(SettingsErrorModalState::new(message));
                     self.mode = AppMode::SettingsLoadError;
                     return Task::none();
@@ -3644,6 +3748,7 @@ impl App {
                     }
                     Err(error) => {
                         let message = format!("{} {}", tr("Save error: "), error);
+                        log::error!("{message}");
                         self.settings_error_modal = Some(SettingsErrorModalState::new(message));
                         self.mode = AppMode::SettingsLoadError;
                     }
@@ -4840,6 +4945,7 @@ impl App {
             }
         }
 
+        log::debug!("Open tab client_id={} db={} collection={}", client_id, db_name, collection);
         let id = self.next_tab_id;
         self.next_tab_id += 1;
         self.tabs.push(TabData::new_collection(
@@ -4872,6 +4978,7 @@ impl App {
                 tab.collection.editor = TextEditorContent::with_text(&query_text);
                 tab.color = color;
             }
+            log::debug!("Tab duplicated from={} to={}", tab_id, new_tab_id);
         }
     }
 
@@ -4981,6 +5088,7 @@ impl App {
         self.tabs.push(tab);
         self.active_tab = Some(id);
 
+        log::debug!("Open serverStatus tab client_id={} tab_id={}", client_id, id);
         Some(Self::server_status_task(handle, id))
     }
 
@@ -5007,6 +5115,11 @@ impl App {
             return Task::none();
         };
 
+        log::debug!(
+            "Refresh databases client_id={} ssh_tunnel={}",
+            client_id,
+            client.entry.ssh_tunnel.enabled
+        );
         if client.entry.ssh_tunnel.enabled {
             client.status = ConnectionStatus::Connecting;
             client.handle = None;
@@ -5114,6 +5227,7 @@ impl App {
     }
 
     fn close_client_connection(&mut self, client_id: ClientId) {
+        log::debug!("Close connection client_id={}", client_id);
         self.clients.retain(|client| client.id != client_id);
 
         if self.last_collection_click.as_ref().is_some_and(|click| click.client_id == client_id) {
@@ -5182,6 +5296,63 @@ impl App {
         }
     }
 
+    fn query_operation_label(operation: &QueryOperation) -> &'static str {
+        match operation {
+            QueryOperation::Find { .. } => "find",
+            QueryOperation::FindOne { .. } => "findOne",
+            QueryOperation::Count { .. } => "count",
+            QueryOperation::CountDocuments { .. } => "countDocuments",
+            QueryOperation::EstimatedDocumentCount { .. } => "estimatedDocumentCount",
+            QueryOperation::Distinct { .. } => "distinct",
+            QueryOperation::Aggregate { .. } => "aggregate",
+            QueryOperation::Watch { target, .. } => match target {
+                WatchTarget::Collection => "watch(collection)",
+                WatchTarget::Database => "watch(database)",
+            },
+            QueryOperation::InsertOne { .. } => "insertOne",
+            QueryOperation::InsertMany { .. } => "insertMany",
+            QueryOperation::DeleteOne { .. } => "deleteOne",
+            QueryOperation::DeleteMany { .. } => "deleteMany",
+            QueryOperation::UpdateOne { .. } => "updateOne",
+            QueryOperation::UpdateMany { .. } => "updateMany",
+            QueryOperation::ReplaceOne { .. } => "replaceOne",
+            QueryOperation::FindOneAndUpdate { .. } => "findOneAndUpdate",
+            QueryOperation::FindOneAndReplace { .. } => "findOneAndReplace",
+            QueryOperation::FindOneAndDelete { .. } => "findOneAndDelete",
+            QueryOperation::ListIndexes => "getIndexes",
+            QueryOperation::ReplicaSetCommand { command } => match command {
+                ReplicaSetCommand::Status => "rs.status",
+                ReplicaSetCommand::Config => "rs.conf",
+                ReplicaSetCommand::IsMaster => "rs.isMaster",
+                ReplicaSetCommand::Hello => "rs.hello",
+                ReplicaSetCommand::PrintReplicationInfo => "rs.printReplicationInfo",
+                ReplicaSetCommand::PrintSecondaryReplicationInfo => {
+                    "rs.printSecondaryReplicationInfo"
+                }
+                ReplicaSetCommand::Initiate { .. } => "rs.initiate",
+                ReplicaSetCommand::Reconfig { .. } => "rs.reconfig",
+                ReplicaSetCommand::StepDown { .. } => "rs.stepDown",
+                ReplicaSetCommand::Freeze { .. } => "rs.freeze",
+                ReplicaSetCommand::Add { arbiter: true, .. } => "rs.addArb",
+                ReplicaSetCommand::Add { arbiter: false, .. } => "rs.add",
+                ReplicaSetCommand::Remove { .. } => "rs.remove",
+                ReplicaSetCommand::SyncFrom { .. } => "rs.syncFrom",
+                ReplicaSetCommand::SlaveOk => "rs.slaveOk",
+            },
+            QueryOperation::DatabaseCommand { .. } => "db.command",
+        }
+    }
+
+    fn query_result_metrics(result: &QueryResult) -> (&'static str, usize) {
+        match result {
+            QueryResult::Documents(values) => ("documents", values.len()),
+            QueryResult::Indexes(values) => ("indexes", values.len()),
+            QueryResult::SingleDocument { .. } => ("document", 1),
+            QueryResult::Distinct { values, .. } => ("distinct", values.len()),
+            QueryResult::Count { .. } => ("count", 1),
+        }
+    }
+
     fn collection_query_task(&mut self, tab_id: TabId) -> Task<Message> {
         let mut request: Option<(ClientId, String, String, QueryOperation, u64, u64)> = None;
 
@@ -5192,6 +5363,17 @@ impl App {
                 Ok(operation) => {
                     let skip = collection.skip_value();
                     let limit = collection.limit_value();
+                    let op_label = Self::query_operation_label(&operation);
+                    log::debug!(
+                        "Query start tab_id={} client_id={} db={} collection={} op={} skip={} limit={}",
+                        tab_id,
+                        collection.client_id,
+                        collection.db_name,
+                        collection.collection,
+                        op_label,
+                        skip,
+                        limit
+                    );
                     collection.query_in_progress = true;
                     collection.last_query_duration = None;
                     request = Some((
@@ -5232,6 +5414,18 @@ impl App {
 
         match operation {
             QueryOperation::Watch { pipeline, target } => {
+                let target_label = match target {
+                    WatchTarget::Collection => "collection",
+                    WatchTarget::Database => "database",
+                };
+                log::debug!(
+                    "Watch started tab_id={} db={} collection={} target={} limit={}",
+                    tab_id,
+                    db_name,
+                    collection_name,
+                    target_label,
+                    limit
+                );
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection
                         .set_query_result(QueryResult::Documents(Vec::new()), &self.settings);
@@ -5390,6 +5584,7 @@ impl App {
     }
 
     fn open_connections_window(&mut self) {
+        log::debug!("Open connections window");
         let mut state =
             self.connections_window.take().unwrap_or_else(|| ConnectionsWindowState::new(None));
 
@@ -5410,12 +5605,14 @@ impl App {
     }
 
     fn close_connections_window(&mut self) {
+        log::debug!("Close connections window");
         self.mode = AppMode::Main;
         self.connections_window = None;
         self.connection_form = None;
     }
 
     fn open_connection_form(&mut self, mode: ConnectionFormMode) {
+        log::debug!("Open connection form mode={:?}", mode);
         if let Some(window) = self.connections_window.as_mut() {
             window.confirm_delete = false;
         }
@@ -5428,6 +5625,7 @@ impl App {
     }
 
     fn open_settings_window(&mut self) {
+        log::debug!("Open settings window");
         let previous_tab = self.settings_window.as_ref().map(|state| state.active_tab);
 
         let mut state = SettingsWindowState::from_app_settings(&self.settings);
@@ -5442,14 +5640,17 @@ impl App {
     }
 
     fn open_about_modal(&mut self) {
+        log::debug!("Open about modal");
         self.mode = AppMode::About;
     }
 
     fn open_licenses_modal(&mut self) {
+        log::debug!("Open licenses modal");
         self.mode = AppMode::Licenses;
     }
 
     fn open_help_docs_window(&mut self) {
+        log::debug!("Open help docs window");
         if self.help_docs_state.is_none() {
             self.help_docs_state = Some(HelpDocsState::new());
         }
@@ -5457,19 +5658,23 @@ impl App {
     }
 
     fn close_settings_window(&mut self) {
+        log::debug!("Close settings window");
         self.settings_window = None;
         self.mode = AppMode::Main;
     }
 
     fn close_about_modal(&mut self) {
+        log::debug!("Close about modal");
         self.mode = AppMode::Main;
     }
 
     fn close_licenses_modal(&mut self) {
+        log::debug!("Close licenses modal");
         self.mode = AppMode::Main;
     }
 
     fn close_help_docs_window(&mut self) {
+        log::debug!("Close help docs window");
         self.mode = AppMode::Main;
     }
 
@@ -5510,6 +5715,7 @@ impl App {
         *state = SettingsWindowState::from_app_settings(&self.settings);
         state.active_tab = active_tab;
 
+        log::debug!("Settings applied");
         Ok(())
     }
 
@@ -5519,6 +5725,13 @@ impl App {
     ) -> Result<Task<Message>, String> {
         entry.uri()?;
         entry.ssh_tunnel.validate()?;
+        log::debug!(
+            "Connect requested name={} host={} port={} ssh_tunnel={}",
+            entry.name,
+            entry.host,
+            entry.port,
+            entry.ssh_tunnel.enabled
+        );
         let connection = OMDBConnection::from_entry(entry.clone());
         let client_id = self.next_client_id;
         self.next_client_id += 1;
