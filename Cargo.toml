@@ -1,6 +1,6 @@
 [package]
 name = "oxide_mongo"
-version = "0.1.0"
+version = "0.1.5"
 edition = "2024"
 
 [dependencies]
@@ -18,9 +18,12 @@ chrono = { version = "0.4", features = ["std"] }
 base64 = "0.22"
 fontdb = "0.15"
 ssh2 = "0.9"
-rfd = "0.15"
+rfd = "0.17.1"
 webbrowser = "0.8"
 log = "0.4"
 
 [dev-dependencies]
 iced_runtime = "0.13.2"
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
