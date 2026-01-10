@@ -36,10 +36,10 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             asset: oxide_mongo-windows-x86_64.exe
-          - os: macos-14
+          - os: macos-latest
             target: x86_64-apple-darwin
             asset: oxide_mongo-macos-x86_64
-          - os: macos-14
+          - os: macos-latest
             target: aarch64-apple-darwin
             asset: oxide_mongo-macos-aarch64
     runs-on: ${{ matrix.os }}
