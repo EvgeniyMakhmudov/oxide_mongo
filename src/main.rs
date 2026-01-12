@@ -797,6 +797,7 @@ struct CollectionTab {
     db_name: String,
     collection: String,
     editor: TextEditorContent,
+    focus_anchor: iced::widget::text_input::Id,
     panes: pane_grid::State<CollectionPane>,
     bson_tree: BsonTree,
     response_view_mode: ResponseViewMode,
@@ -842,6 +843,17 @@ impl TextResultView {
 
         let joined = self.documents.join(",\n");
         format!("[\n{joined}\n]")
+    }
+}
+
+fn position_cursor_in_find(editor: &mut TextEditorContent, text: &str) {
+    let Some(index) = text.find("{}") else {
+        return;
+    };
+    let target = index + 1;
+    editor.perform(TextEditorAction::Move(text_editor::Motion::DocumentStart));
+    for _ in 0..target {
+        editor.perform(TextEditorAction::Move(text_editor::Motion::Right));
     }
 }
 
@@ -923,13 +935,16 @@ impl CollectionTab {
             collection_name = collection.as_str()
         );
         let text_result = None;
+        let mut editor = TextEditorContent::with_text(&editor_text);
+        position_cursor_in_find(&mut editor, &editor_text);
 
         let mut instance = Self {
             client_id,
             client_name,
             db_name,
             collection,
-            editor: TextEditorContent::with_text(&editor_text),
+            editor,
+            focus_anchor: iced::widget::text_input::Id::unique(),
             panes,
             bson_tree,
             response_view_mode: ResponseViewMode::Table,
@@ -1111,6 +1126,15 @@ impl CollectionTab {
 
     fn request_view(&self, tab_id: TabId) -> Element<'_, Message> {
         let send_tab_id = tab_id;
+        let focus_anchor = Container::new(
+            text_input("", "")
+                .id(self.focus_anchor.clone())
+                .size(1)
+                .padding(0)
+                .width(Length::Fixed(0.0)),
+        )
+        .width(Length::Fixed(0.0))
+        .height(Length::Fixed(0.0));
         let editor = text_editor::TextEditor::new(&self.editor)
             .key_binding(move |key_press| {
                 let is_enter = matches!(key_press.key, keyboard::Key::Named(key::Named::Enter));
@@ -1145,6 +1169,7 @@ impl CollectionTab {
             .align_y(Vertical::Center)
             .width(Length::Fill)
             .height(Length::Fill)
+            .push(focus_anchor)
             .push(Container::new(editor).width(Length::FillPortion(9)).height(Length::Fill).style(
                 move |_| container::Style {
                     border: border::rounded(4.0).width(1),
@@ -1730,13 +1755,13 @@ impl App {
 
                 if is_double {
                     self.last_collection_click = None;
-                    let _ = self.open_collection_tab(client_id, db_name, collection);
+                    let tab_id = self.open_collection_tab(client_id, db_name, collection);
+                    self.focus_collection_editor(tab_id)
                 } else {
                     self.last_collection_click =
                         Some(CollectionClick { client_id, db_name, collection, at: now });
+                    Task::none()
                 }
-
-                Task::none()
             }
             Message::CollectionEditorAction { tab_id, action } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
@@ -4961,6 +4986,15 @@ impl App {
         ));
         self.active_tab = Some(id);
         id
+    }
+
+    fn focus_collection_editor(&self, tab_id: TabId) -> Task<Message> {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return Task::none();
+        };
+
+        iced::widget::text_input::focus::<Message>(tab.collection.focus_anchor.clone())
+            .chain(iced::widget::focus_next())
     }
 
     fn duplicate_collection_tab(&mut self, tab_id: TabId) {
