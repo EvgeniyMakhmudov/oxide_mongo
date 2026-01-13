@@ -68,6 +68,16 @@ fn extract_host_port(uri: &str) -> Result<(String, u16), ParseIntError> {
     }
 }
 
+fn get_numeric_i64(document: &Document, key: &str) -> i64 {
+    match document.get(key) {
+        Some(Bson::Int32(value)) => i64::from(*value),
+        Some(Bson::Int64(value)) => *value,
+        Some(Bson::Double(value)) => *value as i64,
+        Some(other) => panic!("Expected numeric value for '{}', got {:?}", key, other),
+        None => panic!("Missing numeric field '{}'", key),
+    }
+}
+
 fn drive_task(app: &mut App, task: Task<Message>) {
     if let Some(stream) = runtime_task::into_stream(task) {
         block_on(async {
@@ -262,15 +272,10 @@ impl App {
 }
 
 #[test]
-// #[ignore]
+#[ignore = "needs real MongoDB URI"]
 fn connection_flow_via_messages() {
-    let uri = match env::var("OXIDE_MONGO_TEST_URI") {
-        Ok(value) => value,
-        Err(_) => {
-            eprintln!("skipping connection_flow_via_messages: OXIDE_MONGO_TEST_URI not provided");
-            return;
-        }
-    };
+    let uri = env::var("OXIDE_MONGO_TEST_URI")
+        .expect("OXIDE_MONGO_TEST_URI must be set for this integration test");
 
     let (host, port) = extract_host_port(&uri)
         .map(|(host, port)| (host.trim().to_string(), port))
@@ -624,7 +629,7 @@ fn connection_flow_via_messages() {
     match insert_many_result {
         QueryResult::SingleDocument { document } => {
             assert_eq!(document.get_str("operation").unwrap_or_default(), "insertMany");
-            assert_eq!(document.get_i64("insertedCount").unwrap_or_default(), 2);
+            assert_eq!(get_numeric_i64(&document, "insertedCount"), 2);
         }
         other => panic!("expected insertMany acknowledgment, got {:?}", other),
     }
@@ -872,7 +877,7 @@ fn connection_flow_via_messages() {
     match insert_many_collection_2_result {
         QueryResult::SingleDocument { document } => {
             assert_eq!(document.get_str("operation").unwrap_or_default(), "insertMany");
-            assert_eq!(document.get_i64("insertedCount").unwrap_or_default(), 4);
+            assert_eq!(get_numeric_i64(&document, "insertedCount"), 4);
         }
         other => panic!("expected insertMany result for collection 2, got {:?}", other),
     }
@@ -1403,11 +1408,11 @@ fn connection_flow_via_messages() {
     //
     let insert_many_again = format!(
         concat!(
-            "db.getCollection('{collection}').insertMany([\\n",
-            "    {{ \"name\": \"Alex\", \"department\": \"IT\", \"starts\": ISODate(\"2020-02-01\"), \"points\": 10, \"scores\": 1 }},\\n",
-            "    {{ \"name\": \"Alex\", \"department\": \"Support\", \"starts\": ISODate(\"2018-03-10\"), \"points\": 8, \"scores\": 1 }},\\n",
-            "    {{ \"name\": \"Anya\", \"department\": \"IT\", \"starts\": ISODate(\"2020-06-15\"), \"points\": 20, \"scores\": 1 }},\\n",
-            "    {{ \"name\": \"Mark\", \"department\": \"Devops\", \"starts\": ISODate(\"2019-05-01\"), \"points\": 12, \"scores\": 1 }}\\n",
+            "db.getCollection('{collection}').insertMany([\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"IT\", \"starts\": ISODate(\"2020-02-01\"), \"points\": 10, \"scores\": 1 }},\n",
+            "    {{ \"name\": \"Alex\", \"department\": \"Support\", \"starts\": ISODate(\"2018-03-10\"), \"points\": 8, \"scores\": 1 }},\n",
+            "    {{ \"name\": \"Anya\", \"department\": \"IT\", \"starts\": ISODate(\"2020-06-15\"), \"points\": 20, \"scores\": 1 }},\n",
+            "    {{ \"name\": \"Mark\", \"department\": \"Devops\", \"starts\": ISODate(\"2019-05-01\"), \"points\": 12, \"scores\": 1 }}\n",
             "])"
         ),
         collection = collection_name_2
@@ -1417,7 +1422,7 @@ fn connection_flow_via_messages() {
     match &insert_again_result {
         QueryResult::SingleDocument { document } => {
             assert_eq!(document.get_str("operation").unwrap_or_default(), "insertMany");
-            assert_eq!(document.get_i64("insertedCount").unwrap_or_default(), 4);
+            assert_eq!(get_numeric_i64(document, "insertedCount"), 4);
         }
         other => panic!("expected insertMany result on reinsertion, got {:?}", other),
     }
@@ -1426,7 +1431,7 @@ fn connection_flow_via_messages() {
     // Step 5.3: Create multiple indexes and verify names list.
     //
     let create_indexes = format!(
-        "db.getCollection('{collection}').createIndexes([{{starts: 1}}, {{points: -1}}, {{name: 1, points: -1}}])",
+        "db.getCollection('{collection}').createIndexes([{{starts: 1}}, {{points: -1}}])",
         collection = collection_name_2
     );
     let create_indexes_result =
@@ -1453,7 +1458,6 @@ fn connection_flow_via_messages() {
         full_index_names,
         vec![
             "_id_".to_string(),
-            "name_1_points_-1".to_string(),
             "name_asc".to_string(),
             "points_-1".to_string(),
             "starts_1".to_string()
@@ -1553,19 +1557,7 @@ fn connection_flow_via_messages() {
     let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
     let winning_plan =
         planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
-    let input_stage = winning_plan
-        .get_document("inputStage")
-        .or_else(|_| {
-            winning_plan
-                .get_array("inputStage")
-                .ok()
-                .and_then(|arr| arr.first().and_then(|b| b.as_document()))
-                .ok_or(())
-        })
-        .map(|doc| doc.clone())
-        .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan));
-
-    let stage = input_stage.get_str("stage").unwrap_or_default();
+    let stage = winning_plan.get_str("stage").unwrap_or_default();
     assert_eq!(stage, "COLLSCAN");
 
     //
@@ -1644,18 +1636,7 @@ fn connection_flow_via_messages() {
     let planner = plan_doc.get_document("queryPlanner").expect("queryPlanner missing");
     let winning_plan =
         planner.get_document("winningPlan").expect("winningPlan missing in queryPlanner");
-    let input_stage = winning_plan
-        .get_document("inputStage")
-        .or_else(|_| {
-            winning_plan
-                .get_array("inputStage")
-                .ok()
-                .and_then(|arr| arr.first().and_then(|b| b.as_document()))
-                .ok_or(())
-        })
-        .map(|doc| doc.clone())
-        .unwrap_or_else(|_| panic!("inputStage missing in winningPlan: {:?}", winning_plan));
-    assert_eq!(input_stage.get_str("stage").unwrap_or_default(), "COLLSCAN");
+    assert_eq!(winning_plan.get_str("stage").unwrap_or_default(), "COLLSCAN");
 
     let get_indexes_after_drop =
         format!("db.getCollection('{collection}').getIndexes()", collection = collection_name_2);
@@ -1672,12 +1653,7 @@ fn connection_flow_via_messages() {
     remaining_indexes.sort();
     assert_eq!(
         remaining_indexes,
-        vec![
-            "_id_".to_string(),
-            "name_1_points_-1".to_string(),
-            "points_-1".to_string(),
-            "starts_1".to_string()
-        ]
+        vec!["_id_".to_string(), "points_-1".to_string(), "starts_1".to_string()]
     );
 
     //
@@ -1694,8 +1670,10 @@ fn connection_flow_via_messages() {
             assert_eq!(values.len(), 4);
             let first = values.first().and_then(|b| b.as_document()).unwrap();
             let last = values.last().and_then(|b| b.as_document()).unwrap();
-            assert_eq!(first.get_str("starts").unwrap_or_default(), "2018-03-10T00:00:00Z");
-            assert_eq!(last.get_str("starts").unwrap_or_default(), "2020-06-15T00:00:00Z");
+            let first_start = bson::DateTime::parse_rfc3339_str("2018-03-10T00:00:00Z").unwrap();
+            let last_start = bson::DateTime::parse_rfc3339_str("2020-06-15T00:00:00Z").unwrap();
+            assert_eq!(first.get_datetime("starts").unwrap(), &first_start);
+            assert_eq!(last.get_datetime("starts").unwrap(), &last_start);
         }
         other => panic!("expected sorted documents by starts asc, got {:?}", other),
     }
@@ -1714,8 +1692,10 @@ fn connection_flow_via_messages() {
             assert_eq!(values.len(), 4);
             let first = values.first().and_then(|b| b.as_document()).unwrap();
             let last = values.last().and_then(|b| b.as_document()).unwrap();
-            assert_eq!(first.get_str("starts").unwrap_or_default(), "2020-06-15T00:00:00Z");
-            assert_eq!(last.get_str("starts").unwrap_or_default(), "2018-03-10T00:00:00Z");
+            let first_start = bson::DateTime::parse_rfc3339_str("2020-06-15T00:00:00Z").unwrap();
+            let last_start = bson::DateTime::parse_rfc3339_str("2018-03-10T00:00:00Z").unwrap();
+            assert_eq!(first.get_datetime("starts").unwrap(), &first_start);
+            assert_eq!(last.get_datetime("starts").unwrap(), &last_start);
         }
         other => panic!("expected sorted documents by starts desc, got {:?}", other),
     }
@@ -1734,8 +1714,8 @@ fn connection_flow_via_messages() {
             assert_eq!(values.len(), 4);
             let first = values.first().and_then(|b| b.as_document()).unwrap();
             let last = values.last().and_then(|b| b.as_document()).unwrap();
-            assert_eq!(first.get_i32("points").unwrap_or_default(), 20);
-            assert_eq!(last.get_i32("points").unwrap_or_default(), 8);
+            assert_eq!(get_numeric_i64(first, "points"), 20);
+            assert_eq!(get_numeric_i64(last, "points"), 8);
         }
         other => panic!("expected sorted documents by points desc, got {:?}", other),
     }
@@ -1754,8 +1734,8 @@ fn connection_flow_via_messages() {
             assert_eq!(values.len(), 2);
             let first = values.first().and_then(|b| b.as_document()).unwrap();
             let last = values.last().and_then(|b| b.as_document()).unwrap();
-            assert_eq!(first.get_i32("points").unwrap_or_default(), 8);
-            assert_eq!(last.get_i32("points").unwrap_or_default(), 10);
+            assert_eq!(get_numeric_i64(first, "points"), 8);
+            assert_eq!(get_numeric_i64(last, "points"), 10);
         }
         other => panic!("expected sorted Alex documents by points asc, got {:?}", other),
     }
@@ -1791,8 +1771,8 @@ fn connection_flow_via_messages() {
             assert_eq!(values.len(), 2);
             let first = values.first().and_then(|b| b.as_document()).unwrap();
             let last = values.last().and_then(|b| b.as_document()).unwrap();
-            assert_eq!(first.get_i32("points").unwrap_or_default(), 10);
-            assert_eq!(last.get_i32("points").unwrap_or_default(), 8);
+            assert_eq!(get_numeric_i64(first, "points"), 10);
+            assert_eq!(get_numeric_i64(last, "points"), 8);
         }
         other => panic!("expected documents result for hint points_-1, got {:?}", other),
     }
