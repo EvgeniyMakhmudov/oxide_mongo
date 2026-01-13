@@ -39,7 +39,7 @@ use mongo::connection::{
 };
 use mongo::query::{
     QueryOperation, QueryResult, ReplicaSetCommand, WatchTarget, open_change_stream,
-    parse_collection_query, run_collection_query,
+    parse_collection_query_with_collection, run_collection_query,
 };
 use mongo::shell;
 use mongo::ssh_tunnel::SshTunnel;
@@ -796,6 +796,7 @@ struct CollectionTab {
     client_name: String,
     db_name: String,
     collection: String,
+    pending_collection: Option<String>,
     editor: TextEditorContent,
     focus_anchor: iced::widget::text_input::Id,
     panes: pane_grid::State<CollectionPane>,
@@ -943,6 +944,7 @@ impl CollectionTab {
             client_name,
             db_name,
             collection,
+            pending_collection: None,
             editor,
             focus_anchor: iced::widget::text_input::Id::unique(),
             panes,
@@ -1310,8 +1312,8 @@ impl CollectionTab {
         self.parse_limit_u64()
     }
 
-    fn parse_query(&self, text: &str) -> Result<QueryOperation, String> {
-        parse_collection_query(&self.db_name, &self.collection, text)
+    fn parse_query(&self, text: &str) -> Result<(String, QueryOperation), String> {
+        parse_collection_query_with_collection(&self.db_name, &self.collection, text)
     }
 
     fn sanitize_numeric<S: AsRef<str>>(value: S) -> String {
@@ -3077,6 +3079,12 @@ impl App {
                     collection.last_query_duration = Some(duration);
                     match result {
                         Ok(query_result) => {
+                            if let Some(pending) = collection.pending_collection.take() {
+                                if pending != collection.collection {
+                                    collection.collection = pending.clone();
+                                    tab.title = pending;
+                                }
+                            }
                             let (kind, count) = Self::query_result_metrics(&query_result);
                             log::debug!(
                                 "Query completed tab_id={} db={} collection={} result={} count={} duration_ms={:.3}",
@@ -3089,7 +3097,10 @@ impl App {
                             );
                             collection.set_query_result(query_result, &self.settings)
                         }
-                        Err(error) => collection.set_tree_error(error),
+                        Err(error) => {
+                            collection.pending_collection = None;
+                            collection.set_tree_error(error);
+                        }
                     }
                 }
                 Task::none()
@@ -5396,7 +5407,7 @@ impl App {
             let collection = &mut tab.collection;
             let query_text = collection.editor.text().to_string();
             match collection.parse_query(&query_text) {
-                Ok(operation) => {
+                Ok((effective_collection, operation)) => {
                     let skip = collection.skip_value();
                     let limit = collection.limit_value();
                     let op_label = Self::query_operation_label(&operation);
@@ -5405,17 +5416,18 @@ impl App {
                         tab_id,
                         collection.client_id,
                         collection.db_name,
-                        collection.collection,
+                        effective_collection,
                         op_label,
                         skip,
                         limit
                     );
                     collection.query_in_progress = true;
                     collection.last_query_duration = None;
+                    collection.pending_collection = Some(effective_collection.clone());
                     request = Some((
                         collection.client_id,
                         collection.db_name.clone(),
-                        collection.collection.clone(),
+                        effective_collection,
                         operation,
                         skip,
                         limit,

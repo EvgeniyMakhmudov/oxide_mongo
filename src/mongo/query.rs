@@ -375,7 +375,7 @@ struct QueryParser<'a> {
 }
 
 impl<'a> QueryParser<'a> {
-    fn parse_query(&self, text: &str) -> Result<QueryOperation, String> {
+    fn parse_query_with_collection(&self, text: &str) -> Result<(String, QueryOperation), String> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(String::from(tr(
@@ -386,15 +386,23 @@ impl<'a> QueryParser<'a> {
         let cleaned = trimmed.trim_end_matches(';').trim();
 
         if let Some(result) = self.try_parse_replica_set_method(cleaned)? {
-            return Ok(result);
+            return Ok((self.collection.to_string(), result));
         }
 
         if let Some(result) = self.try_parse_database_method(cleaned)? {
-            return Ok(result);
+            return Ok((self.collection.to_string(), result));
         }
 
-        let after_collection = Self::strip_collection_prefix(cleaned)?;
+        let (collection, after_collection) = Self::split_collection_prefix(cleaned)?;
+        let parser = QueryParser { db_name: self.db_name, collection };
+        let operation = parser.parse_collection_query_internal(after_collection)?;
+        Ok((collection.to_string(), operation))
+    }
 
+    fn parse_collection_query_internal(
+        &self,
+        after_collection: &str,
+    ) -> Result<QueryOperation, String> {
         let (method_name, args, remainder) = Self::extract_primary_method(after_collection)?;
         if method_name == "find" {
             let filter = if args.trim().is_empty() {
@@ -1069,10 +1077,10 @@ impl<'a> QueryParser<'a> {
         }
     }
 
-    fn strip_collection_prefix(text: &str) -> Result<&str, String> {
+    fn split_collection_prefix(text: &str) -> Result<(&str, &str), String> {
         if let Some(rest) = text.strip_prefix("db.getCollection(") {
             let rest = rest.trim_start();
-            let (_, after_literal) = Self::parse_collection_literal(rest)?;
+            let (name, after_literal) = Self::parse_collection_literal(rest)?;
             let after_literal = after_literal.trim_start();
             let after_paren = after_literal.strip_prefix(')').ok_or_else(|| {
                 String::from(tr("Expected ')' after collection name in getCollection."))
@@ -1083,7 +1091,7 @@ impl<'a> QueryParser<'a> {
                     "Expected a method call after specifying the collection.",
                 )));
             }
-            Ok(after_paren)
+            Ok((name, after_paren))
         } else if let Some(rest) = text.strip_prefix("db.") {
             if rest.is_empty() {
                 return Err(String::from(tr("Expected collection name after db.")));
@@ -1102,7 +1110,7 @@ impl<'a> QueryParser<'a> {
                     if index == 0 {
                         return Err(String::from(tr("Expected collection name after db.")));
                     }
-                    return Ok(&rest[index..]);
+                    return Ok((&rest[..index], &rest[index..]));
                 }
 
                 return Err(format!(
@@ -3664,12 +3672,12 @@ impl<'a> QueryParser<'a> {
     }
 }
 
-pub fn parse_collection_query(
+pub fn parse_collection_query_with_collection(
     db_name: &str,
     collection: &str,
     text: &str,
-) -> Result<QueryOperation, String> {
-    QueryParser { db_name, collection }.parse_query(text)
+) -> Result<(String, QueryOperation), String> {
+    QueryParser { db_name, collection }.parse_query_with_collection(text)
 }
 
 fn resolve_effective_limit(ui_limit: u64, chain_limit: Option<u64>) -> u64 {
@@ -4745,7 +4753,9 @@ mod tests {
     use serde_json::json;
 
     fn parse(query: &str) -> QueryOperation {
-        parse_collection_query("testdb", "users", query).expect("query should parse")
+        parse_collection_query_with_collection("testdb", "users", query)
+            .expect("query should parse")
+            .1
     }
 
     #[test]
@@ -5036,7 +5046,8 @@ mod tests {
     #[test]
     fn parses_database_stats_with_numeric_scale() {
         let parser = QueryParser { db_name: "analytics", collection: "ignored" };
-        let operation = parser.parse_query("db.stats(2048)").expect("stats should parse");
+        let (_collection, operation) =
+            parser.parse_query_with_collection("db.stats(2048)").expect("stats should parse");
 
         match operation {
             QueryOperation::DatabaseCommand { db, command } => {

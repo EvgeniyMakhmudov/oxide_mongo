@@ -1,7 +1,9 @@
 #![cfg(test)]
 
 use crate::mongo::connection::ConnectionBootstrap;
-use crate::mongo::query::{QueryResult, parse_collection_query, run_collection_query};
+use crate::mongo::query::{
+    QueryResult, parse_collection_query_with_collection, run_collection_query,
+};
 use crate::mongo::shell::{
     bson_type_name, format_bson_shell, parse_shell_bson_value, parse_shell_json_value,
 };
@@ -497,13 +499,14 @@ fn connection_flow_via_messages() {
         let (skip_value, limit_value) =
             app.test_collection_skip_limit(tab_id).expect("skip/limit must parse");
 
-        let operation =
-            parse_collection_query(&db_name, &collection_name, query).expect("query parses");
+        let (effective_collection, operation) =
+            parse_collection_query_with_collection(&db_name, &collection_name, query)
+                .expect("query parses");
         let timeout = app.test_query_timeout();
         let result = run_collection_query(
             Arc::clone(shared_client),
             db_name,
-            collection_name,
+            effective_collection,
             operation,
             skip_value,
             limit_value,
@@ -857,6 +860,47 @@ fn connection_flow_via_messages() {
     assert_eq!(sec_client_id, client_id);
     assert_eq!(sec_db_name, new_db_name_1);
     assert_eq!(sec_collection_name, collection_name_2);
+
+    //
+    // Step 4.1.1.1: Insert into COLLECTION_NAME_1 from COLLECTION_NAME_2 tab.
+    //
+    let insert_other_collection = format!(
+        "db.getCollection('{collection}').insertOne({{ marker: \"from_other_collection\" }})",
+        collection = collection_name_1
+    );
+    let insert_other_result =
+        execute_query(&mut app, secondary_tab_id, &insert_other_collection, &shared_client);
+    match insert_other_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_str("operation").unwrap_or_default(), "insertOne");
+        }
+        other => panic!("expected insertOne for other collection, got {:?}", other),
+    }
+
+    let verify_other_collection = format!(
+        "db.getCollection('{collection}').find({{ marker: \"from_other_collection\" }})",
+        collection = collection_name_1
+    );
+    let (verify_other_collection_name, verify_other_op) = parse_collection_query_with_collection(
+        &new_db_name_1,
+        &collection_name_1,
+        &verify_other_collection,
+    )
+    .expect("query parses");
+    let verify_other_result = run_collection_query(
+        Arc::clone(&shared_client),
+        new_db_name_1.clone(),
+        verify_other_collection_name,
+        verify_other_op,
+        0,
+        DEFAULT_RESULT_LIMIT as u64,
+        app.test_query_timeout(),
+    )
+    .expect("query should succeed");
+    match &verify_other_result {
+        QueryResult::Documents(values) => assert_eq!(values.len(), 1),
+        other => panic!("expected marker document in other collection, got {:?}", other),
+    }
 
     //
     // Step 4.1.2: Insert documents into COLLECTION_NAME_2.
@@ -1784,12 +1828,13 @@ fn connection_flow_via_messages() {
         "db.getCollection('{collection}').find({{name: \"Alex\"}}).hint('points_1')",
         collection = collection_name_2
     );
-    let bad_hint_op =
-        parse_collection_query(&new_db_name_1, &collection_name_2, &bad_hint_query).unwrap();
+    let (bad_hint_collection, bad_hint_op) =
+        parse_collection_query_with_collection(&new_db_name_1, &collection_name_2, &bad_hint_query)
+            .unwrap();
     let bad_hint_err = run_collection_query(
         Arc::clone(&shared_client),
         new_db_name_1.clone(),
-        collection_name_2.clone(),
+        bad_hint_collection,
         bad_hint_op,
         0,
         DEFAULT_RESULT_LIMIT as u64,
