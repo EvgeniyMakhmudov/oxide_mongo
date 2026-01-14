@@ -1035,6 +1035,12 @@ pub fn connection_form_view<'a>(
     let tab_active_bg = palette.subtle_buttons.hover.to_color();
     let tab_inactive_bg = palette.subtle_buttons.active.to_color();
     let error_color = Color::from_rgb8(0xd9, 0x53, 0x4f);
+    let fonts_state = fonts::active_fonts();
+    let checkbox_font = fonts_state.primary_font;
+    let checkbox_size = fonts_state.primary_size;
+    let checkbox = |label: &'static str, value: bool| {
+        Checkbox::new(tr(label), value).font(checkbox_font).text_size(checkbox_size)
+    };
 
     let general_active = state.active_tab == ConnectionFormTab::General;
     let general_label_color = if general_active { text_color } else { muted_text };
@@ -1176,7 +1182,7 @@ pub fn connection_form_view<'a>(
                 .into()
         }
         ConnectionFormTab::Authorization => {
-            let use_auth = Checkbox::new(tr("Use"), state.auth.use_auth)
+            let use_auth = checkbox("Use", state.auth.use_auth)
                 .on_toggle(Message::ConnectionFormAuthUseChanged);
 
             let login_input = text_input(tr("Login"), &state.auth.username)
@@ -1238,8 +1244,8 @@ pub fn connection_form_view<'a>(
                 .into()
         }
         ConnectionFormTab::SshTunnel => {
-            let use_ssh = Checkbox::new(tr("Use"), state.ssh.use_ssh)
-                .on_toggle(Message::ConnectionFormSshUseChanged);
+            let use_ssh =
+                checkbox("Use", state.ssh.use_ssh).on_toggle(Message::ConnectionFormSshUseChanged);
 
             let host_input = text_input(tr("Server address"), &state.ssh.host)
                 .on_input(Message::ConnectionFormSshHostChanged)

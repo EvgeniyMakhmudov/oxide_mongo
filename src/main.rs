@@ -1222,7 +1222,7 @@ impl CollectionTab {
             let mut column = Column::new().spacing(12).width(Length::Fill);
             for doc in &text_result.documents {
                 column = column.push(
-                    Container::new(fonts::primary_text(doc.clone(), None).wrapping(Wrapping::Word))
+                    Container::new(fonts::result_text(doc.clone(), None).wrapping(Wrapping::Word))
                         .padding([8, 10])
                         .width(Length::Fill)
                         .style(move |_| container::Style {
@@ -1262,7 +1262,7 @@ impl CollectionTab {
             ContextMenu::new(scroll, menu).into()
         } else {
             Container::new(
-                fonts::primary_text(tr("Text view is available only for document results"), None)
+                fonts::result_text(tr("Text view is available only for document results"), None)
                     .color(self.palette.text_muted.to_color()),
             )
             .padding([8, 12])

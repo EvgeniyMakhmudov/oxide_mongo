@@ -396,7 +396,14 @@ pub fn settings_view(state: &SettingsWindowState) -> Element<'_, Message> {
 }
 
 fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, Message> {
-    let expand_checkbox = Checkbox::new(tr("Expand first result item"), state.expand_first_result)
+    let fonts_state = fonts::active_fonts();
+    let checkbox_font = fonts_state.primary_font;
+    let checkbox_size = fonts_state.primary_size;
+    let checkbox = |label: &str, value: bool| {
+        Checkbox::new(label.to_owned(), value).font(checkbox_font).text_size(checkbox_size)
+    };
+
+    let expand_checkbox = checkbox(tr("Expand first result item"), state.expand_first_result)
         .on_toggle(Message::SettingsToggleExpandFirstResult);
 
     let timeout_row = Row::new()
@@ -410,21 +417,20 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
                 .width(Length::Fixed(120.0)),
         );
 
-    let sort_fields =
-        Checkbox::new(tr("Sort fields alphabetically"), state.sort_fields_alphabetically)
-            .on_toggle(Message::SettingsToggleSortFields);
+    let sort_fields = checkbox(tr("Sort fields alphabetically"), state.sort_fields_alphabetically)
+        .on_toggle(Message::SettingsToggleSortFields);
 
     let sort_indexes =
-        Checkbox::new(tr("Sort index names alphabetically"), state.sort_index_names_alphabetically)
+        checkbox(tr("Sort index names alphabetically"), state.sort_index_names_alphabetically)
             .on_toggle(Message::SettingsToggleSortIndexes);
 
-    let close_tabs_on_db_close = Checkbox::new(
+    let close_tabs_on_db_close = checkbox(
         tr("Close related tabs when closing a database"),
         state.close_tabs_on_database_close,
     )
     .on_toggle(Message::SettingsToggleCloseTabsOnDbClose);
 
-    let logging_enabled = Checkbox::new(tr("Enable logging"), state.logging_enabled)
+    let logging_enabled = checkbox(tr("Enable logging"), state.logging_enabled)
         .on_toggle(Message::SettingsToggleLogging);
 
     let log_level_row = Row::new()
