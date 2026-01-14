@@ -304,6 +304,7 @@ pub(crate) enum Message {
     SettingsQueryTimeoutChanged(String),
     SettingsToggleSortFields(bool),
     SettingsToggleSortIndexes(bool),
+    SettingsToggleCloseTabsOnDbClose(bool),
     SettingsToggleLogging(bool),
     SettingsLogLevelChanged(LogLevel),
     SettingsLogPathChanged(String),
@@ -3594,6 +3595,13 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SettingsToggleCloseTabsOnDbClose(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.close_tabs_on_database_close = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
             Message::SettingsToggleLogging(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.logging_enabled = value;
@@ -5269,13 +5277,15 @@ impl App {
             self.last_collection_click = None;
         }
 
-        self.tabs.retain(|tab| {
-            !(tab.collection.client_id == client_id && tab.collection.db_name == db_name)
-        });
+        if self.settings.close_tabs_on_database_close {
+            self.tabs.retain(|tab| {
+                !(tab.collection.client_id == client_id && tab.collection.db_name == db_name)
+            });
 
-        if let Some(active) = self.active_tab {
-            if self.tabs.iter().all(|tab| tab.id != active) {
-                self.active_tab = self.tabs.last().map(|tab| tab.id);
+            if let Some(active) = self.active_tab {
+                if self.tabs.iter().all(|tab| tab.id != active) {
+                    self.active_tab = self.tabs.last().map(|tab| tab.id);
+                }
             }
         }
     }
@@ -5293,18 +5303,20 @@ impl App {
             self.mode = AppMode::Main;
         }
 
-        let removed: HashSet<TabId> = self
-            .tabs
-            .iter()
-            .filter(|tab| tab.collection.client_id == client_id)
-            .map(|tab| tab.id)
-            .collect();
+        if self.settings.close_tabs_on_database_close {
+            let removed: HashSet<TabId> = self
+                .tabs
+                .iter()
+                .filter(|tab| tab.collection.client_id == client_id)
+                .map(|tab| tab.id)
+                .collect();
 
-        if !removed.is_empty() {
-            self.tabs.retain(|tab| !removed.contains(&tab.id));
-            if let Some(active) = self.active_tab {
-                if removed.contains(&active) {
-                    self.active_tab = self.tabs.last().map(|tab| tab.id);
+            if !removed.is_empty() {
+                self.tabs.retain(|tab| !removed.contains(&tab.id));
+                if let Some(active) = self.active_tab {
+                    if removed.contains(&active) {
+                        self.active_tab = self.tabs.last().map(|tab| tab.id);
+                    }
                 }
             }
         }

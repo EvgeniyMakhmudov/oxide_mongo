@@ -238,6 +238,10 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
                 "Sort index names alphabetically",
                 "Сортировать имена индексов по алфавиту",
             ),
+            (
+                "Close related tabs when closing a database",
+                "При закрытии БД закрывать связанные вкладки",
+            ),
             ("Enable logging", "Включить логирование"),
             ("Log level", "Уровень логирования"),
             ("Log file path", "Путь к файлу логов"),
