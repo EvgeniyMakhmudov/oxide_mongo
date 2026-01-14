@@ -35,7 +35,7 @@ use iced_fonts::REQUIRED_FONT_BYTES;
 use mongo::bson_edit::ValueEditKind;
 use mongo::bson_tree::{BsonTree, BsonTreeOptions};
 use mongo::connection::{
-    ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections,
+    ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections, filter_databases,
 };
 use mongo::query::{
     QueryOperation, QueryResult, ReplicaSetCommand, WatchTarget, open_change_stream,
@@ -5189,8 +5189,15 @@ impl App {
             database.state = DatabaseState::Loading;
         }
 
+        let include_filter = client.entry.include_filter.clone();
+        let exclude_filter = client.entry.exclude_filter.clone();
+
         Task::perform(
-            async move { handle.list_database_names().run().map_err(|error| error.to_string()) },
+            async move {
+                let names =
+                    handle.list_database_names().run().map_err(|error| error.to_string())?;
+                Ok(filter_databases(names, &include_filter, &exclude_filter))
+            },
             move |result| Message::DatabasesRefreshed { client_id, result },
         )
     }

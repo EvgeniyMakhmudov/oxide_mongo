@@ -51,7 +51,7 @@ pub fn connect_and_discover(connection: OMDBConnection) -> Result<ConnectionBoot
     }
 }
 
-fn filter_databases(
+pub(crate) fn filter_databases(
     mut databases: Vec<String>,
     include_filter: &str,
     exclude_filter: &str,
