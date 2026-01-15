@@ -35,11 +35,11 @@ use iced_fonts::REQUIRED_FONT_BYTES;
 use mongo::bson_edit::ValueEditKind;
 use mongo::bson_tree::{BsonTree, BsonTreeOptions};
 use mongo::connection::{
-    ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections,
+    ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections, filter_databases,
 };
 use mongo::query::{
     QueryOperation, QueryResult, ReplicaSetCommand, WatchTarget, open_change_stream,
-    parse_collection_query, run_collection_query,
+    parse_collection_query_with_collection, run_collection_query,
 };
 use mongo::shell;
 use mongo::ssh_tunnel::SshTunnel;
@@ -304,6 +304,7 @@ pub(crate) enum Message {
     SettingsQueryTimeoutChanged(String),
     SettingsToggleSortFields(bool),
     SettingsToggleSortIndexes(bool),
+    SettingsToggleCloseTabsOnDbClose(bool),
     SettingsToggleLogging(bool),
     SettingsLogLevelChanged(LogLevel),
     SettingsLogPathChanged(String),
@@ -796,7 +797,9 @@ struct CollectionTab {
     client_name: String,
     db_name: String,
     collection: String,
+    pending_collection: Option<String>,
     editor: TextEditorContent,
+    focus_anchor: iced::widget::text_input::Id,
     panes: pane_grid::State<CollectionPane>,
     bson_tree: BsonTree,
     response_view_mode: ResponseViewMode,
@@ -842,6 +845,17 @@ impl TextResultView {
 
         let joined = self.documents.join(",\n");
         format!("[\n{joined}\n]")
+    }
+}
+
+fn position_cursor_in_find(editor: &mut TextEditorContent, text: &str) {
+    let Some(index) = text.find("{}") else {
+        return;
+    };
+    let target = index + 1;
+    editor.perform(TextEditorAction::Move(text_editor::Motion::DocumentStart));
+    for _ in 0..target {
+        editor.perform(TextEditorAction::Move(text_editor::Motion::Right));
     }
 }
 
@@ -923,13 +937,17 @@ impl CollectionTab {
             collection_name = collection.as_str()
         );
         let text_result = None;
+        let mut editor = TextEditorContent::with_text(&editor_text);
+        position_cursor_in_find(&mut editor, &editor_text);
 
         let mut instance = Self {
             client_id,
             client_name,
             db_name,
             collection,
-            editor: TextEditorContent::with_text(&editor_text),
+            pending_collection: None,
+            editor,
+            focus_anchor: iced::widget::text_input::Id::unique(),
             panes,
             bson_tree,
             response_view_mode: ResponseViewMode::Table,
@@ -1111,6 +1129,15 @@ impl CollectionTab {
 
     fn request_view(&self, tab_id: TabId) -> Element<'_, Message> {
         let send_tab_id = tab_id;
+        let focus_anchor = Container::new(
+            text_input("", "")
+                .id(self.focus_anchor.clone())
+                .size(1)
+                .padding(0)
+                .width(Length::Fixed(0.0)),
+        )
+        .width(Length::Fixed(0.0))
+        .height(Length::Fixed(0.0));
         let editor = text_editor::TextEditor::new(&self.editor)
             .key_binding(move |key_press| {
                 let is_enter = matches!(key_press.key, keyboard::Key::Named(key::Named::Enter));
@@ -1145,6 +1172,7 @@ impl CollectionTab {
             .align_y(Vertical::Center)
             .width(Length::Fill)
             .height(Length::Fill)
+            .push(focus_anchor)
             .push(Container::new(editor).width(Length::FillPortion(9)).height(Length::Fill).style(
                 move |_| container::Style {
                     border: border::rounded(4.0).width(1),
@@ -1194,7 +1222,7 @@ impl CollectionTab {
             let mut column = Column::new().spacing(12).width(Length::Fill);
             for doc in &text_result.documents {
                 column = column.push(
-                    Container::new(fonts::primary_text(doc.clone(), None).wrapping(Wrapping::Word))
+                    Container::new(fonts::result_text(doc.clone(), None).wrapping(Wrapping::Word))
                         .padding([8, 10])
                         .width(Length::Fill)
                         .style(move |_| container::Style {
@@ -1234,7 +1262,7 @@ impl CollectionTab {
             ContextMenu::new(scroll, menu).into()
         } else {
             Container::new(
-                fonts::primary_text(tr("Text view is available only for document results"), None)
+                fonts::result_text(tr("Text view is available only for document results"), None)
                     .color(self.palette.text_muted.to_color()),
             )
             .padding([8, 12])
@@ -1285,8 +1313,8 @@ impl CollectionTab {
         self.parse_limit_u64()
     }
 
-    fn parse_query(&self, text: &str) -> Result<QueryOperation, String> {
-        parse_collection_query(&self.db_name, &self.collection, text)
+    fn parse_query(&self, text: &str) -> Result<(String, QueryOperation), String> {
+        parse_collection_query_with_collection(&self.db_name, &self.collection, text)
     }
 
     fn sanitize_numeric<S: AsRef<str>>(value: S) -> String {
@@ -1730,13 +1758,13 @@ impl App {
 
                 if is_double {
                     self.last_collection_click = None;
-                    let _ = self.open_collection_tab(client_id, db_name, collection);
+                    let tab_id = self.open_collection_tab(client_id, db_name, collection);
+                    self.focus_collection_editor(tab_id)
                 } else {
                     self.last_collection_click =
                         Some(CollectionClick { client_id, db_name, collection, at: now });
+                    Task::none()
                 }
-
-                Task::none()
             }
             Message::CollectionEditorAction { tab_id, action } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
@@ -3052,6 +3080,12 @@ impl App {
                     collection.last_query_duration = Some(duration);
                     match result {
                         Ok(query_result) => {
+                            if let Some(pending) = collection.pending_collection.take() {
+                                if pending != collection.collection {
+                                    collection.collection = pending.clone();
+                                    tab.title = pending;
+                                }
+                            }
                             let (kind, count) = Self::query_result_metrics(&query_result);
                             log::debug!(
                                 "Query completed tab_id={} db={} collection={} result={} count={} duration_ms={:.3}",
@@ -3064,7 +3098,10 @@ impl App {
                             );
                             collection.set_query_result(query_result, &self.settings)
                         }
-                        Err(error) => collection.set_tree_error(error),
+                        Err(error) => {
+                            collection.pending_collection = None;
+                            collection.set_tree_error(error);
+                        }
                     }
                 }
                 Task::none()
@@ -3554,6 +3591,13 @@ impl App {
             Message::SettingsToggleSortIndexes(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.sort_index_names_alphabetically = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::SettingsToggleCloseTabsOnDbClose(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.close_tabs_on_database_close = value;
                     state.validation_error = None;
                 }
                 Task::none()
@@ -4963,6 +5007,15 @@ impl App {
         id
     }
 
+    fn focus_collection_editor(&self, tab_id: TabId) -> Task<Message> {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return Task::none();
+        };
+
+        iced::widget::text_input::focus::<Message>(tab.collection.focus_anchor.clone())
+            .chain(iced::widget::focus_next())
+    }
+
     fn duplicate_collection_tab(&mut self, tab_id: TabId) {
         let snapshot = self.tabs.iter().find(|tab| tab.id == tab_id).map(|tab| {
             (
@@ -5144,8 +5197,15 @@ impl App {
             database.state = DatabaseState::Loading;
         }
 
+        let include_filter = client.entry.include_filter.clone();
+        let exclude_filter = client.entry.exclude_filter.clone();
+
         Task::perform(
-            async move { handle.list_database_names().run().map_err(|error| error.to_string()) },
+            async move {
+                let names =
+                    handle.list_database_names().run().map_err(|error| error.to_string())?;
+                Ok(filter_databases(names, &include_filter, &exclude_filter))
+            },
             move |result| Message::DatabasesRefreshed { client_id, result },
         )
     }
@@ -5217,13 +5277,15 @@ impl App {
             self.last_collection_click = None;
         }
 
-        self.tabs.retain(|tab| {
-            !(tab.collection.client_id == client_id && tab.collection.db_name == db_name)
-        });
+        if self.settings.close_tabs_on_database_close {
+            self.tabs.retain(|tab| {
+                !(tab.collection.client_id == client_id && tab.collection.db_name == db_name)
+            });
 
-        if let Some(active) = self.active_tab {
-            if self.tabs.iter().all(|tab| tab.id != active) {
-                self.active_tab = self.tabs.last().map(|tab| tab.id);
+            if let Some(active) = self.active_tab {
+                if self.tabs.iter().all(|tab| tab.id != active) {
+                    self.active_tab = self.tabs.last().map(|tab| tab.id);
+                }
             }
         }
     }
@@ -5241,18 +5303,20 @@ impl App {
             self.mode = AppMode::Main;
         }
 
-        let removed: HashSet<TabId> = self
-            .tabs
-            .iter()
-            .filter(|tab| tab.collection.client_id == client_id)
-            .map(|tab| tab.id)
-            .collect();
+        if self.settings.close_tabs_on_database_close {
+            let removed: HashSet<TabId> = self
+                .tabs
+                .iter()
+                .filter(|tab| tab.collection.client_id == client_id)
+                .map(|tab| tab.id)
+                .collect();
 
-        if !removed.is_empty() {
-            self.tabs.retain(|tab| !removed.contains(&tab.id));
-            if let Some(active) = self.active_tab {
-                if removed.contains(&active) {
-                    self.active_tab = self.tabs.last().map(|tab| tab.id);
+            if !removed.is_empty() {
+                self.tabs.retain(|tab| !removed.contains(&tab.id));
+                if let Some(active) = self.active_tab {
+                    if removed.contains(&active) {
+                        self.active_tab = self.tabs.last().map(|tab| tab.id);
+                    }
                 }
             }
         }
@@ -5362,7 +5426,7 @@ impl App {
             let collection = &mut tab.collection;
             let query_text = collection.editor.text().to_string();
             match collection.parse_query(&query_text) {
-                Ok(operation) => {
+                Ok((effective_collection, operation)) => {
                     let skip = collection.skip_value();
                     let limit = collection.limit_value();
                     let op_label = Self::query_operation_label(&operation);
@@ -5371,17 +5435,18 @@ impl App {
                         tab_id,
                         collection.client_id,
                         collection.db_name,
-                        collection.collection,
+                        effective_collection,
                         op_label,
                         skip,
                         limit
                     );
                     collection.query_in_progress = true;
                     collection.last_query_duration = None;
+                    collection.pending_collection = Some(effective_collection.clone());
                     request = Some((
                         collection.client_id,
                         collection.db_name.clone(),
-                        collection.collection.clone(),
+                        effective_collection,
                         operation,
                         skip,
                         limit,

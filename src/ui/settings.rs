@@ -99,6 +99,7 @@ pub struct SettingsWindowState {
     pub query_timeout_secs: String,
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
+    pub close_tabs_on_database_close: bool,
     pub logging_enabled: bool,
     pub logging_level: LogLevel,
     pub logging_path: String,
@@ -146,6 +147,7 @@ impl SettingsWindowState {
             query_timeout_secs: settings.query_timeout_secs.to_string(),
             sort_fields_alphabetically: settings.sort_fields_alphabetically,
             sort_index_names_alphabetically: settings.sort_index_names_alphabetically,
+            close_tabs_on_database_close: settings.close_tabs_on_database_close,
             logging_enabled: settings.logging_enabled,
             logging_level: settings.logging_level,
             logging_path: settings.logging_path.clone(),
@@ -193,6 +195,7 @@ impl SettingsWindowState {
             query_timeout_secs: timeout,
             sort_fields_alphabetically: self.sort_fields_alphabetically,
             sort_index_names_alphabetically: self.sort_index_names_alphabetically,
+            close_tabs_on_database_close: self.close_tabs_on_database_close,
             logging_enabled: self.logging_enabled,
             logging_level: self.logging_level,
             logging_path: log_path,
@@ -393,7 +396,14 @@ pub fn settings_view(state: &SettingsWindowState) -> Element<'_, Message> {
 }
 
 fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, Message> {
-    let expand_checkbox = Checkbox::new(tr("Expand first result item"), state.expand_first_result)
+    let fonts_state = fonts::active_fonts();
+    let checkbox_font = fonts_state.primary_font;
+    let checkbox_size = fonts_state.primary_size;
+    let checkbox = |label: &str, value: bool| {
+        Checkbox::new(label.to_owned(), value).font(checkbox_font).text_size(checkbox_size)
+    };
+
+    let expand_checkbox = checkbox(tr("Expand first result item"), state.expand_first_result)
         .on_toggle(Message::SettingsToggleExpandFirstResult);
 
     let timeout_row = Row::new()
@@ -407,15 +417,20 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
                 .width(Length::Fixed(120.0)),
         );
 
-    let sort_fields =
-        Checkbox::new(tr("Sort fields alphabetically"), state.sort_fields_alphabetically)
-            .on_toggle(Message::SettingsToggleSortFields);
+    let sort_fields = checkbox(tr("Sort fields alphabetically"), state.sort_fields_alphabetically)
+        .on_toggle(Message::SettingsToggleSortFields);
 
     let sort_indexes =
-        Checkbox::new(tr("Sort index names alphabetically"), state.sort_index_names_alphabetically)
+        checkbox(tr("Sort index names alphabetically"), state.sort_index_names_alphabetically)
             .on_toggle(Message::SettingsToggleSortIndexes);
 
-    let logging_enabled = Checkbox::new(tr("Enable logging"), state.logging_enabled)
+    let close_tabs_on_db_close = checkbox(
+        tr("Close related tabs when closing a database"),
+        state.close_tabs_on_database_close,
+    )
+    .on_toggle(Message::SettingsToggleCloseTabsOnDbClose);
+
+    let logging_enabled = checkbox(tr("Enable logging"), state.logging_enabled)
         .on_toggle(Message::SettingsToggleLogging);
 
     let log_level_row = Row::new()
@@ -448,6 +463,7 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
         .push(timeout_row)
         .push(sort_fields)
         .push(sort_indexes)
+        .push(close_tabs_on_db_close)
         .push(logging_enabled)
         .push(log_level_row)
         .push(log_path_row)

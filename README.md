@@ -62,8 +62,7 @@ cargo check
 cargo test
 
 # integration tests (requires a running MongoDB instance)
-OXIDE_MONGO_TEST_URI=mongodb://localhost:27017
-cargo test
+OXIDE_MONGO_TEST_URI=mongodb://localhost:27017 cargo test -- --ignored
 ```
 
 ## Documentation

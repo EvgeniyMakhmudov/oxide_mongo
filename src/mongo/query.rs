@@ -237,6 +237,7 @@ pub struct FindCursorChain {
     skip: Option<u64>,
     limit: Option<u64>,
     max_time: Option<Duration>,
+    comment: Option<Bson>,
 }
 
 impl FindCursorChain {
@@ -246,6 +247,7 @@ impl FindCursorChain {
             || self.skip.is_some()
             || self.limit.is_some()
             || self.max_time.is_some()
+            || self.comment.is_some()
     }
 }
 
@@ -373,7 +375,7 @@ struct QueryParser<'a> {
 }
 
 impl<'a> QueryParser<'a> {
-    fn parse_query(&self, text: &str) -> Result<QueryOperation, String> {
+    fn parse_query_with_collection(&self, text: &str) -> Result<(String, QueryOperation), String> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(String::from(tr(
@@ -384,15 +386,23 @@ impl<'a> QueryParser<'a> {
         let cleaned = trimmed.trim_end_matches(';').trim();
 
         if let Some(result) = self.try_parse_replica_set_method(cleaned)? {
-            return Ok(result);
+            return Ok((self.collection.to_string(), result));
         }
 
         if let Some(result) = self.try_parse_database_method(cleaned)? {
-            return Ok(result);
+            return Ok((self.collection.to_string(), result));
         }
 
-        let after_collection = Self::strip_collection_prefix(cleaned)?;
+        let (collection, after_collection) = Self::split_collection_prefix(cleaned)?;
+        let parser = QueryParser { db_name: self.db_name, collection };
+        let operation = parser.parse_collection_query_internal(after_collection)?;
+        Ok((collection.to_string(), operation))
+    }
 
+    fn parse_collection_query_internal(
+        &self,
+        after_collection: &str,
+    ) -> Result<QueryOperation, String> {
         let (method_name, args, remainder) = Self::extract_primary_method(after_collection)?;
         if method_name == "find" {
             let filter = if args.trim().is_empty() {
@@ -400,7 +410,22 @@ impl<'a> QueryParser<'a> {
             } else {
                 Self::parse_json_object(args.trim())?
             };
-            return self.parse_find_chain(filter, remainder);
+            return self.parse_find_chain(filter, remainder, false);
+        }
+        if method_name == "explain" {
+            if !args.trim().is_empty() {
+                return Err(String::from(tr("explain does not take any arguments.")));
+            }
+            let (next_method, next_args, next_remainder) = Self::extract_primary_method(remainder)?;
+            if next_method != "find" {
+                return Err(String::from(tr("explain must be followed by find(...).")));
+            }
+            let filter = if next_args.trim().is_empty() {
+                Document::new()
+            } else {
+                Self::parse_json_object(next_args.trim())?
+            };
+            return self.parse_find_chain(filter, next_remainder, true);
         }
         if method_name == "watch" {
             if !remainder.trim().is_empty() {
@@ -482,6 +507,24 @@ impl<'a> QueryParser<'a> {
 
                 let indexes_bson = Self::parse_shell_bson_value(&parts[0])?;
                 let mut index_entries = Vec::new();
+                let normalize_index_spec = |doc: Document| -> Document {
+                    if doc.contains_key("key") {
+                        let mut normalized = doc;
+                        if !normalized.contains_key("name") {
+                            if let Ok(keys_doc) = normalized.get_document("key") {
+                                let name = Self::default_index_name(keys_doc);
+                                normalized.insert("name", Bson::String(name));
+                            }
+                        }
+                        normalized
+                    } else {
+                        let mut index_spec = Document::new();
+                        let name = Self::default_index_name(&doc);
+                        index_spec.insert("key", Bson::Document(doc));
+                        index_spec.insert("name", Bson::String(name));
+                        index_spec
+                    }
+                };
                 match indexes_bson {
                     Bson::Array(items) => {
                         if items.is_empty() {
@@ -491,7 +534,9 @@ impl<'a> QueryParser<'a> {
                         }
                         for item in items {
                             match item {
-                                Bson::Document(doc) => index_entries.push(Bson::Document(doc)),
+                                Bson::Document(doc) => {
+                                    index_entries.push(Bson::Document(normalize_index_spec(doc)));
+                                }
                                 _ => {
                                     return Err(String::from(tr(
                                         "Each index in createIndexes must be an object.",
@@ -501,7 +546,7 @@ impl<'a> QueryParser<'a> {
                         }
                     }
                     Bson::Document(doc) => {
-                        index_entries.push(Bson::Document(doc));
+                        index_entries.push(Bson::Document(normalize_index_spec(doc)));
                     }
                     _ => {
                         return Err(String::from(tr(
@@ -634,12 +679,26 @@ impl<'a> QueryParser<'a> {
 
                 let index_value = Self::parse_index_argument(&parts[0])?;
 
-                let command_name =
-                    if method_name == "hideIndex" { "hideIndex" } else { "unhideIndex" };
-
                 let mut command = Document::new();
-                command.insert(command_name, Bson::String(self.collection.to_string()));
-                command.insert("index", index_value);
+                command.insert("collMod", Bson::String(self.collection.to_string()));
+
+                let hidden = method_name == "hideIndex";
+                let mut index_spec = Document::new();
+                match index_value {
+                    Bson::String(name) => {
+                        index_spec.insert("name", Bson::String(name));
+                    }
+                    Bson::Document(doc) => {
+                        index_spec.insert("keyPattern", Bson::Document(doc));
+                    }
+                    _ => {
+                        return Err(String::from(tr(
+                            "Index argument must be a string with the index name or an object with keys.",
+                        )));
+                    }
+                }
+                index_spec.insert("hidden", Bson::Boolean(hidden));
+                command.insert("index", Bson::Document(index_spec));
 
                 Ok(QueryOperation::DatabaseCommand { db: self.db_name.to_string(), command })
             }
@@ -1018,10 +1077,10 @@ impl<'a> QueryParser<'a> {
         }
     }
 
-    fn strip_collection_prefix(text: &str) -> Result<&str, String> {
+    fn split_collection_prefix(text: &str) -> Result<(&str, &str), String> {
         if let Some(rest) = text.strip_prefix("db.getCollection(") {
             let rest = rest.trim_start();
-            let (_, after_literal) = Self::parse_collection_literal(rest)?;
+            let (name, after_literal) = Self::parse_collection_literal(rest)?;
             let after_literal = after_literal.trim_start();
             let after_paren = after_literal.strip_prefix(')').ok_or_else(|| {
                 String::from(tr("Expected ')' after collection name in getCollection."))
@@ -1032,7 +1091,7 @@ impl<'a> QueryParser<'a> {
                     "Expected a method call after specifying the collection.",
                 )));
             }
-            Ok(after_paren)
+            Ok((name, after_paren))
         } else if let Some(rest) = text.strip_prefix("db.") {
             if rest.is_empty() {
                 return Err(String::from(tr("Expected collection name after db.")));
@@ -1051,7 +1110,7 @@ impl<'a> QueryParser<'a> {
                     if index == 0 {
                         return Err(String::from(tr("Expected collection name after db.")));
                     }
-                    return Ok(&rest[index..]);
+                    return Ok((&rest[..index], &rest[index..]));
                 }
 
                 return Err(format!(
@@ -1681,6 +1740,7 @@ impl<'a> QueryParser<'a> {
         &self,
         filter: Document,
         remainder: &str,
+        explain_mode: bool,
     ) -> Result<QueryOperation, String> {
         let mut modifiers = FindCursorChain::default();
         let mut tail = remainder.trim_start();
@@ -1715,6 +1775,16 @@ impl<'a> QueryParser<'a> {
                     let duration = Self::parse_find_max_time_argument(args_trimmed)?;
                     modifiers.max_time = Some(duration);
                 }
+                "comment" => {
+                    if args_trimmed.is_empty() {
+                        return Err(String::from(tr("comment expects a value.")));
+                    }
+                    let value = Self::parse_shell_json_value(args_trimmed)?;
+                    modifiers.comment = Some(
+                        bson::to_bson(&value)
+                            .map_err(|error| format!("BSON conversion error: {error}"))?,
+                    );
+                }
                 "explain" => {
                     if !args_trimmed.is_empty() {
                         return Err(String::from(tr("explain does not take any arguments.")));
@@ -1722,43 +1792,16 @@ impl<'a> QueryParser<'a> {
                     if !rest.trim().is_empty() {
                         return Err(String::from(tr("No methods are supported after explain().")));
                     }
-
-                    let mut find_doc = Document::new();
-                    find_doc.insert("find", Bson::String(self.collection.to_string()));
-                    find_doc.insert("filter", Bson::Document(filter.clone()));
-
-                    if let Some(sort) = modifiers.sort {
-                        find_doc.insert("sort", Bson::Document(sort));
+                    return self.build_explain_command(filter, modifiers);
+                }
+                "finish" if explain_mode => {
+                    if !args_trimmed.is_empty() {
+                        return Err(String::from(tr("finish does not take any arguments.")));
                     }
-                    if let Some(hint) = modifiers.hint {
-                        let hint_bson = match hint {
-                            Hint::Name(name) => Bson::String(name),
-                            Hint::Keys(doc) => Bson::Document(doc),
-                            other => {
-                                return Err(tr_format(
-                                    "Unsupported hint value in explain: {:?}",
-                                    &[&format!("{other:?}")],
-                                ));
-                            }
-                        };
-                        find_doc.insert("hint", hint_bson);
+                    if !rest.trim().is_empty() {
+                        return Err(String::from(tr("No methods are supported after finish().")));
                     }
-                    if let Some(skip) = modifiers.skip {
-                        find_doc.insert("skip", u64_to_bson(skip));
-                    }
-                    if let Some(limit) = modifiers.limit {
-                        find_doc.insert("limit", u64_to_bson(limit));
-                    }
-                    if let Some(max_time) = modifiers.max_time {
-                        find_doc.insert("maxTimeMS", Bson::Int64(max_time.as_millis() as i64));
-                    }
-
-                    let mut command = Document::new();
-                    command.insert("explain", Bson::Document(find_doc));
-                    return Ok(QueryOperation::DatabaseCommand {
-                        db: self.db_name.to_string(),
-                        command,
-                    });
+                    return self.build_explain_command(filter, modifiers);
                 }
                 "count" | "countDocuments" => {
                     return self.finish_find_with_count(filter, modifiers, args_trimmed, rest);
@@ -1773,8 +1816,55 @@ impl<'a> QueryParser<'a> {
             tail = rest.trim_start();
         }
 
+        if explain_mode {
+            return self.build_explain_command(filter, modifiers);
+        }
+
         let options = if modifiers.has_effect() { Some(modifiers) } else { None };
         Ok(QueryOperation::Find { filter, options })
+    }
+
+    fn build_explain_command(
+        &self,
+        filter: Document,
+        modifiers: FindCursorChain,
+    ) -> Result<QueryOperation, String> {
+        let mut find_doc = Document::new();
+        find_doc.insert("find", Bson::String(self.collection.to_string()));
+        find_doc.insert("filter", Bson::Document(filter));
+
+        if let Some(sort) = modifiers.sort {
+            find_doc.insert("sort", Bson::Document(sort));
+        }
+        if let Some(hint) = modifiers.hint {
+            let hint_bson = match hint {
+                Hint::Name(name) => Bson::String(name),
+                Hint::Keys(doc) => Bson::Document(doc),
+                other => {
+                    return Err(tr_format(
+                        "Unsupported hint value in explain: {:?}",
+                        &[&format!("{other:?}")],
+                    ));
+                }
+            };
+            find_doc.insert("hint", hint_bson);
+        }
+        if let Some(skip) = modifiers.skip {
+            find_doc.insert("skip", u64_to_bson(skip));
+        }
+        if let Some(limit) = modifiers.limit {
+            find_doc.insert("limit", u64_to_bson(limit));
+        }
+        if let Some(max_time) = modifiers.max_time {
+            find_doc.insert("maxTimeMS", Bson::Int64(max_time.as_millis() as i64));
+        }
+        if let Some(comment) = modifiers.comment {
+            find_doc.insert("comment", comment);
+        }
+
+        let mut command = Document::new();
+        command.insert("explain", Bson::Document(find_doc));
+        Ok(QueryOperation::DatabaseCommand { db: self.db_name.to_string(), command })
     }
 
     fn parse_find_limit_argument(source: &str) -> Result<Option<u64>, String> {
@@ -3541,6 +3631,35 @@ impl<'a> QueryParser<'a> {
         bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
     }
 
+    fn default_index_name(keys: &Document) -> String {
+        let mut parts = Vec::new();
+        for (field, value) in keys.iter() {
+            let suffix = match value {
+                Bson::String(text) => text.clone(),
+                Bson::Int32(number) => number.to_string(),
+                Bson::Int64(number) => number.to_string(),
+                Bson::Double(number) => {
+                    if number.fract() == 0.0 {
+                        (*number as i64).to_string()
+                    } else {
+                        number.to_string()
+                    }
+                }
+                Bson::Boolean(flag) => {
+                    if *flag {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    }
+                }
+                other => other.to_string(),
+            };
+            parts.push(format!("{field}_{suffix}"));
+        }
+
+        if parts.is_empty() { "index".to_string() } else { parts.join("_") }
+    }
+
     fn parse_index_argument(source: &str) -> Result<Bson, String> {
         let value = Self::parse_shell_bson_value(source)?;
         match value {
@@ -3553,12 +3672,12 @@ impl<'a> QueryParser<'a> {
     }
 }
 
-pub fn parse_collection_query(
+pub fn parse_collection_query_with_collection(
     db_name: &str,
     collection: &str,
     text: &str,
-) -> Result<QueryOperation, String> {
-    QueryParser { db_name, collection }.parse_query(text)
+) -> Result<(String, QueryOperation), String> {
+    QueryParser { db_name, collection }.parse_query_with_collection(text)
 }
 
 fn resolve_effective_limit(ui_limit: u64, chain_limit: Option<u64>) -> u64 {
@@ -4040,6 +4159,9 @@ pub fn run_collection_query(
                     chain_max_time = Some(duration);
                 }
                 chain_limit = opts.limit;
+                if let Some(comment) = opts.comment {
+                    builder = builder.comment(comment);
+                }
             }
 
             if effective_skip > 0 {
@@ -4631,7 +4753,9 @@ mod tests {
     use serde_json::json;
 
     fn parse(query: &str) -> QueryOperation {
-        parse_collection_query("testdb", "users", query).expect("query should parse")
+        parse_collection_query_with_collection("testdb", "users", query)
+            .expect("query should parse")
+            .1
     }
 
     #[test]
@@ -4922,7 +5046,8 @@ mod tests {
     #[test]
     fn parses_database_stats_with_numeric_scale() {
         let parser = QueryParser { db_name: "analytics", collection: "ignored" };
-        let operation = parser.parse_query("db.stats(2048)").expect("stats should parse");
+        let (_collection, operation) =
+            parser.parse_query_with_collection("db.stats(2048)").expect("stats should parse");
 
         match operation {
             QueryOperation::DatabaseCommand { db, command } => {

@@ -273,7 +273,7 @@ impl BsonNode {
     }
 }
 
-fn is_editable_scalar(_value: &Bson) -> bool {
+fn is_editable_value(_value: &Bson) -> bool {
     true
 }
 
@@ -1095,11 +1095,7 @@ impl BsonTree {
         let nodes = Self::find_node_path(&self.roots, node_id, &mut Vec::new())?;
         let target = nodes.last()?;
 
-        if !matches!(target.kind, BsonKind::Value { .. }) {
-            return None;
-        }
-
-        if !is_editable_scalar(&target.bson) {
+        if !is_editable_value(&target.bson) {
             return None;
         }
 

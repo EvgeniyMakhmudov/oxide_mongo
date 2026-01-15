@@ -1,12 +1,11 @@
-use std::env;
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use ssh2::{Channel, CheckResult, KnownHostFileKind, Session};
+use ssh2::{Channel, Session};
 
 use crate::i18n::tr;
 use crate::ui::connections::{SshAuthMethod, SshTunnelSettings, looks_like_private_key};
@@ -119,7 +118,6 @@ fn run_tunnel(
     let mut session = Session::new().map_err(|err| send_error(err.to_string()))?;
     session.set_tcp_stream(tcp);
     session.handshake().map_err(|err| send_error(err.to_string()))?;
-    verify_known_host(&session, &settings.host, settings.port).map_err(send_error)?;
 
     let mut passphrase_present = false;
     match settings.auth_method {
@@ -230,34 +228,6 @@ fn run_tunnel(
     }
 
     Ok(())
-}
-
-fn verify_known_host(session: &Session, host: &str, port: u16) -> Result<(), String> {
-    let mut known_hosts = session.known_hosts().map_err(|err| err.to_string())?;
-    let path = known_hosts_path()?;
-
-    known_hosts
-        .read_file(&path, KnownHostFileKind::OpenSSH)
-        .map_err(|err| format!("{}: {}", tr("Failed to read SSH known_hosts"), err))?;
-
-    let (key, _) =
-        session.host_key().ok_or_else(|| String::from(tr("Failed to read SSH host key")))?;
-
-    match known_hosts.check_port(host, port, key) {
-        CheckResult::Match => Ok(()),
-        CheckResult::Mismatch => Err(String::from(tr("SSH host key mismatch"))),
-        CheckResult::NotFound => Err(String::from(tr("SSH host is not present in known_hosts"))),
-        CheckResult::Failure => Err(String::from(tr("SSH known_hosts check failed"))),
-    }
-}
-
-fn known_hosts_path() -> Result<PathBuf, String> {
-    let home = env::var("HOME").map_err(|_| String::from(tr("SSH known_hosts file not found")))?;
-    let path = PathBuf::from(home).join(".ssh").join("known_hosts");
-    if !path.exists() {
-        return Err(String::from(tr("SSH known_hosts file not found")));
-    }
-    Ok(path)
 }
 
 fn userauth_private_key_memory(
