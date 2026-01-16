@@ -752,7 +752,15 @@ impl<'a> QueryParser<'a> {
                 let filter = if args_trimmed.is_empty() {
                     Document::new()
                 } else {
-                    Self::parse_json_object(args_trimmed)?
+                    let bson = Self::parse_shell_bson_value(args_trimmed)?;
+                    match bson {
+                        Bson::Document(doc) => doc,
+                        other => {
+                            let mut doc = Document::new();
+                            doc.insert("_id", other);
+                            doc
+                        }
+                    }
                 };
                 Ok(QueryOperation::FindOne { filter })
             }

@@ -980,7 +980,7 @@ fn connection_flow_via_messages() {
     }
 
     //
-    // Step 4.3: findOne on date range should return a single document.
+    // Step 4.3: findOne on date range should return a single document, then findOne by _id.
     //
     let find_one_date_range = format!(
         "db.getCollection('{collection}').findOne({{\"starts\": {{\"$gt\": ISODate('2020-01-01'), \"$lt\": ISODate(\"2021-01-01\")}}}})",
@@ -988,14 +988,34 @@ fn connection_flow_via_messages() {
     );
     let find_one_date_result =
         execute_query(&mut app, secondary_tab_id, &find_one_date_range, &shared_client);
-    match &find_one_date_result {
+    let find_one_id = match &find_one_date_result {
         QueryResult::SingleDocument { document } => {
             assert!(document.get("starts").is_some(), "findOne result must contain starts field");
+            document.get("_id").cloned().expect("findOne result must contain _id field")
         }
         QueryResult::Documents(values) => {
             panic!("expected single document for date range, got list of len {}", values.len())
         }
         other => panic!("expected single document in date range, got {:?}", other),
+    };
+
+    let find_one_id_query = format!(
+        "db.getCollection('{collection}').findOne({id})",
+        collection = collection_name_2,
+        id = format_bson_shell(&find_one_id)
+    );
+    let find_one_id_result =
+        execute_query(&mut app, secondary_tab_id, &find_one_id_query, &shared_client);
+    match &find_one_id_result {
+        QueryResult::SingleDocument { document } => {
+            let returned_id =
+                document.get("_id").cloned().expect("findOne by _id result must contain _id field");
+            assert_eq!(returned_id, find_one_id);
+        }
+        QueryResult::Documents(values) => {
+            panic!("expected single document for _id lookup, got list of len {}", values.len())
+        }
+        other => panic!("expected single document for _id lookup, got {:?}", other),
     }
 
     //
