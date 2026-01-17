@@ -1781,6 +1781,10 @@ impl App {
                 Task::none()
             }
             Message::DatabaseContextMenu { client_id, db_name, action } => match action {
+                DatabaseContextAction::OpenEmptyTab => {
+                    let _ = self.open_database_empty_tab(client_id, db_name);
+                    Task::none()
+                }
                 DatabaseContextAction::CreateCollection => {
                     self.collection_modal =
                         Some(CollectionModalState::new_create(client_id, db_name.clone()));
@@ -4860,6 +4864,8 @@ impl App {
                         border: border::rounded(6).width(1).color(border_color),
                         ..Default::default()
                     });
+                let tab_container =
+                    mouse_area(tab_container).on_middle_press(Message::TabClosed(tab.id));
 
                 let menu_palette = palette.clone();
                 let menu_border = palette.clone();
@@ -5044,6 +5050,18 @@ impl App {
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
             tab.collection.editor = TextEditorContent::with_text(tr("db.stats()"));
             tab.title = String::from(tr("stats"));
+        }
+
+        tab_id
+    }
+
+    fn open_database_empty_tab(&mut self, client_id: ClientId, db_name: String) -> TabId {
+        let tab_id =
+            self.open_collection_tab(client_id, db_name.clone(), String::from(tr("(database)")));
+
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            tab.collection.editor = TextEditorContent::with_text("");
+            tab.title = db_name;
         }
 
         tab_id
