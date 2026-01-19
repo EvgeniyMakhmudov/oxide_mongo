@@ -5395,6 +5395,7 @@ impl App {
             },
             QueryOperation::InsertOne { .. } => "insertOne",
             QueryOperation::InsertMany { .. } => "insertMany",
+            QueryOperation::BulkWrite { .. } => "bulkWrite",
             QueryOperation::DeleteOne { .. } => "deleteOne",
             QueryOperation::DeleteMany { .. } => "deleteMany",
             QueryOperation::UpdateOne { .. } => "updateOne",

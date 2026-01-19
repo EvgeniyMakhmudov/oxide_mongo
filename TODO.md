@@ -93,7 +93,7 @@
 - [DONE] countDocuments, estimatedDocumentCount — точный и приблизительный подсчёт
 - [DONE] distinct — набор уникальных значений поля
 - [DONE] aggregate — конвейер агрегаций
-- bulkWrite — пакетное выполнение разных операций (insert/update/delete)
+- [DONE] bulkWrite — пакетное выполнение разных операций (insert/update/delete)
 - [DONE] watch (change streams) — подписка на изменения
 - [DONE] runCommand - служебные команды коллекции
 - [DONE] listIndexes / createIndex / dropIndex и т.п. — основные операции с индексами

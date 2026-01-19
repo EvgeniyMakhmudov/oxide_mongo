@@ -1884,4 +1884,70 @@ fn connection_flow_via_messages() {
         }
         other => panic!("expected two Alex documents with comment, got {:?}", other),
     }
+
+    //
+    // Step 9.1: bulkWrite with insert/update/delete should report affected counts.
+    //
+    let bulk_write = format!(
+        concat!(
+            "db.getCollection('{collection}').bulkWrite([",
+            "{{ insertOne: {{ document: {{ name: \"Ilya\", department: \"QA\", starts: ISODate(\"2021-01-10\"), points: 7 }} }} }}, ",
+            "{{ updateOne: {{ filter: {{ name: \"Alex\", department: \"IT\" }}, update: {{ \"$set\": {{ points: 50 }} }} }} }}, ",
+            "{{ deleteOne: {{ filter: {{ name: \"Mark\" }} }} }}",
+            "])"
+        ),
+        collection = collection_name_2
+    );
+    let bulk_write_result = execute_query(&mut app, secondary_tab_id, &bulk_write, &shared_client);
+    match &bulk_write_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(get_numeric_i64(document, "insertedCount"), 1);
+            assert_eq!(get_numeric_i64(document, "matchedCount"), 1);
+            assert_eq!(get_numeric_i64(document, "modifiedCount"), 1);
+            assert_eq!(get_numeric_i64(document, "deletedCount"), 1);
+        }
+        other => panic!("expected bulkWrite acknowledgment, got {:?}", other),
+    }
+
+    //
+    // Step 9.2: Ensure the inserted document exists.
+    //
+    let ilya_count = format!(
+        "db.getCollection('{collection}').find({{name: \"Ilya\"}}).count()",
+        collection = collection_name_2
+    );
+    let ilya_count_result = execute_query(&mut app, secondary_tab_id, &ilya_count, &shared_client);
+    match ilya_count_result {
+        QueryResult::Count { value } => assert_eq!(value, Bson::Int64(1)),
+        other => panic!("expected count result for Ilya, got {:?}", other),
+    }
+
+    //
+    // Step 9.3: Ensure updated Alex IT points are 50.
+    //
+    let alex_updated = format!(
+        "db.getCollection('{collection}').findOne({{name: \"Alex\", department: \"IT\"}})",
+        collection = collection_name_2
+    );
+    let alex_updated_result =
+        execute_query(&mut app, secondary_tab_id, &alex_updated, &shared_client);
+    match &alex_updated_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(get_numeric_i64(document, "points"), 50);
+        }
+        other => panic!("expected updated Alex IT document, got {:?}", other),
+    }
+
+    //
+    // Step 9.4: Ensure Mark was deleted.
+    //
+    let mark_count = format!(
+        "db.getCollection('{collection}').find({{name: \"Mark\"}}).count()",
+        collection = collection_name_2
+    );
+    let mark_count_result = execute_query(&mut app, secondary_tab_id, &mark_count, &shared_client);
+    match mark_count_result {
+        QueryResult::Count { value } => assert_eq!(value, Bson::Int64(0)),
+        other => panic!("expected count result for Mark, got {:?}", other),
+    }
 }

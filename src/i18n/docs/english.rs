@@ -75,6 +75,7 @@ Below is a step-by-step scenario for the first launch when you already have a da
     watch(...)
     insertOne(...)
     insertMany(...)
+    bulkWrite(...)
     updateOne(...)
     updateMany(...)
     replaceOne(...)
@@ -94,7 +95,7 @@ Below is a step-by-step scenario for the first launch when you already have a da
 
 For find(...), the following methods are supported:
 
-    sort(...), hint(...), limit(...), skip(...), maxTimeMS(...), explain(), count(...), countDocuments(...)
+    sort(...), hint(...), limit(...), skip(...), maxTimeMS(...), explain(), count(...), countDocuments(...), comment(...)
 
 ## For databases
 
