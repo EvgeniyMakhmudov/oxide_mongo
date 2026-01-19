@@ -76,6 +76,7 @@ Oxide Mongo — это открытый и бесплатный инструме
     watch(...)
     insertOne(...)
     insertMany(...)
+    bulkWrite(...)
     updateOne(...)
     updateMany(...)
     replaceOne(...)
@@ -95,7 +96,7 @@ Oxide Mongo — это открытый и бесплатный инструме
 
 Для find(...) поддержаны команды:
 
-    sort(...), hint(...), limit(...), skip(...), maxTimeMS(...), explain(), count(...), countDocuments(...)
+    sort(...), hint(...), limit(...), skip(...), maxTimeMS(...), explain(), count(...), countDocuments(...), comment(...)
 
 ## Для базы данных
 

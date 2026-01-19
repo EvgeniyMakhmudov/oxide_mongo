@@ -66,6 +66,7 @@ pub(crate) enum CollectionContextAction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DatabaseContextAction {
+    OpenEmptyTab,
     CreateCollection,
     Refresh,
     Stats,
@@ -208,6 +209,7 @@ pub(crate) fn database_context_menu<'a>(
         };
 
         menu = menu
+            .push(make_button(tr("Open Empty Tab"), DatabaseContextAction::OpenEmptyTab))
             .push(make_button(tr("Create Collection"), DatabaseContextAction::CreateCollection));
         menu = menu.push(make_button(tr("Refresh"), DatabaseContextAction::Refresh));
         menu = menu.push(make_button(tr("Statistics"), DatabaseContextAction::Stats));

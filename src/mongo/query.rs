@@ -4,13 +4,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use mongodb::Namespace;
 use mongodb::bson::spec::BinarySubtype;
 use mongodb::bson::{
-    self, Binary, Bson, DateTime, Decimal128, Document, JavaScriptCodeWithScope, Regex,
+    self, Array, Binary, Bson, DateTime, Decimal128, Document, JavaScriptCodeWithScope, Regex,
     Timestamp as BsonTimestamp, doc, oid::ObjectId,
 };
 use mongodb::change_stream::event::ChangeStreamEvent;
-use mongodb::options::{Acknowledgment, Collation, Hint, ReturnDocument, WriteConcern};
+use mongodb::options::{
+    Acknowledgment, BulkWriteOptions, Collation, DeleteManyModel, DeleteOneModel, Hint,
+    InsertOneModel, ReplaceOneModel, ReturnDocument, UpdateManyModel, UpdateModifications,
+    UpdateOneModel, WriteConcern, WriteModel,
+};
 use mongodb::sync::Client;
 use serde_json::Value;
 use uuid::Uuid;
@@ -312,6 +317,10 @@ pub enum QueryOperation {
     InsertMany {
         documents: Vec<Document>,
         options: Option<InsertManyParsedOptions>,
+    },
+    BulkWrite {
+        models: Vec<WriteModel>,
+        options: Option<BulkWriteOptions>,
     },
     DeleteOne {
         filter: Document,
@@ -900,6 +909,29 @@ impl<'a> QueryParser<'a> {
 
                 Ok(QueryOperation::InsertMany { documents, options })
             }
+            "bulkWrite" => {
+                if args_trimmed.is_empty() {
+                    return Err(String::from(tr(
+                        "bulkWrite expects an array of write operations as the first argument.",
+                    )));
+                }
+
+                let parts = Self::split_arguments(args_trimmed);
+                if parts.is_empty() || parts.len() > 2 {
+                    return Err(String::from(tr(
+                        "bulkWrite accepts an array of write operations and an optional options object.",
+                    )));
+                }
+
+                let models = self.parse_bulk_write_models(&parts[0])?;
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_bulk_write_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::BulkWrite { models, options })
+            }
             "updateOne" => {
                 let parts = if args_trimmed.is_empty() {
                     Vec::new()
@@ -1079,7 +1111,7 @@ impl<'a> QueryParser<'a> {
                 Ok(QueryOperation::DeleteMany { filter, options })
             }
             other => Err(tr_format(
-                "Method {} is not supported. Available methods: find, watch, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
+                "Method {} is not supported. Available methods: find, watch, findOne, count, countDocuments, estimatedDocumentCount, distinct, aggregate, insertOne, insertMany, bulkWrite, updateOne, updateMany, replaceOne, findOneAndUpdate, findOneAndReplace, findOneAndDelete, deleteOne, deleteMany, createIndex, createIndexes, dropIndex, dropIndexes, getIndexes, hideIndex, unhideIndex.",
                 &[other],
             )),
         }
@@ -2130,6 +2162,426 @@ impl<'a> QueryParser<'a> {
             Err(String::from(tr(
                 "Update argument must be an object with operators or an array of stages.",
             )))
+        }
+    }
+
+    fn parse_bulk_write_options(source: &str) -> Result<Option<BulkWriteOptions>, String> {
+        let value: Value = Self::parse_shell_json_value(source)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from(tr("bulkWrite options must be a JSON object.")))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = BulkWriteOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "ordered" => {
+                    options.ordered = Some(Self::parse_bool_field(value, "ordered")?);
+                }
+                "bypassDocumentValidation" => {
+                    options.bypass_document_validation =
+                        Some(Self::parse_bool_field(value, "bypassDocumentValidation")?);
+                }
+                "comment" => {
+                    options.comment = Some(Self::parse_bson_value(value)?);
+                }
+                "let" => {
+                    options.let_vars = Some(Self::parse_document_field(value, "let")?);
+                }
+                "writeConcern" => {
+                    options.write_concern = Self::parse_write_concern_value(value)?;
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in bulkWrite options. Allowed: ordered, bypassDocumentValidation, comment, let, writeConcern.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        Ok(Some(options))
+    }
+
+    fn parse_bulk_write_models(&self, source: &str) -> Result<Vec<WriteModel>, String> {
+        let bson = Self::parse_shell_bson_value(source)?;
+        let array = match bson {
+            Bson::Array(items) => items,
+            _ => {
+                return Err(String::from(tr("bulkWrite expects an array of write operations.")));
+            }
+        };
+
+        if array.is_empty() {
+            return Err(String::from(tr("bulkWrite requires at least one write operation.")));
+        }
+
+        let namespace = Namespace::new(self.db_name, self.collection);
+        let mut models = Vec::with_capacity(array.len());
+        for (index, item) in array.into_iter().enumerate() {
+            let model = self.parse_bulk_write_model(&namespace, item, index)?;
+            models.push(model);
+        }
+        Ok(models)
+    }
+
+    fn parse_bulk_write_model(
+        &self,
+        namespace: &Namespace,
+        item: Bson,
+        index: usize,
+    ) -> Result<WriteModel, String> {
+        let item_doc = match item {
+            Bson::Document(doc) => doc,
+            _ => {
+                return Err(tr_format(
+                    "bulkWrite element at index {} must be a JSON object.",
+                    &[&index.to_string()],
+                ));
+            }
+        };
+
+        if item_doc.len() != 1 {
+            return Err(tr_format(
+                "bulkWrite element at index {} must contain a single operation.",
+                &[&index.to_string()],
+            ));
+        }
+
+        let (operation, payload) = item_doc.into_iter().next().unwrap();
+        let payload_doc = match payload {
+            Bson::Document(doc) => doc,
+            _ => {
+                return Err(tr_format(
+                    "bulkWrite '{}' at index {} must be a JSON object.",
+                    &[&operation, &index.to_string()],
+                ));
+            }
+        };
+
+        match operation.as_str() {
+            "insertOne" => {
+                let mut document = None;
+                for (key, value) in payload_doc {
+                    match key.as_str() {
+                        "document" => {
+                            document = Some(Self::parse_bulk_write_document(&value, "document")?);
+                        }
+                        other => {
+                            return Err(tr_format(
+                                "Parameter '{}' is not supported in bulkWrite insertOne. Allowed: document.",
+                                &[other],
+                            ));
+                        }
+                    }
+                }
+
+                let document = document.ok_or_else(|| {
+                    String::from(tr("bulkWrite insertOne requires a document field."))
+                })?;
+
+                let model = InsertOneModel::builder()
+                    .namespace(namespace.clone())
+                    .document(document)
+                    .build();
+                Ok(WriteModel::InsertOne(model))
+            }
+            "updateOne" => self.parse_bulk_write_update_model(namespace, payload_doc, true, index),
+            "updateMany" => {
+                self.parse_bulk_write_update_model(namespace, payload_doc, false, index)
+            }
+            "replaceOne" => {
+                let mut filter = None;
+                let mut replacement = None;
+                let mut upsert = None;
+                let mut collation = None;
+                let mut hint = None;
+                let mut sort = None;
+
+                for (key, value) in payload_doc {
+                    match key.as_str() {
+                        "filter" => {
+                            filter = Some(Self::parse_bulk_write_document(&value, "filter")?);
+                        }
+                        "replacement" => {
+                            replacement =
+                                Some(Self::parse_bulk_write_document(&value, "replacement")?);
+                        }
+                        "upsert" => {
+                            upsert = Some(Self::parse_bulk_write_bool(&value, "upsert")?);
+                        }
+                        "collation" => {
+                            collation = Some(Self::parse_bulk_write_document(&value, "collation")?);
+                        }
+                        "hint" => {
+                            hint = Some(Self::parse_bulk_write_hint(&value, "hint")?);
+                        }
+                        "sort" => {
+                            sort = Some(Self::parse_bulk_write_document(&value, "sort")?);
+                        }
+                        other => {
+                            return Err(tr_format(
+                                "Parameter '{}' is not supported in bulkWrite replaceOne. Allowed: filter, replacement, upsert, collation, hint, sort.",
+                                &[other],
+                            ));
+                        }
+                    }
+                }
+
+                let filter = filter.ok_or_else(|| {
+                    String::from(tr("bulkWrite replaceOne requires a filter field."))
+                })?;
+                let replacement = replacement.ok_or_else(|| {
+                    String::from(tr("bulkWrite replaceOne requires a replacement field."))
+                })?;
+
+                let model = ReplaceOneModel::builder()
+                    .namespace(namespace.clone())
+                    .filter(filter)
+                    .replacement(replacement)
+                    .upsert(upsert)
+                    .collation(collation)
+                    .hint(hint)
+                    .sort(sort)
+                    .build();
+
+                Ok(WriteModel::ReplaceOne(model))
+            }
+            "deleteOne" => {
+                let mut filter = None;
+                let mut collation = None;
+                let mut hint = None;
+
+                for (key, value) in payload_doc {
+                    match key.as_str() {
+                        "filter" => {
+                            filter = Some(Self::parse_bulk_write_document(&value, "filter")?);
+                        }
+                        "collation" => {
+                            collation = Some(Self::parse_bulk_write_document(&value, "collation")?);
+                        }
+                        "hint" => {
+                            hint = Some(Self::parse_bulk_write_hint(&value, "hint")?);
+                        }
+                        other => {
+                            return Err(tr_format(
+                                "Parameter '{}' is not supported in bulkWrite deleteOne. Allowed: filter, collation, hint.",
+                                &[other],
+                            ));
+                        }
+                    }
+                }
+
+                let filter = filter.ok_or_else(|| {
+                    String::from(tr("bulkWrite deleteOne requires a filter field."))
+                })?;
+                let model = DeleteOneModel::builder()
+                    .namespace(namespace.clone())
+                    .filter(filter)
+                    .collation(collation)
+                    .hint(hint)
+                    .build();
+
+                Ok(WriteModel::DeleteOne(model))
+            }
+            "deleteMany" => {
+                let mut filter = None;
+                let mut collation = None;
+                let mut hint = None;
+
+                for (key, value) in payload_doc {
+                    match key.as_str() {
+                        "filter" => {
+                            filter = Some(Self::parse_bulk_write_document(&value, "filter")?);
+                        }
+                        "collation" => {
+                            collation = Some(Self::parse_bulk_write_document(&value, "collation")?);
+                        }
+                        "hint" => {
+                            hint = Some(Self::parse_bulk_write_hint(&value, "hint")?);
+                        }
+                        other => {
+                            return Err(tr_format(
+                                "Parameter '{}' is not supported in bulkWrite deleteMany. Allowed: filter, collation, hint.",
+                                &[other],
+                            ));
+                        }
+                    }
+                }
+
+                let filter = filter.ok_or_else(|| {
+                    String::from(tr("bulkWrite deleteMany requires a filter field."))
+                })?;
+                let model = DeleteManyModel::builder()
+                    .namespace(namespace.clone())
+                    .filter(filter)
+                    .collation(collation)
+                    .hint(hint)
+                    .build();
+
+                Ok(WriteModel::DeleteMany(model))
+            }
+            _ => Err(tr_format("bulkWrite operation '{}' is not supported.", &[&operation])),
+        }
+    }
+
+    fn parse_bulk_write_update_model(
+        &self,
+        namespace: &Namespace,
+        payload_doc: Document,
+        single: bool,
+        _index: usize,
+    ) -> Result<WriteModel, String> {
+        let mut filter = None;
+        let mut update = None;
+        let mut upsert = None;
+        let mut array_filters = None;
+        let mut collation = None;
+        let mut hint = None;
+        let mut sort = None;
+
+        for (key, value) in payload_doc {
+            match key.as_str() {
+                "filter" => {
+                    filter = Some(Self::parse_bulk_write_document(&value, "filter")?);
+                }
+                "update" => {
+                    update = Some(Self::parse_bulk_write_update_modifications(&value)?);
+                }
+                "upsert" => {
+                    upsert = Some(Self::parse_bulk_write_bool(&value, "upsert")?);
+                }
+                "arrayFilters" => {
+                    array_filters = Some(Self::parse_bulk_write_array_filters(&value)?);
+                }
+                "collation" => {
+                    collation = Some(Self::parse_bulk_write_document(&value, "collation")?);
+                }
+                "hint" => {
+                    hint = Some(Self::parse_bulk_write_hint(&value, "hint")?);
+                }
+                "sort" => {
+                    sort = Some(Self::parse_bulk_write_document(&value, "sort")?);
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in bulkWrite updateOne/updateMany. Allowed: filter, update, upsert, arrayFilters, collation, hint, sort.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        let filter = filter.ok_or_else(|| {
+            String::from(tr("bulkWrite updateOne/updateMany requires a filter field."))
+        })?;
+        let update = update.ok_or_else(|| {
+            String::from(tr("bulkWrite updateOne/updateMany requires an update field."))
+        })?;
+
+        let array_filters_bson =
+            array_filters.map(|filters| filters.into_iter().map(Bson::Document).collect::<Array>());
+
+        if single {
+            let model = UpdateOneModel::builder()
+                .namespace(namespace.clone())
+                .filter(filter)
+                .update(update)
+                .array_filters(array_filters_bson)
+                .collation(collation)
+                .hint(hint)
+                .upsert(upsert)
+                .sort(sort)
+                .build();
+            Ok(WriteModel::UpdateOne(model))
+        } else {
+            let model = UpdateManyModel::builder()
+                .namespace(namespace.clone())
+                .filter(filter)
+                .update(update)
+                .array_filters(array_filters_bson)
+                .collation(collation)
+                .hint(hint)
+                .upsert(upsert)
+                .build();
+            Ok(WriteModel::UpdateMany(model))
+        }
+    }
+
+    fn parse_bulk_write_document(value: &Bson, field: &str) -> Result<Document, String> {
+        match value {
+            Bson::Document(doc) => Ok(doc.clone()),
+            _ => Err(tr_format("Parameter '{}' must be a JSON object.", &[field])),
+        }
+    }
+
+    fn parse_bulk_write_bool(value: &Bson, field: &str) -> Result<bool, String> {
+        match value {
+            Bson::Boolean(flag) => Ok(*flag),
+            _ => Err(tr_format("Parameter '{}' must be a boolean value (true/false).", &[field])),
+        }
+    }
+
+    fn parse_bulk_write_hint(value: &Bson, field: &str) -> Result<Bson, String> {
+        match value {
+            Bson::String(_) | Bson::Document(_) => Ok(value.clone()),
+            _ => Err(tr_format("Parameter '{}' must be a string or a JSON object.", &[field])),
+        }
+    }
+
+    fn parse_bulk_write_array_filters(value: &Bson) -> Result<Vec<Document>, String> {
+        let array = match value {
+            Bson::Array(values) => values,
+            _ => {
+                return Err(String::from(tr("arrayFilters must be an array of objects.")));
+            }
+        };
+        if array.is_empty() {
+            return Err(String::from(tr("arrayFilters must contain at least one filter object.")));
+        }
+
+        let mut filters = Vec::with_capacity(array.len());
+        for (index, entry) in array.iter().enumerate() {
+            let document = entry.as_document().ok_or_else(|| {
+                tr_format(
+                    "arrayFilters element at index {} must be a JSON object.",
+                    &[&index.to_string()],
+                )
+            })?;
+            filters.push(document.clone());
+        }
+
+        Ok(filters)
+    }
+
+    fn parse_bulk_write_update_modifications(value: &Bson) -> Result<UpdateModifications, String> {
+        match value {
+            Bson::Document(document) => Ok(UpdateModifications::Document(document.clone())),
+            Bson::Array(items) => {
+                if items.is_empty() {
+                    return Err(String::from(tr(
+                        "An empty update array is not supported. Add at least one stage.",
+                    )));
+                }
+                let mut pipeline = Vec::with_capacity(items.len());
+                for (index, entry) in items.iter().enumerate() {
+                    let document = entry.as_document().ok_or_else(|| {
+                        tr_format(
+                            "Pipeline element at index {} must be a JSON object.",
+                            &[&index.to_string()],
+                        )
+                    })?;
+                    pipeline.push(document.clone());
+                }
+                Ok(UpdateModifications::Pipeline(pipeline))
+            }
+            _ => Err(String::from(tr(
+                "Update argument must be an object with operators or an array of stages.",
+            ))),
         }
     }
 
@@ -4379,6 +4831,38 @@ pub fn run_collection_query(
             response.insert("operation", Bson::String(String::from(tr("insertMany"))));
             response.insert("insertedCount", Bson::Int64(ids_document.len() as i64));
             response.insert("insertedIds", Bson::Document(ids_document));
+
+            Ok(QueryResult::SingleDocument { document: response })
+        }
+        QueryOperation::BulkWrite { models, options } => {
+            let mut action = client.bulk_write(models);
+            if let Some(opts) = options {
+                if let Some(ordered) = opts.ordered {
+                    action = action.ordered(ordered);
+                }
+                if let Some(bypass) = opts.bypass_document_validation {
+                    action = action.bypass_document_validation(bypass);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+                if let Some(let_vars) = opts.let_vars {
+                    action = action.let_vars(let_vars);
+                }
+                if let Some(write_concern) = opts.write_concern {
+                    action = action.write_concern(write_concern);
+                }
+            }
+
+            let result = action.run().map_err(|err| err.to_string())?;
+
+            let mut response = Document::new();
+            response.insert("operation", Bson::String(String::from(tr("bulkWrite"))));
+            response.insert("insertedCount", Bson::Int64(result.inserted_count));
+            response.insert("matchedCount", Bson::Int64(result.matched_count));
+            response.insert("modifiedCount", Bson::Int64(result.modified_count));
+            response.insert("deletedCount", Bson::Int64(result.deleted_count));
+            response.insert("upsertedCount", Bson::Int64(result.upserted_count));
 
             Ok(QueryResult::SingleDocument { document: response })
         }

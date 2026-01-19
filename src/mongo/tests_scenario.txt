@@ -199,3 +199,11 @@
 7.1 В основном окне в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_2).find({name: "Alex"}).hint('points_-1)`, нажать кнопку `Отправить`. Проверка в таблице результатов первый документ будет с полем `points` равным 10, последним документом с полем `points` равным 8.
 7.2 В основном окне в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_2).find({name: "Alex"}).hint('points_1)`, нажать кнопку `Отправить`. Проверка в таблице результатов должна появиться ошибка оповещающая что такой индекс не найден.
 8 В основном окне в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_2).find({name: "Alex"}).comment('my_comment)`, нажать кнопку `Отправить`. Проверка в таблице результатов будут два документа с полями `name` равными "Alex".
+9.1 В основном окне в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_2).bulkWrite([
+    { insertOne: { document: { name: "Ilya", department: "QA", starts: ISODate("2021-01-10"), points: 7 } } },
+    { updateOne: { filter: { name: "Alex", department: "IT" }, update: { $set: { points: 50 } } } },
+    { deleteOne: { filter: { name: "Mark" } } }
+])`, нажать кнопку `Отправить`. Проверка в таблице результатов должно быть 1 документ. В поле `insertedCount` значение 1, `matchedCount` значение 1, `modifiedCount` значение 1, `deletedCount` значение 1.
+9.2 В основном окне в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_2).find({name: "Ilya"}).count()`, нажать кнопку `Отправить`. Проверка в таблице результатов должно быть значение 1.
+9.3 В основном окне в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_2).findOne({name: "Alex", department: "IT"})`, нажать кнопку `Отправить`. Проверка в таблице результатов должно быть 1 документ, в поле `points` значение 50.
+9.4 В основном окне в редакторе запроса ввести запрос `db.getCollection(COLLECTION_NAME_2).find({name: "Mark"}).count()`, нажать кнопку `Отправить`. Проверка в таблице результатов должно быть значение 0.
