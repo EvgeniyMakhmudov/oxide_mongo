@@ -837,7 +837,7 @@ pub fn connections_view<'a>(
                 .align_y(Vertical::Center)
                 .push(icon)
                 .push(labels)
-                .push(Space::with_width(Length::Fill))
+                .push(Space::new().width(Length::Fill))
                 .push(right_info);
 
             let container =
@@ -854,7 +854,7 @@ pub fn connections_view<'a>(
                     }
                 });
 
-            let accent = Container::new(Space::with_width(Length::Fixed(4.0)))
+            let accent = Container::new(Space::new().width(Length::Fixed(4.0)))
                 .height(Length::Fixed(item_height))
                 .style(move |_| widget::container::Style {
                     background: Some(
@@ -965,7 +965,7 @@ pub fn connections_view<'a>(
         .spacing(16)
         .align_y(Vertical::Center)
         .push(left_controls)
-        .push(Space::with_width(Length::Fill))
+        .push(Space::new().width(Length::Fill))
         .push(right_controls);
 
     content = content.push(controls_row);
@@ -1039,7 +1039,7 @@ pub fn connection_form_view<'a>(
     let checkbox_font = fonts_state.primary_font;
     let checkbox_size = fonts_state.primary_size;
     let checkbox = |label: &'static str, value: bool| {
-        Checkbox::new(tr(label), value).font(checkbox_font).text_size(checkbox_size)
+        Checkbox::new(value).label(tr(label)).font(checkbox_font).text_size(checkbox_size)
     };
 
     let general_active = state.active_tab == ConnectionFormTab::General;
@@ -1056,6 +1056,7 @@ pub fn connection_form_view<'a>(
                     text_color: general_label_color,
                     border: border::rounded(6).width(1).color(border_color),
                     shadow: Shadow::default(),
+                    ..button::Style::default()
                 }
             });
     if !general_active {
@@ -1078,6 +1079,7 @@ pub fn connection_form_view<'a>(
             text_color: authorization_label_color,
             border: border::rounded(6).width(1).color(border_color),
             shadow: Shadow::default(),
+            ..button::Style::default()
         }
     });
     if !authorization_active {
@@ -1099,6 +1101,7 @@ pub fn connection_form_view<'a>(
                     text_color: ssh_label_color,
                     border: border::rounded(6).width(1).color(border_color),
                     shadow: Shadow::default(),
+                    ..button::Style::default()
                 }
             });
     if !ssh_active {
@@ -1120,6 +1123,7 @@ pub fn connection_form_view<'a>(
                     text_color: filter_label_color,
                     border: border::rounded(6).width(1).color(border_color),
                     shadow: Shadow::default(),
+                    ..button::Style::default()
                 }
             });
     if !filter_active {
@@ -1177,7 +1181,7 @@ pub fn connection_form_view<'a>(
                                 .width(Length::FillPortion(2)),
                         )
                         .push(connection_type)
-                        .push(Space::with_width(Length::FillPortion(1))),
+                        .push(Space::new().width(Length::FillPortion(1))),
                 )
                 .into()
         }
@@ -1224,7 +1228,7 @@ pub fn connection_form_view<'a>(
                         .width(Length::FillPortion(2)),
                 )
                 .push(mechanism)
-                .push(Space::with_width(Length::FillPortion(1)));
+                .push(Space::new().width(Length::FillPortion(1)));
 
             let database_input = text_input(tr("Database"), &state.auth.database)
                 .on_input(Message::ConnectionFormAuthDatabaseChanged)
@@ -1279,7 +1283,7 @@ pub fn connection_form_view<'a>(
                         .width(Length::FillPortion(2)),
                 )
                 .push(auth_method)
-                .push(Space::with_width(Length::FillPortion(1)));
+                .push(Space::new().width(Length::FillPortion(1)));
 
             let mut column = Column::new()
                 .spacing(12)

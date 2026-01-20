@@ -68,7 +68,7 @@ impl<'a, Message: Clone + 'a> FontDropdown<'a, Message> {
             .align_y(Vertical::Center)
             .spacing(8)
             .push(Text::new(display_text).font(display_font))
-            .push(Space::with_width(Length::Fill))
+            .push(Space::new().width(Length::Fill))
             .push(Text::new(if self.is_open { "▲" } else { "▼" }));
 
         let mut column = Column::new().spacing(6);

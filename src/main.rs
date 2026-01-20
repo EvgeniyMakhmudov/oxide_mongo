@@ -14,7 +14,9 @@ use iced::border;
 use iced::font::Weight;
 use iced::futures::stream;
 use iced::keyboard::{self, key};
+use iced::theme::{Base, Mode};
 use iced::widget::image::Handle;
+use iced::widget::operation::{focus, focus_next};
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::scrollable;
 use iced::widget::text::Wrapping;
@@ -22,7 +24,7 @@ use iced::widget::text_editor::{
     self, Action as TextEditorAction, Binding as TextEditorBinding, Content as TextEditorContent,
 };
 use iced::widget::{
-    Button, Column, Container, Image, Row, Scrollable, Space, button, container, mouse_area,
+    Button, Column, Container, Id, Image, Row, Scrollable, Space, button, container, mouse_area,
     pane_grid, text_input,
 };
 use iced::window;
@@ -73,6 +75,7 @@ pub(crate) const DOUBLE_CLICK_INTERVAL: Duration = Duration::from_millis(400);
 const DEFAULT_RESULT_LIMIT: i64 = 50;
 const DEFAULT_RESULT_SKIP: u64 = 0;
 const PANE_GRID_SPACING: f32 = 8.0;
+const PANE_GRID_MIN_SIZE: f32 = 0.0;
 const MAIN_PANEL_PADDING: f32 = 8.0;
 const TAB_HEADER_PADDING_X: f32 = 4.0;
 const TAB_ROW_SPACING: f32 = 8.0;
@@ -100,13 +103,14 @@ fn main() -> iced::Result {
     window_settings.icon = Some(icon);
     window_settings.size.width += 280.0;
 
-    application("Oxide Mongo", App::update, App::view)
+    application(App::init, App::update, App::view)
+        .title("Oxide Mongo")
         .subscription(App::subscription)
         .theme(App::theme)
         .font(MONO_FONT_BYTES)
         .font(REQUIRED_FONT_BYTES)
         .window(window_settings)
-        .run_with(App::init)
+        .run()
 }
 
 pub(crate) struct App {
@@ -173,6 +177,7 @@ pub(crate) enum Message {
     },
     TabColorReset(TabId),
     WindowEvent(window::Event),
+    KeyboardEvent(keyboard::Event),
     PaneResized(ResizeEvent),
     ConnectionCompleted {
         client_id: ClientId,
@@ -799,7 +804,7 @@ struct CollectionTab {
     collection: String,
     pending_collection: Option<String>,
     editor: TextEditorContent,
-    focus_anchor: iced::widget::text_input::Id,
+    focus_anchor: Id,
     panes: pane_grid::State<CollectionPane>,
     bson_tree: BsonTree,
     response_view_mode: ResponseViewMode,
@@ -947,7 +952,7 @@ impl CollectionTab {
             collection,
             pending_collection: None,
             editor,
-            focus_anchor: iced::widget::text_input::Id::unique(),
+            focus_anchor: Id::unique(),
             panes,
             bson_tree,
             response_view_mode: ResponseViewMode::Table,
@@ -1380,6 +1385,8 @@ impl CollectionTab {
         self.bson_tree = BsonTree::from_error(error);
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
+        self.bson_tree.set_text_color(self.palette.text_primary);
+        self.bson_tree.set_button_colors(self.palette.subtle_buttons.clone());
         self.last_result = None;
         self.text_result = None;
     }
@@ -1396,6 +1403,8 @@ impl CollectionTab {
         self.palette = settings.active_palette().clone();
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
+        self.bson_tree.set_text_color(self.palette.text_primary);
+        self.bson_tree.set_button_colors(self.palette.subtle_buttons.clone());
         if let Some(result) = self.last_result.clone() {
             if self.response_view_mode == ResponseViewMode::Text {
                 self.set_query_result(result, settings);
@@ -1615,6 +1624,14 @@ impl App {
                         self.window_size = Some(size);
                     }
                     _ => {}
+                }
+                Task::none()
+            }
+            Message::KeyboardEvent(event) => {
+                if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
+                    if let Some(message) = Self::handle_hotkey(key, modifiers) {
+                        return self.update(message);
+                    }
                 }
                 Task::none()
             }
@@ -3855,7 +3872,7 @@ impl App {
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
             window::events().map(|(_id, event)| Message::WindowEvent(event)),
-            keyboard::on_key_press(Self::handle_hotkey),
+            keyboard::listen().map(Message::KeyboardEvent),
         ])
     }
 
@@ -4473,7 +4490,7 @@ impl App {
 
         let buttons = Row::new()
             .spacing(12)
-            .push(Space::with_width(Length::Fill))
+            .push(Space::new().width(Length::Fill))
             .push(cancel_button)
             .push(save_button);
         column = column.push(buttons);
@@ -4484,7 +4501,7 @@ impl App {
 
     fn theme(&self) -> Theme {
         match self.settings.theme_choice {
-            ThemeChoice::System => Theme::default(),
+            ThemeChoice::System => Theme::default(Mode::None),
             ThemeChoice::Light => Theme::Light,
             ThemeChoice::Dark => Theme::Dark,
             ThemeChoice::SolarizedLight => Theme::Light,
@@ -4571,7 +4588,7 @@ impl App {
 
         if matches!(client.status, ConnectionStatus::Failed(_)) {
             column = column.push(
-                Row::new().spacing(8).push(Space::with_width(Length::Fixed(16.0))).push(
+                Row::new().spacing(8).push(Space::new().width(Length::Fixed(16.0))).push(
                     fonts::primary_text(status_label, Some(6.0))
                         .color(Color::from_rgb8(0xd9, 0x53, 0x4f)),
                 ),
@@ -4581,7 +4598,7 @@ impl App {
         if client.expanded && matches!(client.status, ConnectionStatus::Ready) {
             if client.databases.is_empty() {
                 column = column.push(
-                    Row::new().spacing(8).push(Space::with_width(Length::Fixed(16.0))).push(
+                    Row::new().spacing(8).push(Space::new().width(Length::Fixed(16.0))).push(
                         fonts::primary_text(tr("No databases"), Some(6.0)).color(muted_color),
                     ),
                 );
@@ -4640,7 +4657,7 @@ impl App {
                 DatabaseState::Idle => {}
                 DatabaseState::Loading => {
                     column = column.push(
-                        Row::new().spacing(8).push(Space::with_width(Length::Fixed(32.0))).push(
+                        Row::new().spacing(8).push(Space::new().width(Length::Fixed(32.0))).push(
                             fonts::primary_text(tr("Loading collections..."), Some(6.0))
                                 .color(muted_color),
                         ),
@@ -4648,7 +4665,7 @@ impl App {
                 }
                 DatabaseState::Error(error) => {
                     column = column.push(
-                        Row::new().spacing(8).push(Space::with_width(Length::Fixed(32.0))).push(
+                        Row::new().spacing(8).push(Space::new().width(Length::Fixed(32.0))).push(
                             fonts::primary_text(format!("{} {}", tr("Error:"), error), Some(6.0)),
                         ),
                     );
@@ -4658,7 +4675,7 @@ impl App {
                         column = column.push(
                             Row::new()
                                 .spacing(8)
-                                .push(Space::with_width(Length::Fixed(32.0)))
+                                .push(Space::new().width(Length::Fixed(32.0)))
                                 .push(
                                     fonts::primary_text(tr("No collections"), Some(6.0))
                                         .color(muted_color),
@@ -4747,7 +4764,7 @@ impl App {
         let row: Element<Message> = Row::new()
             .spacing(8)
             .align_y(Vertical::Center)
-            .push(Space::with_width(Length::Fixed(indent.max(0.0))))
+            .push(Space::new().width(Length::Fixed(indent.max(0.0))))
             .push(button)
             .into();
 
@@ -4760,7 +4777,8 @@ impl App {
 
     fn tab_bar_available_width(&self) -> Option<f32> {
         let window_size = self.window_size?;
-        let regions = self.panes.layout().pane_regions(PANE_GRID_SPACING, window_size);
+        let regions =
+            self.panes.layout().pane_regions(PANE_GRID_SPACING, PANE_GRID_MIN_SIZE, window_size);
         let main_pane = self
             .panes
             .iter()
@@ -5018,8 +5036,7 @@ impl App {
             return Task::none();
         };
 
-        iced::widget::text_input::focus::<Message>(tab.collection.focus_anchor.clone())
-            .chain(iced::widget::focus_next())
+        focus::<Message>(tab.collection.focus_anchor.clone()).chain(focus_next())
     }
 
     fn duplicate_collection_tab(&mut self, tab_id: TabId) {
