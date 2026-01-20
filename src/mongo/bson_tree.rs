@@ -512,7 +512,7 @@ impl BsonTree {
                     .padding([6, 8]),
             )
             .push(
-                Container::new(Space::with_width(Length::Fixed(1.0)))
+                Container::new(Space::new().width(Length::Fixed(1.0)))
                     .width(Length::Fixed(1.0))
                     .height(Length::Shrink)
                     .padding([6, 0])
@@ -527,7 +527,7 @@ impl BsonTree {
                     .padding([6, 8]),
             )
             .push(
-                Container::new(Space::with_width(Length::Fixed(1.0)))
+                Container::new(Space::new().width(Length::Fixed(1.0)))
                     .width(Length::Fixed(1.0))
                     .height(Length::Shrink)
                     .padding([6, 0])
@@ -555,7 +555,7 @@ impl BsonTree {
             let background = if index % 2 == 0 { row_color_a } else { row_color_b };
 
             let mut key_row = Row::new().spacing(6).align_y(Vertical::Center);
-            key_row = key_row.push(Space::with_width(Length::Fixed((depth as f32) * 16.0)));
+            key_row = key_row.push(Space::new().width(Length::Fixed((depth as f32) * 16.0)));
 
             if node.is_container() {
                 let indicator = if expanded { "▼" } else { "▶" };
@@ -581,7 +581,7 @@ impl BsonTree {
                     key_row = key_row.push(disabled);
                 }
             } else {
-                key_row = key_row.push(Space::with_width(Length::Fixed(18.0)));
+                key_row = key_row.push(Space::new().width(Length::Fixed(18.0)));
             }
 
             let key_label = node.display_key();
@@ -616,7 +616,7 @@ impl BsonTree {
             .padding([6, 8]);
 
             let separator = |color: Color| {
-                Container::new(Space::with_width(Length::Fixed(1.0)))
+                Container::new(Space::new().width(Length::Fixed(1.0)))
                     .width(Length::Fixed(1.0))
                     .height(Length::Shrink)
                     .style(move |_| widget::container::Style {
@@ -973,6 +973,14 @@ impl BsonTree {
 
     pub fn set_menu_colors(&mut self, colors: MenuColors) {
         self.menu_colors = colors;
+    }
+
+    pub fn set_text_color(&mut self, color: RgbaColor) {
+        self.text_color = color;
+    }
+
+    pub fn set_button_colors(&mut self, colors: ButtonColors) {
+        self.button_colors = colors;
     }
 
     pub fn collapse_recursive(&mut self, node_id: usize) {

@@ -66,7 +66,7 @@ pub fn about_modal_view(palette: ThemePalette, icon_handle: Handle) -> Element<'
     let title_row = Row::new()
         .align_y(iced::alignment::Vertical::Center)
         .push(title)
-        .push(Space::with_width(Length::Fixed(6.0)))
+        .push(Space::new().width(Length::Fixed(6.0)))
         .push(title_name);
     let icon_size = (fonts::active_fonts().primary_size * 3.0).max(48.0);
     let icon =
@@ -74,7 +74,7 @@ pub fn about_modal_view(palette: ThemePalette, icon_handle: Handle) -> Element<'
     let header = Row::new()
         .align_y(iced::alignment::Vertical::Center)
         .push(title_row)
-        .push(Space::with_width(Length::Fill))
+        .push(Space::new().width(Length::Fill))
         .push(icon);
     let summary = fonts::primary_text(
         tr("MongoDB GUI client for browsing collections, running queries, and managing data."),

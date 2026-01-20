@@ -36,7 +36,7 @@ pub fn help_docs_view<'a>(palette: ThemePalette, state: &'a HelpDocsState) -> El
     let header = Row::new()
         .align_y(Vertical::Center)
         .push(title)
-        .push(Space::with_width(Length::Fill))
+        .push(Space::new().width(Length::Fill))
         .push(close_button);
 
     let nav_column = build_nav_column(&palette, state.selected_index);
@@ -234,7 +234,7 @@ fn build_markdown_column(
                 )
                 .into(),
             "code" => Row::new()
-                .push(Space::with_width(Length::Fixed(12.0)))
+                .push(Space::new().width(Length::Fixed(12.0)))
                 .push(
                     fonts::result_text(text.clone(), Some(-1.0))
                         .color(color)

@@ -400,7 +400,7 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
     let checkbox_font = fonts_state.primary_font;
     let checkbox_size = fonts_state.primary_size;
     let checkbox = |label: &str, value: bool| {
-        Checkbox::new(label.to_owned(), value).font(checkbox_font).text_size(checkbox_size)
+        Checkbox::new(value).label(label.to_owned()).font(checkbox_font).text_size(checkbox_size)
     };
 
     let expand_checkbox = checkbox(tr("Expand first result item"), state.expand_first_result)
@@ -521,8 +521,8 @@ fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_,
             PickList::new(ALL_LANGUAGES, Some(state.language), Message::SettingsLanguageChanged)
                 .width(Length::FillPortion(4)),
         )
-        .push(Space::with_width(Length::FillPortion(2)))
-        .push(Space::with_width(Length::Fixed(120.0)));
+        .push(Space::new().width(Length::FillPortion(2)))
+        .push(Space::new().width(Length::Fixed(120.0)));
 
     let primary_row = font_picker_row(
         state,
@@ -567,8 +567,8 @@ fn color_theme_tab(
             PickList::new(ALL_THEMES, Some(state.theme_choice), Message::SettingsThemeChanged)
                 .width(Length::FillPortion(4)),
         )
-        .push(Space::with_width(Length::FillPortion(2)))
-        .push(Space::with_width(Length::Fixed(120.0)));
+        .push(Space::new().width(Length::FillPortion(2)))
+        .push(Space::new().width(Length::Fixed(120.0)));
 
     let reset_palette = palette.clone();
     let reset_button =
@@ -577,7 +577,8 @@ fn color_theme_tab(
             .on_press(Message::SettingsThemeColorsReset)
             .style(move |_, status| reset_palette.subtle_button_style(6.0, status));
 
-    let reset_row = Row::new().spacing(12).push(Space::with_width(Length::Fill)).push(reset_button);
+    let reset_row =
+        Row::new().spacing(12).push(Space::new().width(Length::Fill)).push(reset_button);
 
     Column::new()
         .spacing(20)
@@ -625,14 +626,14 @@ fn color_picker_row<'a>(
     let hex_text = color_value.to_hex();
 
     let swatch_color = color;
-    let swatch =
-        Container::new(Space::new(Length::Fixed(32.0), Length::Fixed(20.0))).style(move |_| {
-            container::Style {
-                background: Some(swatch_color.into()),
-                border: border::rounded(4).width(1).color(Color::from_rgba8(0, 0, 0, 0.2)),
-                ..Default::default()
-            }
-        });
+    let swatch = Container::new(
+        Space::new().width(Length::Fixed(32.0)).height(Length::Fixed(20.0)),
+    )
+    .style(move |_| container::Style {
+        background: Some(swatch_color.into()),
+        border: border::rounded(4).width(1).color(Color::from_rgba8(0, 0, 0, 0.2)),
+        ..Default::default()
+    });
 
     let hex_label = fonts::primary_text(hex_text, Some(-1.0)).color(text_color);
 
@@ -661,7 +662,7 @@ fn color_picker_row<'a>(
         .align_y(Vertical::Center)
         .push(fonts::primary_text(tr(label), None).color(text_color).width(Length::FillPortion(4)))
         .push(picker_container)
-        .push(Space::with_width(Length::Fill))
+        .push(Space::new().width(Length::Fill))
         .into()
 }
 
@@ -688,7 +689,7 @@ fn bottom_actions(palette: &ThemePalette) -> Element<'static, Message> {
     Row::new()
         .spacing(12)
         .align_y(Vertical::Center)
-        .push(Space::with_width(Length::Fill))
+        .push(Space::new().width(Length::Fill))
         .push(apply)
         .push(cancel)
         .push(save)
