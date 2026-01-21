@@ -1224,18 +1224,16 @@ impl CollectionTab {
 
     fn text_result_view(&self, tab_id: TabId) -> Element<'_, Message> {
         if let Some(text_result) = &self.text_result {
-            let mut column = Column::new().spacing(12).width(Length::Fill);
-            for doc in &text_result.documents {
-                column = column.push(
-                    Container::new(fonts::result_text(doc.clone(), None).wrapping(Wrapping::Word))
-                        .padding([8, 10])
-                        .width(Length::Fill)
-                        .style(move |_| container::Style {
-                            border: border::rounded(6.0).width(1),
-                            ..Default::default()
-                        }),
-                );
-            }
+            let content = text_result.as_json_list();
+            let column = Column::new().width(Length::Fill).push(
+                Container::new(fonts::result_text(content, None).wrapping(Wrapping::Word))
+                    .padding([8, 10])
+                    .width(Length::Fill)
+                    .style(move |_| container::Style {
+                        border: border::rounded(6.0).width(1),
+                        ..Default::default()
+                    }),
+            );
 
             let scroll = Scrollable::new(column).width(Length::Fill).height(Length::Fill);
             let menu_palette = self.palette.clone();
