@@ -21,6 +21,7 @@ ssh2 = "0.9"
 rfd = "0.17.1"
 webbrowser = "0.8"
 log = "0.4"
+iced-code-editor = "0.3.2"
 
 [dev-dependencies]
 iced_runtime = "0.14"

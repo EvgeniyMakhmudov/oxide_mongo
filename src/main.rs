@@ -11,20 +11,18 @@ use crate::fonts::{MONO_FONT, MONO_FONT_BYTES};
 use i18n::{tr, tr_format};
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
+use iced::event;
 use iced::font::Weight;
 use iced::futures::stream;
 use iced::keyboard::{self, key};
 use iced::theme::{Base, Mode};
 use iced::widget::image::Handle;
-use iced::widget::operation::{focus, focus_next};
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::scrollable;
 use iced::widget::text::Wrapping;
-use iced::widget::text_editor::{
-    self, Action as TextEditorAction, Binding as TextEditorBinding, Content as TextEditorContent,
-};
+use iced::widget::text_editor::{self, Action as TextEditorAction, Content as TextEditorContent};
 use iced::widget::{
-    Button, Column, Container, Id, Image, Row, Scrollable, Space, button, container, mouse_area,
+    Button, Column, Container, Image, Row, Scrollable, Space, button, container, mouse_area,
     pane_grid, text_input,
 };
 use iced::window;
@@ -33,6 +31,7 @@ use iced::{
     clipboard,
 };
 use iced_aw::{ColorPicker, ContextMenu};
+use iced_code_editor::{ArrowDirection, CodeEditor, Message as CodeEditorMessage};
 use iced_fonts::REQUIRED_FONT_BYTES;
 use mongo::bson_edit::ValueEditKind;
 use mongo::bson_tree::{BsonTree, BsonTreeOptions};
@@ -135,6 +134,8 @@ pub(crate) struct App {
     value_edit_modal: Option<ValueEditModalState>,
     window_size: Option<Size>,
     tab_color_picker: Option<TabId>,
+    pending_ctrl_enter_tab: Option<TabId>,
+    last_editor_enter_tab: Option<TabId>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +144,6 @@ enum PaneContent {
     Main,
 }
 
-#[derive(Debug)]
 struct TabData {
     id: TabId,
     title: String,
@@ -204,8 +204,9 @@ pub(crate) enum Message {
     },
     CollectionEditorAction {
         tab_id: TabId,
-        action: TextEditorAction,
+        action: CodeEditorMessage,
     },
+    CollectionSendShortcut,
     CollectionSend(TabId),
     CollectionTreeToggle {
         tab_id: TabId,
@@ -796,15 +797,13 @@ struct WatchStreamState {
     error: Option<String>,
 }
 
-#[derive(Debug)]
 struct CollectionTab {
     client_id: ClientId,
     client_name: String,
     db_name: String,
     collection: String,
     pending_collection: Option<String>,
-    editor: TextEditorContent,
-    focus_anchor: Id,
+    editor: CodeEditor,
     panes: pane_grid::State<CollectionPane>,
     bson_tree: BsonTree,
     response_view_mode: ResponseViewMode,
@@ -853,14 +852,37 @@ impl TextResultView {
     }
 }
 
-fn position_cursor_in_find(editor: &mut TextEditorContent, text: &str) {
+fn position_cursor_in_find(editor: &mut CodeEditor, text: &str) {
     let Some(index) = text.find("{}") else {
         return;
     };
     let target = index + 1;
-    editor.perform(TextEditorAction::Move(text_editor::Motion::DocumentStart));
-    for _ in 0..target {
-        editor.perform(TextEditorAction::Move(text_editor::Motion::Right));
+    let steps = text[..target].chars().count();
+    for _ in 0..steps {
+        let _ = editor.update(&CodeEditorMessage::ArrowKey(ArrowDirection::Right, false));
+    }
+}
+
+fn code_editor_style(palette: &ThemePalette) -> iced_code_editor::theme::Style {
+    let background = palette.widget_background_color();
+    let text_color = palette.text_primary.to_color();
+    let gutter_background = palette.table.header_background.to_color();
+    let gutter_border = palette.widget_border_color();
+    let line_number_color = palette.text_muted.to_color();
+    let scrollbar_background = background;
+    let scroller_color = palette.subtle_buttons.hover.to_color();
+    let mut current_line_highlight = palette.subtle_buttons.active.to_color();
+    current_line_highlight.a = 0.25;
+
+    iced_code_editor::theme::Style {
+        background,
+        text_color,
+        gutter_background,
+        gutter_border,
+        line_number_color,
+        scrollbar_background,
+        scroller_color,
+        current_line_highlight,
     }
 }
 
@@ -942,7 +964,10 @@ impl CollectionTab {
             collection_name = collection.as_str()
         );
         let text_result = None;
-        let mut editor = TextEditorContent::with_text(&editor_text);
+        let mut editor = CodeEditor::new(&editor_text, "javascript")
+            .with_line_numbers_enabled(true)
+            .with_wrap_enabled(false);
+        editor.set_theme(code_editor_style(&palette));
         position_cursor_in_find(&mut editor, &editor_text);
 
         let mut instance = Self {
@@ -952,7 +977,6 @@ impl CollectionTab {
             collection,
             pending_collection: None,
             editor,
-            focus_anchor: Id::unique(),
             panes,
             bson_tree,
             response_view_mode: ResponseViewMode::Table,
@@ -1133,30 +1157,10 @@ impl CollectionTab {
     }
 
     fn request_view(&self, tab_id: TabId) -> Element<'_, Message> {
-        let send_tab_id = tab_id;
-        let focus_anchor = Container::new(
-            text_input("", "")
-                .id(self.focus_anchor.clone())
-                .size(1)
-                .padding(0)
-                .width(Length::Fixed(0.0)),
-        )
-        .width(Length::Fixed(0.0))
-        .height(Length::Fixed(0.0));
-        let editor = text_editor::TextEditor::new(&self.editor)
-            .key_binding(move |key_press| {
-                let is_enter = matches!(key_press.key, keyboard::Key::Named(key::Named::Enter));
-                let is_delete = matches!(key_press.key, keyboard::Key::Named(key::Named::Delete));
-                if is_enter && key_press.modifiers.command() {
-                    Some(TextEditorBinding::Custom(Message::CollectionSend(send_tab_id)))
-                } else if is_delete {
-                    Some(TextEditorBinding::Delete)
-                } else {
-                    TextEditorBinding::from_key_press(key_press)
-                }
-            })
-            .on_action(move |action| Message::CollectionEditorAction { tab_id, action })
-            .height(Length::Fill);
+        let editor = self
+            .editor
+            .view()
+            .map(move |action| Message::CollectionEditorAction { tab_id, action });
 
         let send_content = Container::new(fonts::primary_text(tr("Send"), None))
             .center_x(Length::Shrink)
@@ -1172,15 +1176,15 @@ impl CollectionTab {
                 move |_, status| palette.primary_button_style(4.0, status)
             });
 
+        let border_color = self.palette.widget_border_color();
         let controls_row = Row::new()
             .spacing(0)
             .align_y(Vertical::Center)
             .width(Length::Fill)
             .height(Length::Fill)
-            .push(focus_anchor)
             .push(Container::new(editor).width(Length::FillPortion(9)).height(Length::Fill).style(
                 move |_| container::Style {
-                    border: border::rounded(4.0).width(1),
+                    border: border::rounded(4.0).width(1).color(border_color),
                     ..Default::default()
                 },
             ))
@@ -1191,7 +1195,7 @@ impl CollectionTab {
                     .align_x(Horizontal::Center)
                     .align_y(Vertical::Center)
                     .style(move |_| container::Style {
-                        border: border::rounded(4.0).width(1),
+                        border: border::rounded(4.0).width(1).color(border_color),
                         ..Default::default()
                     }),
             );
@@ -1199,7 +1203,7 @@ impl CollectionTab {
         let content = Column::new().spacing(8).width(Length::Fill).height(Length::Fill).push(
             Container::new(controls_row).width(Length::Fill).height(Length::Fill).style(
                 move |_| container::Style {
-                    border: border::rounded(4.0).width(1),
+                    border: border::rounded(4.0).width(1).color(border_color),
                     ..Default::default()
                 },
             ),
@@ -1401,6 +1405,7 @@ impl CollectionTab {
 
     fn refresh_with_settings(&mut self, settings: &AppSettings) {
         self.palette = settings.active_palette().clone();
+        self.editor.set_theme(code_editor_style(&self.palette));
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
         self.bson_tree.set_text_color(self.palette.text_primary);
@@ -1479,6 +1484,8 @@ impl App {
             value_edit_modal: None,
             window_size: None,
             tab_color_picker: None,
+            pending_ctrl_enter_tab: None,
+            last_editor_enter_tab: None,
         }
     }
 
@@ -1785,7 +1792,22 @@ impl App {
             }
             Message::CollectionEditorAction { tab_id, action } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-                    tab.collection.editor.perform(action);
+                    let is_enter = matches!(action, CodeEditorMessage::Enter);
+                    if is_enter && self.pending_ctrl_enter_tab == Some(tab_id) {
+                        self.pending_ctrl_enter_tab = None;
+                        self.last_editor_enter_tab = None;
+                        return Task::none();
+                    }
+                    if is_enter {
+                        self.last_editor_enter_tab = Some(tab_id);
+                    } else {
+                        self.last_editor_enter_tab = None;
+                    }
+                    return tab
+                        .collection
+                        .editor
+                        .update(&action)
+                        .map(move |action| Message::CollectionEditorAction { tab_id, action });
                 }
                 Task::none()
             }
@@ -1844,7 +1866,7 @@ impl App {
                                 "db.getCollection('{collection_name}').watch()",
                                 collection_name = collection
                             );
-                            tab.collection.editor = TextEditorContent::with_text(&query);
+                            let _ = tab.collection.editor.reset(&query);
                         }
                         self.collection_query_task(tab_id)
                     }
@@ -1856,7 +1878,7 @@ impl App {
                                 "db.getCollection('{collection_name}').deleteMany({{ '': '' }});",
                                 collection_name = collection
                             );
-                            tab.collection.editor = TextEditorContent::with_text(&template);
+                            let _ = tab.collection.editor.reset(&template);
                         }
                         Task::none()
                     }
@@ -1907,6 +1929,33 @@ impl App {
                 }
             }
             Message::CollectionSend(tab_id) => self.collection_query_task(tab_id),
+            Message::CollectionSendShortcut => {
+                let Some(tab_id) = self.active_tab else {
+                    return Task::none();
+                };
+                let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+                    return Task::none();
+                };
+                if !tab.collection.editor.is_focused() {
+                    return Task::none();
+                }
+
+                self.pending_ctrl_enter_tab = Some(tab_id);
+                let mut tasks = Vec::new();
+                if self.last_editor_enter_tab == Some(tab_id) {
+                    if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                        tasks.push(
+                            tab.collection.editor.update(&CodeEditorMessage::Undo).map(
+                                move |action| Message::CollectionEditorAction { tab_id, action },
+                            ),
+                        );
+                    }
+                    self.last_editor_enter_tab = None;
+                    self.pending_ctrl_enter_tab = None;
+                }
+                tasks.push(self.collection_query_task(tab_id));
+                Task::batch(tasks)
+            }
             Message::CollectionModalInputChanged(value) => {
                 if let Some(modal) = self.collection_modal.as_mut() {
                     modal.input = value;
@@ -3873,6 +3922,15 @@ impl App {
         Subscription::batch([
             window::events().map(|(_id, event)| Message::WindowEvent(event)),
             keyboard::listen().map(Message::KeyboardEvent),
+            event::listen_raw(|event, _status, _window| match event {
+                event::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. })
+                    if modifiers.command()
+                        && matches!(key, keyboard::Key::Named(key::Named::Enter)) =>
+                {
+                    Some(Message::CollectionSendShortcut)
+                }
+                _ => None,
+            }),
         ])
     }
 
@@ -5031,12 +5089,16 @@ impl App {
         id
     }
 
-    fn focus_collection_editor(&self, tab_id: TabId) -> Task<Message> {
-        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+    fn focus_collection_editor(&mut self, tab_id: TabId) -> Task<Message> {
+        let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) else {
             return Task::none();
         };
 
-        focus::<Message>(tab.collection.focus_anchor.clone()).chain(focus_next())
+        tab.collection.editor.request_focus();
+        tab.collection
+            .editor
+            .update(&CodeEditorMessage::CanvasFocusGained)
+            .map(move |action| Message::CollectionEditorAction { tab_id, action })
     }
 
     fn duplicate_collection_tab(&mut self, tab_id: TabId) {
@@ -5045,7 +5107,7 @@ impl App {
                 tab.collection.client_id,
                 tab.collection.db_name.clone(),
                 tab.collection.collection.clone(),
-                tab.collection.editor.text().to_string(),
+                tab.collection.editor.content(),
                 tab.color,
             )
         });
@@ -5053,7 +5115,7 @@ impl App {
         if let Some((client_id, db_name, collection, query_text, color)) = snapshot {
             let new_tab_id = self.open_collection_tab(client_id, db_name, collection);
             if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == new_tab_id) {
-                tab.collection.editor = TextEditorContent::with_text(&query_text);
+                let _ = tab.collection.editor.reset(&query_text);
                 tab.color = color;
             }
             log::debug!("Tab duplicated from={} to={}", tab_id, new_tab_id);
@@ -5065,7 +5127,7 @@ impl App {
             self.open_collection_tab(client_id, db_name.clone(), String::from(tr("(database)")));
 
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.collection.editor = TextEditorContent::with_text(tr("db.stats()"));
+            let _ = tab.collection.editor.reset(tr("db.stats()"));
             tab.title = String::from(tr("stats"));
         }
 
@@ -5077,7 +5139,7 @@ impl App {
             self.open_collection_tab(client_id, db_name.clone(), String::from(tr("(database)")));
 
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
-            tab.collection.editor = TextEditorContent::with_text("");
+            let _ = tab.collection.editor.reset("");
             tab.title = db_name;
         }
 
@@ -5098,7 +5160,7 @@ impl App {
                 "db.runCommand({{ \"collStats\": \"{collection}\" }})",
                 collection = collection
             );
-            tab.collection.editor = TextEditorContent::with_text(&command);
+            let _ = tab.collection.editor.reset(&command);
             tab.title = String::from(tr("collStats"));
         }
 
@@ -5118,7 +5180,7 @@ impl App {
                 "db.getCollection('{collection_name}').getIndexes()",
                 collection_name = collection
             );
-            tab.collection.editor = TextEditorContent::with_text(&command);
+            let _ = tab.collection.editor.reset(&command);
             tab.title = String::from(tr("indexes"));
         }
 
@@ -5138,7 +5200,7 @@ impl App {
                 "db.getCollection('{collection_name}').createIndex(\n    {{ \"field\": 1 }},\n    {{ \"name\": \"field_1\" }}\n)",
                 collection_name = collection
             );
-            tab.collection.editor = TextEditorContent::with_text(&template);
+            let _ = tab.collection.editor.reset(&template);
             tab.title = format!("{} createIndex", collection);
         }
 
@@ -5172,8 +5234,7 @@ impl App {
         );
 
         tab.title = String::from(tr("serverStatus"));
-        tab.collection.editor =
-            TextEditorContent::with_text(tr("db.runCommand({ serverStatus: 1 })"));
+        let _ = tab.collection.editor.reset(tr("db.runCommand({ serverStatus: 1 })"));
 
         self.tabs.push(tab);
         self.active_tab = Some(id);
@@ -5460,7 +5521,7 @@ impl App {
 
         if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
             let collection = &mut tab.collection;
-            let query_text = collection.editor.text().to_string();
+            let query_text = collection.editor.content();
             match collection.parse_query(&query_text) {
                 Ok((effective_collection, operation)) => {
                     let skip = collection.skip_value();
