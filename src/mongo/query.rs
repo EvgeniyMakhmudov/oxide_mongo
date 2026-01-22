@@ -53,6 +53,43 @@ impl EstimatedDocumentCountParsedOptions {
 }
 
 #[derive(Debug, Clone, Default)]
+pub struct DistinctParsedOptions {
+    max_time: Option<Duration>,
+    collation: Option<Collation>,
+}
+
+impl DistinctParsedOptions {
+    fn has_values(&self) -> bool {
+        self.max_time.is_some() || self.collation.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AggregateParsedOptions {
+    allow_disk_use: Option<bool>,
+    batch_size: Option<u32>,
+    bypass_document_validation: Option<bool>,
+    collation: Option<Collation>,
+    comment: Option<Bson>,
+    hint: Option<Hint>,
+    max_time: Option<Duration>,
+    let_vars: Option<Document>,
+}
+
+impl AggregateParsedOptions {
+    fn has_values(&self) -> bool {
+        self.allow_disk_use.is_some()
+            || self.batch_size.is_some()
+            || self.bypass_document_validation.is_some()
+            || self.collation.is_some()
+            || self.comment.is_some()
+            || self.hint.is_some()
+            || self.max_time.is_some()
+            || self.let_vars.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
 pub struct InsertOneParsedOptions {
     write_concern: Option<WriteConcern>,
 }
@@ -316,6 +353,7 @@ pub enum QueryOperation {
     },
     Count {
         filter: Document,
+        options: Option<CountDocumentsParsedOptions>,
     },
     CountDocuments {
         filter: Document,
@@ -327,9 +365,11 @@ pub enum QueryOperation {
     Distinct {
         field: String,
         filter: Document,
+        options: Option<DistinctParsedOptions>,
     },
     Aggregate {
         pipeline: Vec<Document>,
+        options: Option<AggregateParsedOptions>,
     },
     Watch {
         pipeline: Vec<Document>,
@@ -779,12 +819,30 @@ impl<'a> QueryParser<'a> {
                 Ok(QueryOperation::FindOne { filter, projection, options })
             }
             "count" => {
-                let filter = if args_trimmed.is_empty() {
-                    Document::new()
+                let parts = if args_trimmed.is_empty() {
+                    Vec::new()
                 } else {
-                    Self::parse_json_object(args_trimmed)?
+                    Self::split_arguments(args_trimmed)
                 };
-                Ok(QueryOperation::Count { filter })
+                if parts.len() > 2 {
+                    return Err(String::from(tr(
+                        "count supports at most two arguments: query and options.",
+                    )));
+                }
+
+                let filter = if let Some(first) = parts.get(0) {
+                    if first.is_empty() { Document::new() } else { Self::parse_json_object(first)? }
+                } else {
+                    Document::new()
+                };
+
+                let options = if let Some(second) = parts.get(1) {
+                    Self::parse_count_options(second)?
+                } else {
+                    None
+                };
+
+                Ok(QueryOperation::Count { filter, options })
             }
             "distinct" => {
                 let parts = if args_trimmed.is_empty() {
@@ -792,6 +850,11 @@ impl<'a> QueryParser<'a> {
                 } else {
                     Self::split_arguments(args_trimmed)
                 };
+                if parts.len() > 3 {
+                    return Err(String::from(tr(
+                        "distinct supports at most three arguments: field, filter, and options.",
+                    )));
+                }
                 if parts.is_empty() {
                     return Err(String::from(tr("distinct requires at least the field name.")));
                 }
@@ -806,18 +869,28 @@ impl<'a> QueryParser<'a> {
                     }
                 };
 
-                let filter = if parts.len() > 1 {
-                    let filter_value: Value = Self::parse_shell_json_value(&parts[1])?;
-                    if !filter_value.is_object() {
-                        return Err(String::from(tr("The distinct filter must be a JSON object.")));
+                let filter = match parts.get(1) {
+                    Some(second) if second.trim().is_empty() => Document::new(),
+                    Some(second) => {
+                        let filter_value: Value = Self::parse_shell_json_value(second)?;
+                        if !filter_value.is_object() {
+                            return Err(String::from(tr(
+                                "The distinct filter must be a JSON object.",
+                            )));
+                        }
+                        bson::to_document(&filter_value)
+                            .map_err(|error| format!("BSON conversion error: {error}"))?
                     }
-                    bson::to_document(&filter_value)
-                        .map_err(|error| format!("BSON conversion error: {error}"))?
-                } else {
-                    Document::new()
+                    None => Document::new(),
                 };
 
-                Ok(QueryOperation::Distinct { field, filter })
+                let options = match parts.get(2) {
+                    Some(third) if third.trim().is_empty() => None,
+                    Some(third) => Self::parse_distinct_options(third.trim())?,
+                    None => None,
+                };
+
+                Ok(QueryOperation::Distinct { field, filter, options })
             }
             "aggregate" => {
                 if args_trimmed.is_empty() {
@@ -826,7 +899,14 @@ impl<'a> QueryParser<'a> {
                     )));
                 }
 
-                let value: Value = Self::parse_shell_json_value(args_trimmed)?;
+                let parts = Self::split_arguments(args_trimmed);
+                if parts.len() > 2 {
+                    return Err(String::from(tr(
+                        "aggregate supports at most two arguments: pipeline and options.",
+                    )));
+                }
+
+                let value: Value = Self::parse_shell_json_value(&parts[0])?;
                 let array = value
                     .as_array()
                     .ok_or_else(|| String::from(tr("The aggregate argument must be an array.")))?;
@@ -840,7 +920,14 @@ impl<'a> QueryParser<'a> {
                             .map_err(|error| format!("BSON conversion error: {error}"))?,
                     );
                 }
-                Ok(QueryOperation::Aggregate { pipeline })
+
+                let options = match parts.get(1) {
+                    Some(second) if second.trim().is_empty() => None,
+                    Some(second) => Self::parse_aggregate_options(second.trim())?,
+                    None => None,
+                };
+
+                Ok(QueryOperation::Aggregate { pipeline, options })
             }
             "insertOne" => {
                 if args_trimmed.is_empty() {
@@ -1315,6 +1402,172 @@ impl<'a> QueryParser<'a> {
                 other => {
                     return Err(tr_format(
                         "Parameter '{}' is not supported in countDocuments options. Allowed: limit, skip, hint, maxTimeMS.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_count_options(source: &str) -> Result<Option<CountDocumentsParsedOptions>, String> {
+        let value: Value = Self::parse_shell_json_value(source)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from(tr("count options must be a JSON object.")))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = CountDocumentsParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "limit" => {
+                    let limit = Self::parse_non_negative_u64(value, "limit")?;
+                    options.limit = Some(limit);
+                }
+                "skip" => {
+                    let skip = Self::parse_non_negative_u64(value, "skip")?;
+                    options.skip = Some(skip);
+                }
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "hint" => {
+                    let hint = match value {
+                        Value::String(name) => Hint::Name(name.clone()),
+                        Value::Object(map) => {
+                            let doc = bson::to_document(map)
+                                .map_err(|error| format!("BSON conversion error: {error}"))?;
+                            Hint::Keys(doc)
+                        }
+                        _ => {
+                            return Err(String::from(tr(
+                                "Parameter 'hint' must be a string or a JSON object.",
+                            )));
+                        }
+                    };
+                    options.hint = Some(hint);
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in count options. Allowed: limit, skip, hint, maxTimeMS.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_distinct_options(source: &str) -> Result<Option<DistinctParsedOptions>, String> {
+        let value: Value = Self::parse_shell_json_value(source)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from(tr("distinct options must be a JSON object.")))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = DistinctParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "collation" => {
+                    options.collation = Some(Self::parse_collation_value(value)?);
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in distinct options. Allowed: maxTimeMS, collation.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_aggregate_options(source: &str) -> Result<Option<AggregateParsedOptions>, String> {
+        let value: Value = Self::parse_shell_json_value(source)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from(tr("aggregate options must be a JSON object.")))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = AggregateParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "allowDiskUse" => {
+                    options.allow_disk_use = Some(Self::parse_bool_field(value, "allowDiskUse")?);
+                }
+                "batchSize" => {
+                    let batch_size = Self::parse_non_negative_u64(value, "batchSize")?;
+                    let batch_size = u32::try_from(batch_size).map_err(|_| {
+                        tr_format("Parameter '{}' must fit into u32.", &["batchSize"])
+                    })?;
+                    options.batch_size = Some(batch_size);
+                }
+                "bypassDocumentValidation" => {
+                    options.bypass_document_validation =
+                        Some(Self::parse_bool_field(value, "bypassDocumentValidation")?);
+                }
+                "collation" => {
+                    options.collation = Some(Self::parse_collation_value(value)?);
+                }
+                "comment" => {
+                    options.comment = Some(Self::parse_bson_value(value)?);
+                }
+                "hint" => {
+                    options.hint = Some(Self::parse_hint_value(value)?);
+                }
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "let" => {
+                    options.let_vars = Some(Self::parse_document_field(value, "let")?);
+                }
+                "cursor" => {
+                    let cursor = value.as_object().ok_or_else(|| {
+                        String::from(tr("aggregate cursor options must be a JSON object."))
+                    })?;
+                    for (cursor_key, cursor_value) in cursor {
+                        match cursor_key.as_str() {
+                            "batchSize" => {
+                                let batch_size =
+                                    Self::parse_non_negative_u64(cursor_value, "batchSize")?;
+                                let batch_size = u32::try_from(batch_size).map_err(|_| {
+                                    tr_format("Parameter '{}' must fit into u32.", &["batchSize"])
+                                })?;
+                                options.batch_size = Some(batch_size);
+                            }
+                            other => {
+                                return Err(tr_format(
+                                    "Parameter '{}' is not supported in aggregate cursor options. Allowed: batchSize.",
+                                    &[other],
+                                ));
+                            }
+                        }
+                    }
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in aggregate options. Allowed: allowDiskUse, batchSize, bypassDocumentValidation, collation, comment, hint, let, maxTimeMS, cursor.",
                         &[other],
                     ));
                 }
@@ -4907,13 +5160,35 @@ pub fn run_collection_query(
                 Ok(QueryResult::Documents(Vec::new()))
             }
         }
-        QueryOperation::Count { filter } => {
-            let mut action = collection.count_documents(filter);
-            if let Some(timeout) = timeout {
-                action = action.max_time(timeout);
+        QueryOperation::Count { filter, options } => {
+            let mut builder = collection.count_documents(filter);
+            let mut options_max_time = None;
+
+            if let Some(opts) = options {
+                if let Some(limit) = opts.limit {
+                    builder = builder.limit(limit);
+                }
+                if let Some(skip) = opts.skip {
+                    builder = builder.skip(skip);
+                }
+                if let Some(hint) = opts.hint {
+                    builder = builder.hint(hint);
+                }
+                options_max_time = opts.max_time;
             }
 
-            let count = action.run().map_err(|err| err.to_string())?;
+            let effective_timeout = match (options_max_time, timeout) {
+                (Some(local), Some(global)) => Some(local.min(global)),
+                (Some(local), None) => Some(local),
+                (None, Some(global)) => Some(global),
+                (None, None) => None,
+            };
+
+            if let Some(duration) = effective_timeout {
+                builder = builder.max_time(duration);
+            }
+
+            let count = builder.run().map_err(|err| err.to_string())?;
 
             let count_value = if count <= i64::MAX as u64 {
                 Bson::Int64(count as i64)
@@ -4978,8 +5253,16 @@ pub fn run_collection_query(
 
             Ok(QueryResult::Count { value: count_value })
         }
-        QueryOperation::Distinct { field, filter } => {
+        QueryOperation::Distinct { field, filter, options } => {
             let mut action = collection.distinct(field.clone(), filter);
+            if let Some(opts) = options {
+                if let Some(max_time) = opts.max_time {
+                    action = action.max_time(max_time);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+            }
             if let Some(timeout) = timeout {
                 action = action.max_time(timeout);
             }
@@ -4988,7 +5271,7 @@ pub fn run_collection_query(
 
             Ok(QueryResult::Distinct { field, values })
         }
-        QueryOperation::Aggregate { mut pipeline } => {
+        QueryOperation::Aggregate { mut pipeline, options } => {
             if skip > 0 {
                 let skip_i64 = i64::try_from(skip).unwrap_or(i64::MAX);
                 pipeline.push(doc! { "$skip": skip_i64 });
@@ -5000,6 +5283,32 @@ pub fn run_collection_query(
             }
 
             let mut action = collection.aggregate(pipeline);
+            if let Some(opts) = options {
+                if let Some(allow_disk_use) = opts.allow_disk_use {
+                    action = action.allow_disk_use(allow_disk_use);
+                }
+                if let Some(batch_size) = opts.batch_size {
+                    action = action.batch_size(batch_size);
+                }
+                if let Some(bypass_document_validation) = opts.bypass_document_validation {
+                    action = action.bypass_document_validation(bypass_document_validation);
+                }
+                if let Some(collation) = opts.collation {
+                    action = action.collation(collation);
+                }
+                if let Some(comment) = opts.comment {
+                    action = action.comment(comment);
+                }
+                if let Some(hint) = opts.hint {
+                    action = action.hint(hint);
+                }
+                if let Some(max_time) = opts.max_time {
+                    action = action.max_time(max_time);
+                }
+                if let Some(let_vars) = opts.let_vars {
+                    action = action.let_vars(let_vars);
+                }
+            }
             if let Some(timeout) = timeout {
                 action = action.max_time(timeout);
             }

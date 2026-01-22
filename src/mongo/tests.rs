@@ -1106,6 +1106,39 @@ fn connection_flow_via_messages() {
         other => panic!("expected aggregation documents result, got {:?}", other),
     }
 
+    //
+    // Step 4.4.1: Aggregation with options.
+    //
+    let aggregate_points_with_options = format!(
+        concat!(
+            "db.getCollection('{collection}').aggregate([",
+            "{{\"$match\": {{\"department\": \"IT\"}}}}, ",
+            "{{\"$group\": {{\"_id\": null, \"total\": {{\"$sum\": \"$points\"}}, \"count\": {{\"$sum\": 1}}}}}}, ",
+            "{{\"$project\": {{\"value\": {{\"$divide\": [\"$total\", \"$count\"]}}}}}}",
+            "], {{\"maxTimeMS\": 1000}})"
+        ),
+        collection = collection_name_2
+    );
+    let aggregate_options_result =
+        execute_query(&mut app, secondary_tab_id, &aggregate_points_with_options, &shared_client);
+    match &aggregate_options_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 1);
+            if let Some(doc) = values.first().and_then(|b| b.as_document()) {
+                let value_bson = doc.get("value").cloned().unwrap_or(Bson::Null);
+                match value_bson {
+                    Bson::Int32(v) => assert_eq!(v, 15),
+                    Bson::Int64(v) => assert_eq!(v, 15),
+                    Bson::Double(v) => assert!((v - 15.0).abs() < f64::EPSILON),
+                    other => panic!("expected numeric value 15, got {:?}", other),
+                }
+            } else {
+                panic!("aggregate options result missing document payload");
+            }
+        }
+        other => panic!("expected aggregation documents result, got {:?}", other),
+    }
+
     let numeric_field = |document: &Document, key: &str| -> Option<f64> {
         match document.get(key) {
             Some(Bson::Int32(v)) => Some(*v as f64),
@@ -1136,6 +1169,26 @@ fn connection_flow_via_messages() {
     }
 
     //
+    // Step 4.5.1: Distinct with options should return Alex, Anya, and Mark.
+    //
+    let distinct_with_options = format!(
+        "db.getCollection('{collection}').distinct('name', {{\"points\": {{\"$lt\": 20}}}}, {{\"maxTimeMS\": 1000}})",
+        collection = collection_name_2
+    );
+    let distinct_with_options_result =
+        execute_query(&mut app, secondary_tab_id, &distinct_with_options, &shared_client);
+    match &distinct_with_options_result {
+        QueryResult::Distinct { field, values } => {
+            assert_eq!(field, "name");
+            let mut names: Vec<String> =
+                values.iter().filter_map(|b| b.as_str().map(|s| s.to_string())).collect();
+            names.sort();
+            assert_eq!(names, vec!["Alex".to_string(), "Mark".to_string()]);
+        }
+        other => panic!("expected distinct result for names with options, got {:?}", other),
+    }
+
+    //
     // Step 4.6.1: count() should report 4 documents.
     //
     let count_all =
@@ -1144,6 +1197,20 @@ fn connection_flow_via_messages() {
     match &count_all_result {
         QueryResult::Count { value } => assert_eq!(*value, Bson::Int64(4)),
         other => panic!("expected count result with value 4, got {:?}", other),
+    }
+
+    //
+    // Step 4.6.1.1: count() with options should respect limit.
+    //
+    let count_with_options = format!(
+        "db.getCollection('{collection}').count({{\"name\": \"Alex\"}}, {{\"limit\": 1}})",
+        collection = collection_name_2
+    );
+    let count_with_options_result =
+        execute_query(&mut app, secondary_tab_id, &count_with_options, &shared_client);
+    match &count_with_options_result {
+        QueryResult::Count { value } => assert_eq!(*value, Bson::Int64(1)),
+        other => panic!("expected count result with value 1, got {:?}", other),
     }
 
     //
