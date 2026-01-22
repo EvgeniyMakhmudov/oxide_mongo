@@ -237,7 +237,9 @@ impl FindOneAndDeleteParsedOptions {
 
 #[derive(Debug, Clone, Default)]
 pub struct FindCursorChain {
+    projection: Option<Document>,
     sort: Option<Document>,
+    collation: Option<Collation>,
     hint: Option<Hint>,
     skip: Option<u64>,
     limit: Option<u64>,
@@ -247,10 +249,31 @@ pub struct FindCursorChain {
 
 impl FindCursorChain {
     fn has_effect(&self) -> bool {
-        self.sort.is_some()
+        self.projection.is_some()
+            || self.sort.is_some()
+            || self.collation.is_some()
             || self.hint.is_some()
             || self.skip.is_some()
             || self.limit.is_some()
+            || self.max_time.is_some()
+            || self.comment.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct FindOneParsedOptions {
+    sort: Option<Document>,
+    collation: Option<Collation>,
+    hint: Option<Hint>,
+    max_time: Option<Duration>,
+    comment: Option<Bson>,
+}
+
+impl FindOneParsedOptions {
+    fn has_values(&self) -> bool {
+        self.sort.is_some()
+            || self.collation.is_some()
+            || self.hint.is_some()
             || self.max_time.is_some()
             || self.comment.is_some()
     }
@@ -288,6 +311,8 @@ pub enum QueryOperation {
     },
     FindOne {
         filter: Document,
+        projection: Option<Document>,
+        options: Option<FindOneParsedOptions>,
     },
     Count {
         filter: Document,
@@ -414,12 +439,8 @@ impl<'a> QueryParser<'a> {
     ) -> Result<QueryOperation, String> {
         let (method_name, args, remainder) = Self::extract_primary_method(after_collection)?;
         if method_name == "find" {
-            let filter = if args.trim().is_empty() {
-                Document::new()
-            } else {
-                Self::parse_json_object(args.trim())?
-            };
-            return self.parse_find_chain(filter, remainder, false);
+            let (filter, projection, options) = Self::parse_find_arguments(args.trim())?;
+            return self.parse_find_chain(filter, projection, options, remainder, false);
         }
         if method_name == "explain" {
             if !args.trim().is_empty() {
@@ -429,12 +450,8 @@ impl<'a> QueryParser<'a> {
             if next_method != "find" {
                 return Err(String::from(tr("explain must be followed by find(...).")));
             }
-            let filter = if next_args.trim().is_empty() {
-                Document::new()
-            } else {
-                Self::parse_json_object(next_args.trim())?
-            };
-            return self.parse_find_chain(filter, next_remainder, true);
+            let (filter, projection, options) = Self::parse_find_arguments(next_args.trim())?;
+            return self.parse_find_chain(filter, projection, options, next_remainder, true);
         }
         if method_name == "watch" {
             if !remainder.trim().is_empty() {
@@ -758,20 +775,8 @@ impl<'a> QueryParser<'a> {
                 Ok(QueryOperation::EstimatedDocumentCount { options })
             }
             "findOne" => {
-                let filter = if args_trimmed.is_empty() {
-                    Document::new()
-                } else {
-                    let bson = Self::parse_shell_bson_value(args_trimmed)?;
-                    match bson {
-                        Bson::Document(doc) => doc,
-                        other => {
-                            let mut doc = Document::new();
-                            doc.insert("_id", other);
-                            doc
-                        }
-                    }
-                };
-                Ok(QueryOperation::FindOne { filter })
+                let (filter, projection, options) = Self::parse_find_one_arguments(args_trimmed)?;
+                Ok(QueryOperation::FindOne { filter, projection, options })
             }
             "count" => {
                 let filter = if args_trimmed.is_empty() {
@@ -1776,13 +1781,196 @@ impl<'a> QueryParser<'a> {
         }
     }
 
+    fn parse_find_arguments(
+        source: &str,
+    ) -> Result<(Document, Option<Document>, Option<FindCursorChain>), String> {
+        if source.trim().is_empty() {
+            return Ok((Document::new(), None, None));
+        }
+
+        let parts = Self::split_arguments(source);
+        if parts.len() > 3 {
+            return Err(String::from(tr(
+                "find supports at most three arguments: query, projection, and options.",
+            )));
+        }
+
+        let filter = match parts.get(0) {
+            Some(first) if first.trim().is_empty() => Document::new(),
+            Some(first) => Self::parse_json_object(first.trim())?,
+            None => Document::new(),
+        };
+
+        let projection = match parts.get(1) {
+            Some(second) if second.trim().is_empty() => None,
+            Some(second) => {
+                let bson = Self::parse_shell_bson_value(second.trim())?;
+                match bson {
+                    Bson::Document(doc) => Some(doc),
+                    _ => {
+                        return Err(String::from(tr("find projection must be a JSON object.")));
+                    }
+                }
+            }
+            None => None,
+        };
+
+        let options = match parts.get(2) {
+            Some(third) if third.trim().is_empty() => None,
+            Some(third) => Self::parse_find_options(third.trim())?,
+            None => None,
+        };
+
+        Ok((filter, projection, options))
+    }
+
+    fn parse_find_options(source: &str) -> Result<Option<FindCursorChain>, String> {
+        let value: Value = Self::parse_shell_json_value(source)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from(tr("find options must be a JSON object.")))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = FindCursorChain::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "sort" => options.sort = Some(Self::parse_document_field(value, "sort")?),
+                "hint" => options.hint = Some(Self::parse_hint_value(value)?),
+                "skip" => {
+                    let skip = Self::parse_non_negative_u64(value, "skip")?;
+                    options.skip = if skip == 0 { None } else { Some(skip) };
+                }
+                "limit" => {
+                    let limit = Self::parse_non_negative_u64(value, "limit")?;
+                    options.limit = Some(limit);
+                }
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "comment" => {
+                    options.comment = Some(Self::parse_bson_value(value)?);
+                }
+                "collation" => {
+                    options.collation = Some(Self::parse_collation_value(value)?);
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in find options. Allowed: sort, hint, skip, limit, maxTimeMS, comment, collation.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        if options.has_effect() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_find_one_arguments(
+        source: &str,
+    ) -> Result<(Document, Option<Document>, Option<FindOneParsedOptions>), String> {
+        if source.trim().is_empty() {
+            return Ok((Document::new(), None, None));
+        }
+
+        let parts = Self::split_arguments(source);
+        if parts.len() > 3 {
+            return Err(String::from(tr(
+                "findOne supports at most three arguments: query, projection, and options.",
+            )));
+        }
+
+        let filter = match parts.get(0) {
+            Some(first) if first.trim().is_empty() => Document::new(),
+            Some(first) => {
+                let bson = Self::parse_shell_bson_value(first.trim())?;
+                match bson {
+                    Bson::Document(doc) => doc,
+                    other => {
+                        let mut doc = Document::new();
+                        doc.insert("_id", other);
+                        doc
+                    }
+                }
+            }
+            None => Document::new(),
+        };
+
+        let projection = match parts.get(1) {
+            Some(second) if second.trim().is_empty() => None,
+            Some(second) => {
+                let bson = Self::parse_shell_bson_value(second.trim())?;
+                match bson {
+                    Bson::Document(doc) => Some(doc),
+                    _ => {
+                        return Err(String::from(tr("findOne projection must be a JSON object.")));
+                    }
+                }
+            }
+            None => None,
+        };
+
+        let options = match parts.get(2) {
+            Some(third) if third.trim().is_empty() => None,
+            Some(third) => Self::parse_find_one_options(third.trim())?,
+            None => None,
+        };
+
+        Ok((filter, projection, options))
+    }
+
+    fn parse_find_one_options(source: &str) -> Result<Option<FindOneParsedOptions>, String> {
+        let value: Value = Self::parse_shell_json_value(source)?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from(tr("findOne options must be a JSON object.")))?;
+
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = FindOneParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "sort" => options.sort = Some(Self::parse_document_field(value, "sort")?),
+                "hint" => options.hint = Some(Self::parse_hint_value(value)?),
+                "maxTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxTimeMS")?;
+                    options.max_time = Some(Duration::from_millis(millis));
+                }
+                "comment" => {
+                    options.comment = Some(Self::parse_bson_value(value)?);
+                }
+                "collation" => {
+                    options.collation = Some(Self::parse_collation_value(value)?);
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in findOne options. Allowed: sort, hint, maxTimeMS, comment, collation.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
     fn parse_find_chain(
         &self,
         filter: Document,
+        projection: Option<Document>,
+        base_options: Option<FindCursorChain>,
         remainder: &str,
         explain_mode: bool,
     ) -> Result<QueryOperation, String> {
-        let mut modifiers = FindCursorChain::default();
+        let mut modifiers = base_options.unwrap_or_default();
+        modifiers.projection = projection;
         let mut tail = remainder.trim_start();
 
         while !tail.is_empty() {
@@ -1875,6 +2063,14 @@ impl<'a> QueryParser<'a> {
 
         if let Some(sort) = modifiers.sort {
             find_doc.insert("sort", Bson::Document(sort));
+        }
+        if let Some(projection) = modifiers.projection {
+            find_doc.insert("projection", Bson::Document(projection));
+        }
+        if let Some(collation) = modifiers.collation {
+            let collation_doc = bson::to_document(&collation)
+                .map_err(|error| format!("BSON conversion error: {error}"))?;
+            find_doc.insert("collation", Bson::Document(collation_doc));
         }
         if let Some(hint) = modifiers.hint {
             let hint_bson = match hint {
@@ -4606,8 +4802,14 @@ pub fn run_collection_query(
             let mut chain_max_time = None;
 
             if let Some(opts) = options {
+                if let Some(projection) = opts.projection {
+                    builder = builder.projection(projection);
+                }
                 if let Some(sort) = opts.sort {
                     builder = builder.sort(sort);
+                }
+                if let Some(collation) = opts.collation {
+                    builder = builder.collation(collation);
                 }
                 if let Some(hint) = opts.hint {
                     builder = builder.hint(hint);
@@ -4660,15 +4862,41 @@ pub fn run_collection_query(
 
             Ok(QueryResult::Documents(documents))
         }
-        QueryOperation::FindOne { filter } => {
+        QueryOperation::FindOne { filter, projection, options } => {
             let mut builder = collection.find(filter);
+            if let Some(projection) = projection {
+                builder = builder.projection(projection);
+            }
+            let mut options_max_time = None;
+            if let Some(opts) = options {
+                if let Some(sort) = opts.sort {
+                    builder = builder.sort(sort);
+                }
+                if let Some(collation) = opts.collation {
+                    builder = builder.collation(collation);
+                }
+                if let Some(hint) = opts.hint {
+                    builder = builder.hint(hint);
+                }
+                if let Some(comment) = opts.comment {
+                    builder = builder.comment(comment);
+                }
+                options_max_time = opts.max_time;
+            }
             if skip > 0 {
                 builder = builder.skip(skip);
             }
             builder = builder.limit(1);
 
-            if let Some(timeout) = timeout {
-                builder = builder.max_time(timeout);
+            let effective_timeout = match (options_max_time, timeout) {
+                (Some(local), Some(global)) => Some(local.min(global)),
+                (Some(local), None) => Some(local),
+                (None, Some(global)) => Some(global),
+                (None, None) => None,
+            };
+
+            if let Some(duration) = effective_timeout {
+                builder = builder.max_time(duration);
             }
 
             let cursor = builder.run().map_err(|err| err.to_string())?;

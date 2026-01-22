@@ -980,6 +980,37 @@ fn connection_flow_via_messages() {
     }
 
     //
+    // Step 4.2.5: Find with projection and options should return only name and points fields.
+    //
+    let find_projection = format!(
+        "db.getCollection('{collection}').find({{\"name\": \"Alex\"}}, {{\"_id\": 0, \"name\": 1, \"points\": 1}}, {{\"sort\": {{\"points\": 1}}}})",
+        collection = collection_name_2
+    );
+    let find_projection_result =
+        execute_query(&mut app, secondary_tab_id, &find_projection, &shared_client);
+    match &find_projection_result {
+        QueryResult::Documents(values) => {
+            assert_eq!(values.len(), 2);
+            let mut points_values = Vec::new();
+            for value in values {
+                let document =
+                    value.as_document().cloned().expect("projection result should be a document");
+                assert_eq!(document.get_str("name").unwrap_or_default(), "Alex");
+                assert!(document.get("points").is_some(), "projection should include points");
+                assert!(!document.contains_key("_id"), "projection should exclude _id");
+                assert!(
+                    !document.contains_key("department"),
+                    "projection should exclude department"
+                );
+                assert!(!document.contains_key("starts"), "projection should exclude starts");
+                points_values.push(get_numeric_i64(&document, "points"));
+            }
+            assert_eq!(points_values, vec![8, 10]);
+        }
+        other => panic!("expected projection documents, got {:?}", other),
+    }
+
+    //
     // Step 4.3: findOne on date range should return a single document, then findOne by _id.
     //
     let find_one_date_range = format!(
@@ -1016,6 +1047,30 @@ fn connection_flow_via_messages() {
             panic!("expected single document for _id lookup, got list of len {}", values.len())
         }
         other => panic!("expected single document for _id lookup, got {:?}", other),
+    }
+
+    //
+    // Step 4.3.1: findOne with projection and options should return only name and points fields.
+    //
+    let find_one_projection = format!(
+        "db.getCollection('{collection}').findOne({{\"name\": \"Alex\"}}, {{\"_id\": 0, \"name\": 1, \"points\": 1}}, {{\"sort\": {{\"points\": -1}}}})",
+        collection = collection_name_2
+    );
+    let find_one_projection_result =
+        execute_query(&mut app, secondary_tab_id, &find_one_projection, &shared_client);
+    match &find_one_projection_result {
+        QueryResult::SingleDocument { document } => {
+            assert_eq!(document.get_str("name").unwrap_or_default(), "Alex");
+            assert!(document.get("points").is_some(), "projection should include points");
+            assert!(!document.contains_key("_id"), "projection should exclude _id");
+            assert!(!document.contains_key("department"), "projection should exclude department");
+            assert!(!document.contains_key("starts"), "projection should exclude starts");
+            assert_eq!(get_numeric_i64(document, "points"), 10);
+        }
+        QueryResult::Documents(values) => {
+            panic!("expected single document for projection, got list of len {}", values.len())
+        }
+        other => panic!("expected single document for projection, got {:?}", other),
     }
 
     //
