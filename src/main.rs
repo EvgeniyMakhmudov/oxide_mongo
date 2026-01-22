@@ -40,8 +40,8 @@ use mongo::connection::{
     ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections, filter_databases,
 };
 use mongo::query::{
-    QueryOperation, QueryResult, ReplicaSetCommand, WatchTarget, open_change_stream,
-    parse_collection_query_with_collection, run_collection_query,
+    QueryOperation, QueryResult, ReplicaSetCommand, WatchParsedOptions, WatchTarget,
+    open_change_stream, parse_collection_query_with_collection, run_collection_query,
 };
 use mongo::shell;
 use mongo::ssh_tunnel::SshTunnel;
@@ -5514,7 +5514,7 @@ impl App {
             if timeout_secs == 0 { None } else { Some(Duration::from_secs(timeout_secs)) };
 
         match operation {
-            QueryOperation::Watch { pipeline, target } => {
+            QueryOperation::Watch { pipeline, target, options } => {
                 let target_label = match target {
                     WatchTarget::Collection => "collection",
                     WatchTarget::Database => "database",
@@ -5538,6 +5538,7 @@ impl App {
                     collection_name,
                     target,
                     pipeline,
+                    options,
                     limit,
                 )
             }
@@ -5572,13 +5573,20 @@ impl App {
         collection_name: String,
         target: WatchTarget,
         pipeline: Vec<Document>,
+        options: Option<WatchParsedOptions>,
         limit: u64,
     ) -> Task<Message> {
         let started = Instant::now();
         let capped_limit = if limit > usize::MAX as u64 { usize::MAX } else { limit as usize };
 
-        let state = match open_change_stream(&handle, &db_name, &collection_name, target, pipeline)
-        {
+        let state = match open_change_stream(
+            &handle,
+            &db_name,
+            &collection_name,
+            target,
+            pipeline,
+            options,
+        ) {
             Ok(change_stream) => WatchStreamState {
                 change_stream: Some(change_stream),
                 documents: Vec::new(),

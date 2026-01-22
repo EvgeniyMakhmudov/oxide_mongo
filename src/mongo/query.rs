@@ -16,6 +16,7 @@ use mongodb::options::{
     InsertOneModel, ReplaceOneModel, ReturnDocument, UpdateManyModel, UpdateModifications,
     UpdateOneModel, WriteConcern, WriteModel,
 };
+use mongodb::options::{FullDocumentBeforeChangeType, FullDocumentType};
 use mongodb::sync::Client;
 use serde_json::Value;
 use uuid::Uuid;
@@ -86,6 +87,31 @@ impl AggregateParsedOptions {
             || self.hint.is_some()
             || self.max_time.is_some()
             || self.let_vars.is_some()
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WatchParsedOptions {
+    full_document: Option<FullDocumentType>,
+    full_document_before_change: Option<FullDocumentBeforeChangeType>,
+    max_await_time: Option<Duration>,
+    batch_size: Option<u32>,
+    collation: Option<Collation>,
+    show_expanded_events: Option<bool>,
+    comment: Option<Bson>,
+    start_at_operation_time: Option<BsonTimestamp>,
+}
+
+impl WatchParsedOptions {
+    fn has_values(&self) -> bool {
+        self.full_document.is_some()
+            || self.full_document_before_change.is_some()
+            || self.max_await_time.is_some()
+            || self.batch_size.is_some()
+            || self.collation.is_some()
+            || self.show_expanded_events.is_some()
+            || self.comment.is_some()
+            || self.start_at_operation_time.is_some()
     }
 }
 
@@ -374,6 +400,7 @@ pub enum QueryOperation {
     Watch {
         pipeline: Vec<Document>,
         target: WatchTarget,
+        options: Option<WatchParsedOptions>,
     },
     InsertOne {
         document: Document,
@@ -499,8 +526,12 @@ impl<'a> QueryParser<'a> {
                     "Only a single method call is supported after specifying the collection.",
                 )));
             }
-            let pipeline = self.parse_watch_pipeline(args.trim())?;
-            return Ok(QueryOperation::Watch { pipeline, target: WatchTarget::Collection });
+            let (pipeline, options) = self.parse_watch_arguments(args.trim())?;
+            return Ok(QueryOperation::Watch {
+                pipeline,
+                target: WatchTarget::Collection,
+                options,
+            });
         }
 
         if !remainder.trim().is_empty() {
@@ -1577,6 +1608,81 @@ impl<'a> QueryParser<'a> {
         if options.has_values() { Ok(Some(options)) } else { Ok(None) }
     }
 
+    fn parse_watch_options(source: &str) -> Result<Option<WatchParsedOptions>, String> {
+        let value: Value = Self::parse_shell_json_value(source)?;
+        Self::parse_watch_options_value(value)
+    }
+
+    fn parse_watch_options_from_object(
+        object: &serde_json::Map<String, Value>,
+    ) -> Result<Option<WatchParsedOptions>, String> {
+        if object.is_empty() {
+            return Ok(None);
+        }
+
+        let mut options = WatchParsedOptions::default();
+
+        for (key, value) in object {
+            match key.as_str() {
+                "fullDocument" => {
+                    if let Some(full_document) = Self::parse_full_document_value(value)? {
+                        options.full_document = Some(full_document);
+                    }
+                }
+                "fullDocumentBeforeChange" => {
+                    options.full_document_before_change =
+                        Some(Self::parse_full_document_before_change_value(value)?);
+                }
+                "maxAwaitTimeMS" => {
+                    let millis = Self::parse_non_negative_u64(value, "maxAwaitTimeMS")?;
+                    options.max_await_time = Some(Duration::from_millis(millis));
+                }
+                "batchSize" => {
+                    let batch_size = Self::parse_non_negative_u64(value, "batchSize")?;
+                    let batch_size = u32::try_from(batch_size).map_err(|_| {
+                        tr_format("Parameter '{}' must fit into u32.", &["batchSize"])
+                    })?;
+                    options.batch_size = Some(batch_size);
+                }
+                "collation" => {
+                    options.collation = Some(Self::parse_collation_value(value)?);
+                }
+                "showExpandedEvents" => {
+                    options.show_expanded_events =
+                        Some(Self::parse_bool_field(value, "showExpandedEvents")?);
+                }
+                "comment" => {
+                    options.comment = Some(Self::parse_bson_value(value)?);
+                }
+                "startAtOperationTime" => {
+                    options.start_at_operation_time =
+                        Some(Self::parse_timestamp_field(value, "startAtOperationTime")?);
+                }
+                "resumeAfter" | "startAfter" => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in watch options. Resume tokens are not supported.",
+                        &[key],
+                    ));
+                }
+                other => {
+                    return Err(tr_format(
+                        "Parameter '{}' is not supported in watch options. Allowed: fullDocument, fullDocumentBeforeChange, maxAwaitTimeMS, batchSize, collation, showExpandedEvents, comment, startAtOperationTime.",
+                        &[other],
+                    ));
+                }
+            }
+        }
+
+        if options.has_values() { Ok(Some(options)) } else { Ok(None) }
+    }
+
+    fn parse_watch_options_value(value: Value) -> Result<Option<WatchParsedOptions>, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| String::from(tr("watch options must be a JSON object.")))?;
+        Self::parse_watch_options_from_object(object)
+    }
+
     fn parse_estimated_count_options(
         source: &str,
     ) -> Result<Option<EstimatedDocumentCountParsedOptions>, String> {
@@ -1984,8 +2090,8 @@ impl<'a> QueryParser<'a> {
                 Ok(QueryOperation::DatabaseCommand { db: String::from("admin"), command })
             }
             "watch" => {
-                let pipeline = self.parse_watch_pipeline(args_trimmed)?;
-                Ok(QueryOperation::Watch { pipeline, target: WatchTarget::Database })
+                let (pipeline, options) = self.parse_watch_arguments(args_trimmed)?;
+                Ok(QueryOperation::Watch { pipeline, target: WatchTarget::Database, options })
             }
             other => Err(tr_format(
                 "Method db.{} is not supported. Available methods: stats, runCommand, adminCommand, watch.",
@@ -1994,19 +2100,7 @@ impl<'a> QueryParser<'a> {
         }
     }
 
-    fn parse_watch_pipeline(&self, source: &str) -> Result<Vec<Document>, String> {
-        if source.trim().is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let parts = Self::split_arguments(source);
-        if parts.len() > 1 {
-            return Err(String::from(tr(
-                "watch accepts at most one argument (the pipeline array).",
-            )));
-        }
-
-        let value: Value = Self::parse_shell_json_value(&parts[0])?;
+    fn parse_watch_pipeline_value(&self, value: Value) -> Result<Vec<Document>, String> {
         match value {
             Value::Array(items) => {
                 let mut pipeline = Vec::with_capacity(items.len());
@@ -2032,6 +2126,54 @@ impl<'a> QueryParser<'a> {
                 "watch pipeline must be an array of stages or a single stage object.",
             ))),
         }
+    }
+
+    fn parse_watch_arguments(
+        &self,
+        source: &str,
+    ) -> Result<(Vec<Document>, Option<WatchParsedOptions>), String> {
+        if source.trim().is_empty() {
+            return Ok((Vec::new(), None));
+        }
+
+        let parts = Self::split_arguments(source);
+        if parts.len() > 2 {
+            return Err(String::from(tr(
+                "watch supports at most two arguments: pipeline and options.",
+            )));
+        }
+
+        if parts.len() == 1 {
+            let value: Value = Self::parse_shell_json_value(&parts[0])?;
+            return match value {
+                Value::Array(_) => Ok((self.parse_watch_pipeline_value(value)?, None)),
+                Value::Object(object) => {
+                    if Self::watch_object_is_options(&object) {
+                        let options = Self::parse_watch_options_from_object(&object)?;
+                        Ok((Vec::new(), options))
+                    } else {
+                        Ok((self.parse_watch_pipeline_value(Value::Object(object))?, None))
+                    }
+                }
+                _ => Err(String::from(tr(
+                    "watch pipeline must be an array of stages or a single stage object.",
+                ))),
+            };
+        }
+
+        let pipeline_value: Value = Self::parse_shell_json_value(&parts[0])?;
+        let pipeline = self.parse_watch_pipeline_value(pipeline_value)?;
+        let options = match parts.get(1) {
+            Some(second) if second.trim().is_empty() => None,
+            Some(second) => Self::parse_watch_options(second.trim())?,
+            None => None,
+        };
+
+        Ok((pipeline, options))
+    }
+
+    fn watch_object_is_options(object: &serde_json::Map<String, Value>) -> bool {
+        object.keys().all(|key| !key.starts_with('$'))
     }
 
     fn parse_find_arguments(
@@ -3123,6 +3265,49 @@ impl<'a> QueryParser<'a> {
         value.as_bool().ok_or_else(|| {
             tr_format("Parameter '{}' must be a boolean value (true/false).", &[field])
         })
+    }
+
+    fn parse_full_document_value(value: &Value) -> Result<Option<FullDocumentType>, String> {
+        let text = value
+            .as_str()
+            .ok_or_else(|| tr_format("Parameter '{}' must be a string.", &["fullDocument"]))?;
+        let result = match text {
+            "updateLookup" => Some(FullDocumentType::UpdateLookup),
+            "whenAvailable" => Some(FullDocumentType::WhenAvailable),
+            "required" => Some(FullDocumentType::Required),
+            "default" => None,
+            other => {
+                return Err(tr_format(
+                    "Parameter '{}' has an unsupported value '{}'.",
+                    &["fullDocument", other],
+                ));
+            }
+        };
+        Ok(result)
+    }
+
+    fn parse_full_document_before_change_value(
+        value: &Value,
+    ) -> Result<FullDocumentBeforeChangeType, String> {
+        let text = value.as_str().ok_or_else(|| {
+            tr_format("Parameter '{}' must be a string.", &["fullDocumentBeforeChange"])
+        })?;
+        match text {
+            "whenAvailable" => Ok(FullDocumentBeforeChangeType::WhenAvailable),
+            "required" => Ok(FullDocumentBeforeChangeType::Required),
+            "off" => Ok(FullDocumentBeforeChangeType::Off),
+            other => Err(tr_format(
+                "Parameter '{}' has an unsupported value '{}'.",
+                &["fullDocumentBeforeChange", other],
+            )),
+        }
+    }
+
+    fn parse_timestamp_field(value: &Value, field: &str) -> Result<BsonTimestamp, String> {
+        match Self::parse_bson_value(value)? {
+            Bson::Timestamp(timestamp) => Ok(timestamp),
+            _ => Err(tr_format("Parameter '{}' must be a timestamp.", &[field])),
+        }
     }
 
     fn parse_document_field(value: &Value, field: &str) -> Result<Document, String> {
@@ -4608,25 +4793,76 @@ pub(crate) fn open_change_stream(
     collection_name: &str,
     target: WatchTarget,
     pipeline: Vec<Document>,
+    options: Option<WatchParsedOptions>,
 ) -> Result<mongodb::sync::ChangeStream<ChangeStreamEvent<Document>>, String> {
     match target {
         WatchTarget::Collection => {
             let collection = client.database(db_name).collection::<Document>(collection_name);
-            let watch = collection.watch();
-            if pipeline.is_empty() {
-                watch.run().map_err(|err| err.to_string())
-            } else {
-                watch.pipeline(pipeline).run().map_err(|err| err.to_string())
+            let mut watch = collection.watch();
+            if !pipeline.is_empty() {
+                watch = watch.pipeline(pipeline);
             }
+            if let Some(opts) = options {
+                if let Some(full_document) = opts.full_document {
+                    watch = watch.full_document(full_document);
+                }
+                if let Some(full_document_before_change) = opts.full_document_before_change {
+                    watch = watch.full_document_before_change(full_document_before_change);
+                }
+                if let Some(max_await_time) = opts.max_await_time {
+                    watch = watch.max_await_time(max_await_time);
+                }
+                if let Some(batch_size) = opts.batch_size {
+                    watch = watch.batch_size(batch_size);
+                }
+                if let Some(collation) = opts.collation {
+                    watch = watch.collation(collation);
+                }
+                if let Some(show_expanded_events) = opts.show_expanded_events {
+                    watch = watch.show_expanded_events(show_expanded_events);
+                }
+                if let Some(comment) = opts.comment {
+                    watch = watch.comment(comment);
+                }
+                if let Some(start_at_operation_time) = opts.start_at_operation_time {
+                    watch = watch.start_at_operation_time(start_at_operation_time);
+                }
+            }
+            watch.run().map_err(|err| err.to_string())
         }
         WatchTarget::Database => {
             let database = client.database(db_name);
-            let watch = database.watch();
-            if pipeline.is_empty() {
-                watch.run().map_err(|err| err.to_string())
-            } else {
-                watch.pipeline(pipeline).run().map_err(|err| err.to_string())
+            let mut watch = database.watch();
+            if !pipeline.is_empty() {
+                watch = watch.pipeline(pipeline);
             }
+            if let Some(opts) = options {
+                if let Some(full_document) = opts.full_document {
+                    watch = watch.full_document(full_document);
+                }
+                if let Some(full_document_before_change) = opts.full_document_before_change {
+                    watch = watch.full_document_before_change(full_document_before_change);
+                }
+                if let Some(max_await_time) = opts.max_await_time {
+                    watch = watch.max_await_time(max_await_time);
+                }
+                if let Some(batch_size) = opts.batch_size {
+                    watch = watch.batch_size(batch_size);
+                }
+                if let Some(collation) = opts.collation {
+                    watch = watch.collation(collation);
+                }
+                if let Some(show_expanded_events) = opts.show_expanded_events {
+                    watch = watch.show_expanded_events(show_expanded_events);
+                }
+                if let Some(comment) = opts.comment {
+                    watch = watch.comment(comment);
+                }
+                if let Some(start_at_operation_time) = opts.start_at_operation_time {
+                    watch = watch.start_at_operation_time(start_at_operation_time);
+                }
+            }
+            watch.run().map_err(|err| err.to_string())
         }
     }
 }
@@ -5323,8 +5559,9 @@ pub fn run_collection_query(
 
             Ok(QueryResult::Documents(documents))
         }
-        QueryOperation::Watch { pipeline, target } => {
-            let stream = open_change_stream(&client, &db_name, &collection_name, target, pipeline)?;
+        QueryOperation::Watch { pipeline, target, options } => {
+            let stream =
+                open_change_stream(&client, &db_name, &collection_name, target, pipeline, options)?;
             let documents = collect_watch_documents(stream, limit)?;
             Ok(QueryResult::Documents(documents))
         }
