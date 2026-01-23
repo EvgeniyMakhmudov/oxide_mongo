@@ -1577,17 +1577,24 @@ fn connection_flow_via_messages() {
         format!("db.getCollection('{collection}').getIndexes()", collection = collection_name_2);
     let get_indexes_result =
         execute_query(&mut app, secondary_tab_id, &get_indexes, &shared_client);
-    let index_names: Vec<String> = match &get_indexes_result {
-        QueryResult::Indexes(values) => values
-            .iter()
-            .filter_map(|b| b.as_document())
-            .filter_map(|doc| doc.get_str("name").ok().map(|s| s.to_string()))
-            .collect(),
+    let index_docs: Vec<Document> = match &get_indexes_result {
+        QueryResult::Indexes(values) => {
+            values.iter().filter_map(|b| b.as_document()).cloned().collect()
+        }
         other => panic!("expected index list, got {:?}", other),
     };
+    let index_names: Vec<String> = index_docs
+        .iter()
+        .filter_map(|doc| doc.get_str("name").ok().map(|s| s.to_string()))
+        .collect();
     assert_eq!(index_names.len(), 2);
     assert!(index_names.contains(&String::from("_id_")));
     assert!(index_names.contains(&String::from("name_asc")));
+    let name_index = index_docs
+        .iter()
+        .find(|doc| doc.get_str("name").ok() == Some("name_asc"))
+        .expect("name_asc index should exist");
+    assert_eq!(get_numeric_i64(name_index, "expireAfterSeconds"), 3600);
 
     //
     // Step 5.2: Reinsert documents for further index tests.
@@ -1617,7 +1624,7 @@ fn connection_flow_via_messages() {
     // Step 5.3: Create multiple indexes and verify names list.
     //
     let create_indexes = format!(
-        "db.getCollection('{collection}').createIndexes([{{starts: 1}}, {{points: -1}}])",
+        "db.getCollection('{collection}').createIndexes([{{key: {{starts: 1}}, name: \"starts_custom\"}}, {{points: -1}}])",
         collection = collection_name_2
     );
     let create_indexes_result =
@@ -1646,7 +1653,7 @@ fn connection_flow_via_messages() {
             "_id_".to_string(),
             "name_asc".to_string(),
             "points_-1".to_string(),
-            "starts_1".to_string()
+            "starts_custom".to_string()
         ]
     );
 
@@ -1839,7 +1846,7 @@ fn connection_flow_via_messages() {
     remaining_indexes.sort();
     assert_eq!(
         remaining_indexes,
-        vec!["_id_".to_string(), "points_-1".to_string(), "starts_1".to_string()]
+        vec!["_id_".to_string(), "points_-1".to_string(), "starts_custom".to_string()]
     );
 
     //
