@@ -352,7 +352,7 @@ pub enum ReplicaSetCommand {
     PrintSecondaryReplicationInfo,
     Initiate { config: Option<Document> },
     Reconfig { config: Document, options: Option<Document> },
-    StepDown { seconds: i64, force: Option<bool> },
+    StepDown { seconds: i64, secondary_catchup_secs: Option<i64> },
     Freeze { seconds: i64 },
     Add { member: Bson, arbiter: bool },
     Remove { host: String },
@@ -1870,7 +1870,7 @@ impl<'a> QueryParser<'a> {
                 };
                 if parts.len() > 2 {
                     return Err(String::from(tr(
-                        "rs.stepDown expects an optional number of seconds and an optional force flag.",
+                        "rs.stepDown expects an optional number of seconds and an optional secondary catch-up period.",
                     )));
                 }
 
@@ -1879,15 +1879,17 @@ impl<'a> QueryParser<'a> {
                 } else {
                     60
                 };
-                let force = if let Some(force_source) = parts.get(1) {
-                    let value = Self::parse_shell_json_value(force_source)?;
-                    Some(Self::value_as_bool(&value)?)
+                let secondary_catchup_secs = if let Some(second) = parts.get(1) {
+                    Some(Self::parse_non_negative_i64_argument(
+                        second,
+                        "secondaryCatchUpPeriodSecs",
+                    )?)
                 } else {
                     None
                 };
 
                 Ok(QueryOperation::ReplicaSetCommand {
-                    command: ReplicaSetCommand::StepDown { seconds, force },
+                    command: ReplicaSetCommand::StepDown { seconds, secondary_catchup_secs },
                 })
             }
             "freeze" => {
@@ -4952,10 +4954,10 @@ fn run_replica_set_command(
             let document = run_admin_command(&client, command)?;
             Ok(QueryResult::SingleDocument { document })
         }
-        ReplicaSetCommand::StepDown { seconds, force } => {
+        ReplicaSetCommand::StepDown { seconds, secondary_catchup_secs } => {
             let mut command = doc! { "replSetStepDown": seconds };
-            if let Some(force) = force {
-                command.insert("force", Bson::Boolean(force));
+            if let Some(secondary_catchup_secs) = secondary_catchup_secs {
+                command.insert("secondaryCatchUpPeriodSecs", secondary_catchup_secs);
             }
             let document = run_admin_command(&client, command)?;
             Ok(QueryResult::SingleDocument { document })
