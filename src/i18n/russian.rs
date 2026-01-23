@@ -424,8 +424,8 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
                 "rs.reconfig ожидает документ конфигурации и необязательный документ options.",
             ),
             (
-                "rs.stepDown expects an optional number of seconds and an optional force flag.",
-                "rs.stepDown ожидает необязательное число секунд и необязательный флаг force.",
+                "rs.stepDown expects an optional number of seconds and an optional secondary catch-up period.",
+                "rs.stepDown ожидает необязательное число секунд и необязательный период догонки вторичных.",
             ),
             (
                 "rs.freeze expects a number of seconds.",
