@@ -806,6 +806,8 @@ struct CollectionTab {
     editor: TextEditorContent,
     focus_anchor: Id,
     panes: pane_grid::State<CollectionPane>,
+    request_split: pane_grid::Split,
+    request_ratio: f32,
     bson_tree: BsonTree,
     response_view_mode: ResponseViewMode,
     text_result: Option<TextResultView>,
@@ -894,14 +896,17 @@ impl ResponseViewMode {
 }
 
 impl CollectionTab {
-    const REQUEST_EDITOR_LINES: f32 = 4.0;
-    const REQUEST_LINE_HEIGHT: f32 = 24.0;
-    const REQUEST_VERTICAL_CHROME: f32 = 24.0;
+    const REQUEST_EDITOR_LINES: f32 = 2.0;
+    const REQUEST_VERTICAL_CHROME: f32 = 16.0;
     const RESPONSE_REFERENCE_HEIGHT: f32 = 480.0;
     const MIN_RESPONSE_RATIO: f32 = 0.1;
 
+    fn request_line_height() -> f32 {
+        fonts::active_fonts().result_size * 1.4
+    }
+
     fn preferred_request_height() -> f32 {
-        Self::REQUEST_EDITOR_LINES * Self::REQUEST_LINE_HEIGHT + Self::REQUEST_VERTICAL_CHROME
+        Self::REQUEST_EDITOR_LINES * Self::request_line_height() + Self::REQUEST_VERTICAL_CHROME
     }
 
     fn min_request_ratio() -> f32 {
@@ -954,6 +959,8 @@ impl CollectionTab {
             editor,
             focus_anchor: Id::unique(),
             panes,
+            request_split: split,
+            request_ratio: initial_ratio,
             bson_tree,
             response_view_mode: ResponseViewMode::Table,
             text_result,
@@ -975,7 +982,19 @@ impl CollectionTab {
         }
 
         let clamped = Self::clamp_split_ratio(ratio);
+        self.request_ratio = clamped;
         self.panes.resize(split, clamped);
+    }
+
+    fn scale_split_for_window_resize(&mut self, prev_height: f32, new_height: f32) {
+        if prev_height <= 0.0 || new_height <= 0.0 {
+            return;
+        }
+
+        let scaled = self.request_ratio * (prev_height / new_height);
+        let clamped = Self::clamp_split_ratio(scaled);
+        self.request_ratio = clamped;
+        self.panes.resize(self.request_split, clamped);
     }
 
     fn view(&self, tab_id: TabId) -> Element<'_, Message> {
@@ -1087,13 +1106,12 @@ impl CollectionTab {
                 }
             });
 
-        let resize_tab_id = tab_id;
-        let panes = pane_grid::PaneGrid::new(&self.panes, |_, pane, _| match pane {
+        let panes = pane_grid::PaneGrid::new(&self.panes, |_, pane_state, _| match pane_state {
             CollectionPane::Request => pane_grid::Content::new(self.request_view(tab_id)),
             CollectionPane::Response => pane_grid::Content::new(self.response_view(tab_id)),
         })
         .on_resize(8, move |event| Message::CollectionPaneResized {
-            tab_id: resize_tab_id,
+            tab_id,
             split: event.split,
             ratio: event.ratio,
         })
@@ -1143,7 +1161,10 @@ impl CollectionTab {
         )
         .width(Length::Fixed(0.0))
         .height(Length::Fixed(0.0));
+        let result_fonts = fonts::active_fonts();
         let editor = text_editor::TextEditor::new(&self.editor)
+            .font(result_fonts.result_font)
+            .size(result_fonts.result_size)
             .key_binding(move |key_press| {
                 let is_enter = matches!(key_press.key, keyboard::Key::Named(key::Named::Enter));
                 let is_delete = matches!(key_press.key, keyboard::Key::Named(key::Named::Delete));
@@ -1619,6 +1640,16 @@ impl App {
             Message::WindowEvent(event) => {
                 match event {
                     window::Event::Opened { size, .. } | window::Event::Resized(size) => {
+                        if let Some(prev) = self.window_size {
+                            let prev_height = prev.height;
+                            let new_height = size.height;
+                            if prev_height.is_finite() && new_height.is_finite() {
+                                for tab in &mut self.tabs {
+                                    tab.collection
+                                        .scale_split_for_window_resize(prev_height, new_height);
+                                }
+                            }
+                        }
                         self.window_size = Some(size);
                     }
                     _ => {}
