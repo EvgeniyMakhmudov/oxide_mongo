@@ -120,6 +120,8 @@ pub struct AppSettings {
     pub primary_font_size: u16,
     pub result_font: String,
     pub result_font_size: u16,
+    pub query_editor_font: String,
+    pub query_editor_font_size: u16,
     pub theme_choice: ThemeChoice,
     pub theme_colors: ThemeColors,
 }
@@ -140,6 +142,8 @@ impl Default for AppSettings {
             primary_font_size: 16,
             result_font: fonts::default_font_id().to_string(),
             result_font_size: 14,
+            query_editor_font: fonts::default_query_editor_font_id().to_string(),
+            query_editor_font_size: 14,
             theme_choice: ThemeChoice::System,
             theme_colors: ThemeColors::default(),
         }
@@ -855,6 +859,7 @@ impl AppSettings {
     pub fn normalize_fonts(&mut self) {
         self.primary_font = normalize_font_id(&self.primary_font);
         self.result_font = normalize_font_id(&self.result_font);
+        self.query_editor_font = normalize_query_editor_font_id(&self.query_editor_font);
     }
 
     pub fn normalize_logging(&mut self) {
@@ -898,4 +903,24 @@ fn normalize_font_id(value: &str) -> String {
             .unwrap_or_else(|| fonts::default_font_id().to_string()),
         _ => fonts::default_font_id().to_string(),
     }
+}
+
+fn normalize_query_editor_font_id(value: &str) -> String {
+    if let Some(option) = fonts::query_editor_font_option_by_id(value) {
+        return option.id;
+    }
+
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return fonts::default_query_editor_font_id().to_string();
+    }
+
+    let lowered = trimmed.to_lowercase();
+    if let Some(option) =
+        fonts::query_editor_fonts().iter().find(|option| option.name.to_lowercase() == lowered)
+    {
+        return option.id.clone();
+    }
+
+    fonts::default_query_editor_font_id().to_string()
 }

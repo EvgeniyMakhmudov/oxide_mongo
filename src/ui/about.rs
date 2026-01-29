@@ -48,11 +48,24 @@ const COLOR_SCHEME_LICENSES: &[LicenseEntry] = &[
     },
 ];
 
-const FONT_LICENSES: &[LicenseEntry] = &[LicenseEntry {
-    name: "DejaVu Sans Mono",
-    license: "Bitstream Vera License",
-    url: "https://github.com/dejavu-fonts/dejavu-fonts",
-}];
+const FONT_LICENSES: &[LicenseEntry] = &[
+    LicenseEntry {
+        name: "DejaVu Sans Mono",
+        license: "Bitstream Vera License",
+        url: "https://github.com/dejavu-fonts/dejavu-fonts",
+    },
+    LicenseEntry { name: "Hack", license: "MIT", url: "https://github.com/source-foundry/Hack" },
+    LicenseEntry {
+        name: "JetBrains Mono",
+        license: "OFL-1.1",
+        url: "https://github.com/JetBrains/JetBrainsMono",
+    },
+    LicenseEntry {
+        name: "Fira Code",
+        license: "OFL-1.1",
+        url: "https://github.com/tonsky/FiraCode",
+    },
+];
 
 pub fn about_modal_view(palette: ThemePalette, icon_handle: Handle) -> Element<'static, Message> {
     let text_primary = palette.text_primary.to_color();

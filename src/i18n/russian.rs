@@ -251,6 +251,7 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Russian", "Русский"),
             ("Primary Font", "Основной шрифт"),
             ("Query Result Font", "Шрифт результатов запросов"),
+            ("Query Editor Font", "Шрифт редактора запросов"),
             ("Font Size", "Размер шрифта"),
             ("Theme", "Тема"),
             ("Widget Surfaces", "Поверхности виджетов"),

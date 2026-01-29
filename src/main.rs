@@ -7,7 +7,10 @@ mod mongo;
 mod settings;
 mod ui;
 
-use crate::fonts::{MONO_FONT, MONO_FONT_BYTES};
+use crate::fonts::{
+    FIRACODE_FONT_BYTES, FIRACODE_MEDIUM_FONT_BYTES, HACK_FONT_BYTES, JETBRAINS_FONT_BYTES,
+    MONO_FONT, MONO_FONT_BYTES,
+};
 use i18n::{tr, tr_format};
 use iced::alignment::{Horizontal, Vertical};
 use iced::border;
@@ -108,6 +111,10 @@ fn main() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .font(MONO_FONT_BYTES)
+        .font(HACK_FONT_BYTES)
+        .font(JETBRAINS_FONT_BYTES)
+        .font(FIRACODE_FONT_BYTES)
+        .font(FIRACODE_MEDIUM_FONT_BYTES)
         .font(REQUIRED_FONT_BYTES)
         .window(window_settings)
         .run()
@@ -320,6 +327,9 @@ pub(crate) enum Message {
     SettingsResultFontDropdownToggled,
     SettingsResultFontChanged(String),
     SettingsResultFontSizeChanged(String),
+    SettingsQueryEditorFontDropdownToggled,
+    SettingsQueryEditorFontChanged(String),
+    SettingsQueryEditorFontSizeChanged(String),
     SettingsThemeChanged(ThemeChoice),
     SettingsColorPickerOpened(ThemeColorField),
     SettingsColorPickerCanceled,
@@ -1161,10 +1171,10 @@ impl CollectionTab {
         )
         .width(Length::Fixed(0.0))
         .height(Length::Fixed(0.0));
-        let result_fonts = fonts::active_fonts();
+        let editor_fonts = fonts::active_fonts();
         let editor = text_editor::TextEditor::new(&self.editor)
-            .font(result_fonts.result_font)
-            .size(result_fonts.result_size)
+            .font(editor_fonts.editor_font)
+            .size(editor_fonts.editor_size)
             .key_binding(move |key_press| {
                 let is_enter = matches!(key_press.key, keyboard::Key::Named(key::Named::Enter));
                 let is_delete = matches!(key_press.key, keyboard::Key::Named(key::Named::Delete));
@@ -1464,6 +1474,8 @@ impl App {
             settings.primary_font_size as f32,
             &settings.result_font,
             settings.result_font_size as f32,
+            &settings.query_editor_font,
+            settings.query_editor_font_size as f32,
         );
         let (mut panes, sidebar) = pane_grid::State::new(PaneContent::Sidebar);
         let (_content_pane, split) = panes
@@ -1514,6 +1526,8 @@ impl App {
             settings.primary_font_size as f32,
             &settings.result_font,
             settings.result_font_size as f32,
+            &settings.query_editor_font,
+            settings.query_editor_font_size as f32,
         );
         settings::initialize(settings.clone());
         i18n::init_language(settings.language);
@@ -3685,6 +3699,7 @@ impl App {
                     state.primary_font_open = !state.primary_font_open;
                     if state.primary_font_open {
                         state.result_font_open = false;
+                        state.query_editor_font_open = false;
                     }
                 }
                 Task::none()
@@ -3714,6 +3729,7 @@ impl App {
                     state.result_font_open = !state.result_font_open;
                     if state.result_font_open {
                         state.primary_font_open = false;
+                        state.query_editor_font_open = false;
                     }
                 }
                 Task::none()
@@ -3734,6 +3750,37 @@ impl App {
             Message::SettingsResultFontSizeChanged(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.result_font_size = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::SettingsQueryEditorFontDropdownToggled => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.query_editor_font_open = !state.query_editor_font_open;
+                    if state.query_editor_font_open {
+                        state.primary_font_open = false;
+                        state.result_font_open = false;
+                    }
+                }
+                Task::none()
+            }
+            Message::SettingsQueryEditorFontChanged(choice) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.query_editor_font_id =
+                        if state.query_editor_font_options.iter().any(|option| option.id == choice)
+                        {
+                            choice
+                        } else {
+                            fonts::default_query_editor_font_id().to_string()
+                        };
+                    state.query_editor_font_open = false;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
+            Message::SettingsQueryEditorFontSizeChanged(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.query_editor_font_size = value;
                     state.validation_error = None;
                 }
                 Task::none()
@@ -5829,6 +5876,8 @@ impl App {
             settings.primary_font_size as f32,
             &settings.result_font,
             settings.result_font_size as f32,
+            &settings.query_editor_font,
+            settings.query_editor_font_size as f32,
         );
         logging::apply_settings(
             settings.logging_enabled,

@@ -105,12 +105,16 @@ pub struct SettingsWindowState {
     pub logging_path: String,
     pub language: Language,
     pub font_options: Vec<fonts_dropdown::FontOption>,
+    pub query_editor_font_options: Vec<fonts_dropdown::FontOption>,
     pub primary_font_open: bool,
     pub primary_font_id: String,
     pub primary_font_size: String,
     pub result_font_open: bool,
     pub result_font_id: String,
     pub result_font_size: String,
+    pub query_editor_font_open: bool,
+    pub query_editor_font_id: String,
+    pub query_editor_font_size: String,
     pub theme_choice: ThemeChoice,
     pub theme_light: ThemePalette,
     pub theme_dark: ThemePalette,
@@ -138,9 +142,18 @@ impl SettingsWindowState {
             .iter()
             .map(|opt| fonts_dropdown::FontOption::new(opt.id.clone(), opt.name.clone(), opt.font))
             .collect();
+        let query_editor_font_options: Vec<fonts_dropdown::FontOption> =
+            fonts::query_editor_fonts()
+                .iter()
+                .map(|opt| {
+                    fonts_dropdown::FontOption::new(opt.id.clone(), opt.name.clone(), opt.font)
+                })
+                .collect();
 
         let primary_font_id = ensure_font_id(&font_options, &settings.primary_font);
         let result_font_id = ensure_font_id(&font_options, &settings.result_font);
+        let query_editor_font_id =
+            ensure_font_id(&query_editor_font_options, &settings.query_editor_font);
         Self {
             active_tab: SettingsTab::Behavior,
             expand_first_result: settings.expand_first_result,
@@ -153,12 +166,16 @@ impl SettingsWindowState {
             logging_path: settings.logging_path.clone(),
             language: settings.language,
             font_options,
+            query_editor_font_options,
             primary_font_open: false,
             primary_font_id,
             primary_font_size: settings.primary_font_size.to_string(),
             result_font_open: false,
             result_font_id,
             result_font_size: settings.result_font_size.to_string(),
+            query_editor_font_open: false,
+            query_editor_font_id,
+            query_editor_font_size: settings.query_editor_font_size.to_string(),
             theme_choice: settings.theme_choice,
             theme_light: settings.theme_colors.light.clone(),
             theme_dark: settings.theme_colors.dark.clone(),
@@ -180,13 +197,15 @@ impl SettingsWindowState {
             parse_integer::<u64>(&self.query_timeout_secs, tr("Query timeout (seconds)"))?;
         let primary_size = parse_integer::<u16>(&self.primary_font_size, tr("Primary Font"))?;
         let result_size = parse_integer::<u16>(&self.result_font_size, tr("Query Result Font"))?;
+        let query_editor_size =
+            parse_integer::<u16>(&self.query_editor_font_size, tr("Query Editor Font"))?;
         let log_path = if self.logging_path.trim().is_empty() {
             DEFAULT_LOG_FILE_NAME.to_string()
         } else {
             self.logging_path.trim().to_string()
         };
 
-        if primary_size == 0 || result_size == 0 {
+        if primary_size == 0 || result_size == 0 || query_editor_size == 0 {
             return Err(tr("Font size must be greater than zero").to_owned());
         }
 
@@ -204,6 +223,8 @@ impl SettingsWindowState {
             primary_font_size: primary_size,
             result_font: self.result_font_id.clone(),
             result_font_size: result_size,
+            query_editor_font: self.query_editor_font_id.clone(),
+            query_editor_font_size: query_editor_size,
             theme_choice: self.theme_choice,
             theme_colors: ThemeColors {
                 light: self.theme_light.clone(),
@@ -471,7 +492,7 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
 }
 
 fn font_picker_row<'a>(
-    state: &'a SettingsWindowState,
+    font_options: &'a [fonts_dropdown::FontOption],
     label: &'static str,
     font_id: &'a str,
     font_size: &'a str,
@@ -483,16 +504,10 @@ fn font_picker_row<'a>(
 ) -> Element<'a, Message> {
     let selected = if font_id.is_empty() { None } else { Some(font_id) };
 
-    let dropdown = FontDropdown::new(
-        tr(label),
-        &state.font_options,
-        selected,
-        is_open,
-        on_toggle,
-        on_font_change,
-    )
-    .width(Length::FillPortion(5))
-    .max_height(240.0);
+    let dropdown =
+        FontDropdown::new(tr(label), font_options, selected, is_open, on_toggle, on_font_change)
+            .width(Length::FillPortion(5))
+            .max_height(240.0);
 
     Row::new()
         .spacing(12)
@@ -525,7 +540,7 @@ fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_,
         .push(Space::new().width(Length::Fixed(120.0)));
 
     let primary_row = font_picker_row(
-        state,
+        &state.font_options,
         "Primary Font",
         &state.primary_font_id,
         &state.primary_font_size,
@@ -537,7 +552,7 @@ fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_,
     );
 
     let result_row = font_picker_row(
-        state,
+        &state.font_options,
         "Query Result Font",
         &state.result_font_id,
         &state.result_font_size,
@@ -548,7 +563,25 @@ fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_,
         text_color,
     );
 
-    Column::new().spacing(16).push(language_row).push(primary_row).push(result_row).into()
+    let query_editor_row = font_picker_row(
+        &state.query_editor_font_options,
+        "Query Editor Font",
+        &state.query_editor_font_id,
+        &state.query_editor_font_size,
+        state.query_editor_font_open,
+        Message::SettingsQueryEditorFontDropdownToggled,
+        Message::SettingsQueryEditorFontChanged,
+        Message::SettingsQueryEditorFontSizeChanged,
+        text_color,
+    );
+
+    Column::new()
+        .spacing(16)
+        .push(language_row)
+        .push(primary_row)
+        .push(result_row)
+        .push(query_editor_row)
+        .into()
 }
 
 fn color_theme_tab(
