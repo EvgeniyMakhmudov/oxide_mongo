@@ -36,7 +36,6 @@ use iced::{
     clipboard,
 };
 use iced_aw::{ColorPicker, ContextMenu};
-use iced_fonts::REQUIRED_FONT_BYTES;
 use mongo::bson_edit::ValueEditKind;
 use mongo::bson_tree::{BsonTree, BsonTreeOptions};
 use mongo::connection::{
@@ -115,7 +114,6 @@ fn main() -> iced::Result {
         .font(JETBRAINS_FONT_BYTES)
         .font(FIRACODE_FONT_BYTES)
         .font(FIRACODE_MEDIUM_FONT_BYTES)
-        .font(REQUIRED_FONT_BYTES)
         .window(window_settings)
         .run()
 }
