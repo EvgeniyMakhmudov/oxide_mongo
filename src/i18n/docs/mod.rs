@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use super::Language;
 
 mod english;
+mod french;
 mod russian;
 mod spanish;
 
 use english::english_docs;
+use french::french_docs;
 use russian::russian_docs;
 use spanish::spanish_docs;
 
@@ -32,6 +34,7 @@ fn doc_section_for_language(slug: &str, language: Language) -> Option<&'static D
         Language::English => english_docs(),
         Language::Russian => russian_docs(),
         Language::Spanish => spanish_docs(),
+        Language::French => french_docs(),
     };
     map.get(slug)
 }

@@ -4,8 +4,10 @@ use std::sync::{OnceLock, RwLock};
 
 pub mod docs;
 
+mod french;
 mod russian;
 mod spanish;
+use french::french_map;
 use russian::russian_map;
 use spanish::spanish_map;
 
@@ -16,11 +18,13 @@ pub enum Language {
     English,
     Russian,
     Spanish,
+    French,
 }
 
 static CURRENT_LANGUAGE: OnceLock<RwLock<Language>> = OnceLock::new();
 
-pub const ALL_LANGUAGES: &[Language] = &[Language::English, Language::Russian, Language::Spanish];
+pub const ALL_LANGUAGES: &[Language] =
+    &[Language::English, Language::Russian, Language::Spanish, Language::French];
 
 impl Language {
     pub fn label(self) -> &'static str {
@@ -28,6 +32,7 @@ impl Language {
             Language::English => "English",
             Language::Russian => "Русский",
             Language::Spanish => "Español",
+            Language::French => "Français",
         }
     }
 }
@@ -70,6 +75,7 @@ pub fn tr(text: &'static str) -> &'static str {
         Language::English => english,
         Language::Russian => russian_map().get(english).copied().unwrap_or(english),
         Language::Spanish => spanish_map().get(english).copied().unwrap_or(english),
+        Language::French => french_map().get(english).copied().unwrap_or(english),
     }
 }
 
