@@ -4,9 +4,11 @@ use super::Language;
 
 mod english;
 mod russian;
+mod spanish;
 
 use english::english_docs;
 use russian::russian_docs;
+use spanish::spanish_docs;
 
 pub struct DocSection {
     pub title: &'static str,
@@ -29,6 +31,7 @@ fn doc_section_for_language(slug: &str, language: Language) -> Option<&'static D
     let map: &'static HashMap<&'static str, DocSection> = match language {
         Language::English => english_docs(),
         Language::Russian => russian_docs(),
+        Language::Spanish => spanish_docs(),
     };
     map.get(slug)
 }
