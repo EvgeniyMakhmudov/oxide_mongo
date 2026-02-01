@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use super::Language;
 
+mod chinese_simplified;
+mod chinese_traditional;
 mod english;
 mod french;
 mod german;
@@ -9,6 +11,8 @@ mod portuguese;
 mod russian;
 mod spanish;
 
+use chinese_simplified::chinese_simplified_docs;
+use chinese_traditional::chinese_traditional_docs;
 use english::english_docs;
 use french::french_docs;
 use german::german_docs;
@@ -41,6 +45,8 @@ fn doc_section_for_language(slug: &str, language: Language) -> Option<&'static D
         Language::French => french_docs(),
         Language::German => german_docs(),
         Language::Portuguese => portuguese_docs(),
+        Language::ChineseSimplified => chinese_simplified_docs(),
+        Language::ChineseTraditional => chinese_traditional_docs(),
     };
     map.get(slug)
 }

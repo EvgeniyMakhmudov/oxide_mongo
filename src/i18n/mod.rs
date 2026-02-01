@@ -4,11 +4,15 @@ use std::sync::{OnceLock, RwLock};
 
 pub mod docs;
 
+mod chinese_simplified;
+mod chinese_traditional;
 mod french;
 mod german;
 mod portuguese;
 mod russian;
 mod spanish;
+use chinese_simplified::chinese_simplified_map;
+use chinese_traditional::chinese_traditional_map;
 use french::french_map;
 use german::german_map;
 use portuguese::portuguese_map;
@@ -25,6 +29,8 @@ pub enum Language {
     French,
     German,
     Portuguese,
+    ChineseSimplified,
+    ChineseTraditional,
 }
 
 static CURRENT_LANGUAGE: OnceLock<RwLock<Language>> = OnceLock::new();
@@ -36,6 +42,8 @@ pub const ALL_LANGUAGES: &[Language] = &[
     Language::French,
     Language::German,
     Language::Portuguese,
+    Language::ChineseSimplified,
+    Language::ChineseTraditional,
 ];
 
 impl Language {
@@ -47,6 +55,8 @@ impl Language {
             Language::French => "Français",
             Language::German => "Deutsch",
             Language::Portuguese => "Português",
+            Language::ChineseSimplified => "简体中文",
+            Language::ChineseTraditional => "繁體中文",
         }
     }
 }
@@ -92,6 +102,12 @@ pub fn tr(text: &'static str) -> &'static str {
         Language::French => french_map().get(english).copied().unwrap_or(english),
         Language::German => german_map().get(english).copied().unwrap_or(english),
         Language::Portuguese => portuguese_map().get(english).copied().unwrap_or(english),
+        Language::ChineseSimplified => {
+            chinese_simplified_map().get(english).copied().unwrap_or(english)
+        }
+        Language::ChineseTraditional => {
+            chinese_traditional_map().get(english).copied().unwrap_or(english)
+        }
     }
 }
 
