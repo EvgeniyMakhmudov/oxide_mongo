@@ -7,6 +7,7 @@ mod chinese_traditional;
 mod english;
 mod french;
 mod german;
+mod italian;
 mod portuguese;
 mod russian;
 mod spanish;
@@ -16,6 +17,7 @@ use chinese_traditional::chinese_traditional_docs;
 use english::english_docs;
 use french::french_docs;
 use german::german_docs;
+use italian::italian_docs;
 use portuguese::portuguese_docs;
 use russian::russian_docs;
 use spanish::spanish_docs;
@@ -47,6 +49,7 @@ fn doc_section_for_language(slug: &str, language: Language) -> Option<&'static D
         Language::Portuguese => portuguese_docs(),
         Language::ChineseSimplified => chinese_simplified_docs(),
         Language::ChineseTraditional => chinese_traditional_docs(),
+        Language::Italian => italian_docs(),
     };
     map.get(slug)
 }
