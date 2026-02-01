@@ -858,7 +858,16 @@ impl TextResultView {
             return String::from("[]");
         }
 
-        let joined = self.documents.join(",\n");
+        let mut rendered = Vec::with_capacity(self.documents.len());
+        for doc in &self.documents {
+            let mut lines = Vec::new();
+            for line in doc.lines() {
+                lines.push(format!("    {line}"));
+            }
+            rendered.push(lines.join("\n"));
+        }
+
+        let joined = rendered.join(",\n");
         format!("[\n{joined}\n]")
     }
 }

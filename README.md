@@ -27,6 +27,13 @@ This approach ensures production readiness regardless of the code generation met
 - Theme and font customization.
 - Internalization UI.
 
+## Screenshots
+
+![1](https://github.com/user-attachments/assets/edb622c7-0f8b-4119-a0c1-d64b22b4e3ec)
+![2](https://github.com/user-attachments/assets/286a857b-7d79-44fc-b76c-abc2c56c80a1)
+![3](https://github.com/user-attachments/assets/8da5b109-98c2-4344-b5f3-f6227b066b8c)
+![4](https://github.com/user-attachments/assets/61fe5d10-9b9a-403a-bd8c-8961d19dbe1f)
+
 ## Download
 
 Prebuilt binaries are published on GitHub Releases:

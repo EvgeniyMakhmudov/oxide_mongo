@@ -4,8 +4,22 @@ use std::sync::{OnceLock, RwLock};
 
 pub mod docs;
 
+mod chinese_simplified;
+mod chinese_traditional;
+mod french;
+mod german;
+mod italian;
+mod portuguese;
 mod russian;
+mod spanish;
+use chinese_simplified::chinese_simplified_map;
+use chinese_traditional::chinese_traditional_map;
+use french::french_map;
+use german::german_map;
+use italian::italian_map;
+use portuguese::portuguese_map;
 use russian::russian_map;
+use spanish::spanish_map;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,17 +27,41 @@ use russian::russian_map;
 pub enum Language {
     English,
     Russian,
+    Spanish,
+    French,
+    German,
+    Portuguese,
+    ChineseSimplified,
+    ChineseTraditional,
+    Italian,
 }
 
 static CURRENT_LANGUAGE: OnceLock<RwLock<Language>> = OnceLock::new();
 
-pub const ALL_LANGUAGES: &[Language] = &[Language::English, Language::Russian];
+pub const ALL_LANGUAGES: &[Language] = &[
+    Language::English,
+    Language::Russian,
+    Language::Spanish,
+    Language::French,
+    Language::German,
+    Language::Portuguese,
+    Language::ChineseSimplified,
+    Language::ChineseTraditional,
+    Language::Italian,
+];
 
 impl Language {
     pub fn label(self) -> &'static str {
         match self {
             Language::English => "English",
             Language::Russian => "Русский",
+            Language::Spanish => "Español",
+            Language::French => "Français",
+            Language::German => "Deutsch",
+            Language::Portuguese => "Português",
+            Language::ChineseSimplified => "简体中文",
+            Language::ChineseTraditional => "繁體中文",
+            Language::Italian => "Italiano",
         }
     }
 }
@@ -65,6 +103,17 @@ pub fn tr(text: &'static str) -> &'static str {
     match current_language() {
         Language::English => english,
         Language::Russian => russian_map().get(english).copied().unwrap_or(english),
+        Language::Spanish => spanish_map().get(english).copied().unwrap_or(english),
+        Language::French => french_map().get(english).copied().unwrap_or(english),
+        Language::German => german_map().get(english).copied().unwrap_or(english),
+        Language::Portuguese => portuguese_map().get(english).copied().unwrap_or(english),
+        Language::ChineseSimplified => {
+            chinese_simplified_map().get(english).copied().unwrap_or(english)
+        }
+        Language::ChineseTraditional => {
+            chinese_traditional_map().get(english).copied().unwrap_or(english)
+        }
+        Language::Italian => italian_map().get(english).copied().unwrap_or(english),
     }
 }
 
