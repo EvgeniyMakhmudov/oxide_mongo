@@ -6,10 +6,12 @@ pub mod docs;
 
 mod french;
 mod german;
+mod portuguese;
 mod russian;
 mod spanish;
 use french::french_map;
 use german::german_map;
+use portuguese::portuguese_map;
 use russian::russian_map;
 use spanish::spanish_map;
 
@@ -22,12 +24,19 @@ pub enum Language {
     Spanish,
     French,
     German,
+    Portuguese,
 }
 
 static CURRENT_LANGUAGE: OnceLock<RwLock<Language>> = OnceLock::new();
 
-pub const ALL_LANGUAGES: &[Language] =
-    &[Language::English, Language::Russian, Language::Spanish, Language::French, Language::German];
+pub const ALL_LANGUAGES: &[Language] = &[
+    Language::English,
+    Language::Russian,
+    Language::Spanish,
+    Language::French,
+    Language::German,
+    Language::Portuguese,
+];
 
 impl Language {
     pub fn label(self) -> &'static str {
@@ -37,6 +46,7 @@ impl Language {
             Language::Spanish => "Español",
             Language::French => "Français",
             Language::German => "Deutsch",
+            Language::Portuguese => "Português",
         }
     }
 }
@@ -81,6 +91,7 @@ pub fn tr(text: &'static str) -> &'static str {
         Language::Spanish => spanish_map().get(english).copied().unwrap_or(english),
         Language::French => french_map().get(english).copied().unwrap_or(english),
         Language::German => german_map().get(english).copied().unwrap_or(english),
+        Language::Portuguese => portuguese_map().get(english).copied().unwrap_or(english),
     }
 }
 
