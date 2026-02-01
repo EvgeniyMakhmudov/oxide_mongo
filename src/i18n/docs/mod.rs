@@ -4,11 +4,13 @@ use super::Language;
 
 mod english;
 mod french;
+mod german;
 mod russian;
 mod spanish;
 
 use english::english_docs;
 use french::french_docs;
+use german::german_docs;
 use russian::russian_docs;
 use spanish::spanish_docs;
 
@@ -35,6 +37,7 @@ fn doc_section_for_language(slug: &str, language: Language) -> Option<&'static D
         Language::Russian => russian_docs(),
         Language::Spanish => spanish_docs(),
         Language::French => french_docs(),
+        Language::German => german_docs(),
     };
     map.get(slug)
 }
