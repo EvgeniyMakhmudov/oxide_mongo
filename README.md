@@ -1,3 +1,9 @@
+[![Release](https://github.com/EvgeniyMakhmudov/oxide_mongo/actions/workflows/release.yml/badge.svg)](https://github.com/EvgeniyMakhmudov/oxide_mongo/actions/workflows/release.yml)
+![Release](https://img.shields.io/github/v/release/EvgeniyMakhmudov/oxide_mongo)
+![Platforms](https://img.shields.io/badge/platform-linux%20%7C%20windows%20%7C%20macos-blue)
+![License](https://img.shields.io/github/license/EvgeniyMakhmudov/oxide_mongo)
+
+
 # Oxide Mongo
 
 # About
@@ -9,12 +15,23 @@ Inspired by Robomongo/Robo3T and built in [Rust](https://www.rust-lang.org/) wit
 [Iced](https://github.com/iced-rs/iced), it focuses on everyday work: browsing data,
 running queries, and managing collections without extra overhead.
 
-All source code in this project was generated with the assistance of AI tools (OpenAI Codex, GPT-4/5, Google Gemini).
 
-To ensure the project is safe for production use, a strict integration test is included. The test verifies that the system behaves exactly as expected and nothing more.
-The test logic, expected results, and acceptance criteria were defined and reviewed by a human under direct supervision.
+## Why Oxide Mongo?
 
-This approach ensures production readiness regardless of the code generation method.
+- Inspired by Robomongo (Robo 3T) philosophy: simplicity, clarity, straightforward and predictable
+- Lightweight, single-binary desktop app - no installation, no dependencies, just download and run
+- No Electron, no browser engine
+- Fast startup and low resource usage
+- Focused on everyday MongoDB tasks
+
+
+## Screenshots
+
+![1](https://github.com/user-attachments/assets/edb622c7-0f8b-4119-a0c1-d64b22b4e3ec)
+![2](https://github.com/user-attachments/assets/286a857b-7d79-44fc-b76c-abc2c56c80a1)
+![3](https://github.com/user-attachments/assets/8da5b109-98c2-4344-b5f3-f6227b066b8c)
+![4](https://github.com/user-attachments/assets/61fe5d10-9b9a-403a-bd8c-8961d19dbe1f)
+
 
 ## Features
 
@@ -25,19 +42,36 @@ This approach ensures production readiness regardless of the code generation met
 - Database and collection actions: create, drop, rename, stats, indexes.
 - Replica set helpers (`rs.*`) and admin commands (`db.adminCommand`).
 - Theme and font customization.
-- Internalization UI.
+- Internalization UI (English, Russian, Spanish, Chinese and more).
 
-## Screenshots
 
-![1](https://github.com/user-attachments/assets/edb622c7-0f8b-4119-a0c1-d64b22b4e3ec)
-![2](https://github.com/user-attachments/assets/286a857b-7d79-44fc-b76c-abc2c56c80a1)
-![3](https://github.com/user-attachments/assets/8da5b109-98c2-4344-b5f3-f6227b066b8c)
-![4](https://github.com/user-attachments/assets/61fe5d10-9b9a-403a-bd8c-8961d19dbe1f)
+## Who is this app for?
+
+Oxide Mongo is a good fit if you:
+- want a simple MongoDB GUI for daily work
+- miss Robomongo (Robo 3T)
+- need to quickly inspect data and run queries
+- prefer lightweight native desktop apps
+
+## Who is it NOT for?
+
+- not a full alternative to mongosh (it supports only the most common single-line commands)
+- not designed for complex cluster administration (for such use cases, tools like MongoDB Compass are a better fit)
+
 
 ## Download
 
-Prebuilt binaries are published on GitHub Releases:
-https://github.com/EvgeniyMakhmudov/oxide_mongo/releases
+Prebuilt binaries are published on [GitHub Releases](https://github.com/EvgeniyMakhmudov/oxide_mongo/releases)
+
+
+## Code Generation & Safety
+
+All source code in this project was generated with the assistance of AI tools (OpenAI Codex, GPT-4/5, Google Gemini).
+
+To ensure the project is safe for production use, a strict integration test is included. The test verifies that the system behaves exactly as expected and nothing more.
+The test logic, expected results, and acceptance criteria were defined and reviewed by a human under direct supervision.
+
+This approach ensures production readiness regardless of the code generation method.
 
 
 ## Getting Started
@@ -78,8 +112,8 @@ Built-in documentation is available in the app menu: Help -> Documentation.
 
 ## Known Issues
 
-1. After waking a Linux system from hibernation, the main window may freeze.
-   This is a GPU subsystem issue and affects other GUI applications as well.
+1. After waking a Linux system from hibernation, the main window may freeze or crash.
+   This is a GPU subsystem issue and affects other GUI applications.
 
 ## Contributing
 
