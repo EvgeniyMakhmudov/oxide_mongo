@@ -601,7 +601,7 @@ impl ConnectionFormState {
             })
             .unwrap_or_else(|| {
                 (
-                    String::new(),
+                    String::from(tr("New Connection")),
                     String::from(tr("localhost")),
                     String::from(tr("27017")),
                     ConnectionType::default(),
