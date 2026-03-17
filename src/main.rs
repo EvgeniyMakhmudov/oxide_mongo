@@ -88,6 +88,10 @@ const TAB_CLOSE_PADDING_X: f32 = 8.0;
 const TAB_CHAR_WIDTH_FACTOR: f32 = 0.6;
 const TAB_WIDTH_TOLERANCE: f32 = 12.0;
 const TAB_SCROLLBAR_PADDING: f32 = 10.0;
+const MODAL_OUTER_MARGIN_X: f32 = 24.0;
+const MODAL_TARGET_WIDTH_RATIO: f32 = 0.5;
+const DOCUMENT_MODAL_MIN_WIDTH: f32 = 600.0;
+const VALUE_EDIT_MODAL_MIN_WIDTH: f32 = 480.0;
 const WINDOW_ICON_BYTES: &[u8] = include_bytes!("../assests/icons/oxide_mongo_256x256.png");
 pub(crate) const ICON_NETWORK_BYTES: &[u8] = include_bytes!("../assests/icons/network_115x128.png");
 const ICON_DATABASE_BYTES: &[u8] = include_bytes!("../assests/icons/database_105x128.png");
@@ -4458,7 +4462,8 @@ impl App {
         let buttons = Row::new().spacing(12).push(cancel_button).push(save_button);
         column = column.push(buttons);
         let content: Element<Message> = column.into();
-        modal_layout(palette, content, Length::Fixed(600.0), 24, 12.0)
+        let modal_width = self.adaptive_modal_width(DOCUMENT_MODAL_MIN_WIDTH);
+        modal_layout(palette, content, modal_width, 24, 12.0)
     }
 
     fn value_edit_modal_view<'a>(&self, state: &'a ValueEditModalState) -> Element<'a, Message> {
@@ -4579,7 +4584,28 @@ impl App {
         column = column.push(buttons);
 
         let content: Element<Message> = column.into();
-        modal_layout(palette, content, Length::Fixed(480.0), 24, 12.0)
+        let modal_width = self.adaptive_modal_width(VALUE_EDIT_MODAL_MIN_WIDTH);
+        modal_layout(palette, content, modal_width, 24, 12.0)
+    }
+
+    fn adaptive_modal_width(&self, min_width: f32) -> Length {
+        let Some(window_size) = self.window_size else {
+            return Length::Fixed(min_width);
+        };
+
+        if !window_size.width.is_finite() || window_size.width <= 0.0 {
+            return Length::Fixed(min_width);
+        }
+
+        let max_width = (window_size.width - (MODAL_OUTER_MARGIN_X * 2.0)).max(240.0);
+        let preferred_width = window_size.width * MODAL_TARGET_WIDTH_RATIO;
+        let width = if max_width >= min_width {
+            preferred_width.clamp(min_width, max_width)
+        } else {
+            max_width
+        };
+
+        Length::Fixed(width.max(1.0))
     }
 
     fn theme(&self) -> Theme {
