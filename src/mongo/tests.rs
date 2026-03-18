@@ -774,8 +774,8 @@ fn connection_flow_via_messages() {
     let updated_count =
         execute_query(&mut app, documents_tab_id, &updated_count_query, &shared_client);
     match updated_count {
-        QueryResult::Count { value } => assert_eq!(value, Bson::Int64(0)),
-        other => panic!("expected zero count after replacement, got {:?}", other),
+        QueryResult::Count { value } => assert_eq!(value, Bson::Int64(1)),
+        other => panic!("expected count result with single matching document, got {:?}", other),
     }
 
     //

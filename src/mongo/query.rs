@@ -1,15 +1,9 @@
 use std::convert::TryFrom;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use mongodb::Namespace;
-use mongodb::bson::spec::BinarySubtype;
-use mongodb::bson::{
-    self, Array, Binary, Bson, DateTime, Decimal128, Document, JavaScriptCodeWithScope, Regex,
-    Timestamp as BsonTimestamp, doc, oid::ObjectId,
-};
+use mongodb::bson::{self, Array, Bson, DateTime, Document, Timestamp as BsonTimestamp, doc};
 use mongodb::change_stream::event::ChangeStreamEvent;
 use mongodb::options::{
     Acknowledgment, BulkWriteOptions, Collation, DeleteManyModel, DeleteOneModel, Hint,
@@ -18,11 +12,9 @@ use mongodb::options::{
 };
 use mongodb::options::{FullDocumentBeforeChangeType, FullDocumentType};
 use mongodb::sync::Client;
-use serde_json::Value;
-use uuid::Uuid;
+use serde_json::{Map, Number, Value};
 
 use crate::i18n::{tr, tr_format};
-use crate::mongo::shell::parse_date_constructor;
 use crate::mongo::shell_preprocessor::quote_unquoted_keys;
 
 #[derive(Debug, Clone, Default)]
@@ -909,8 +901,14 @@ impl<'a> QueryParser<'a> {
                                 "The distinct filter must be a JSON object.",
                             )));
                         }
-                        bson::to_document(&filter_value)
-                            .map_err(|error| format!("BSON conversion error: {error}"))?
+                        match &filter_value {
+                            Value::Object(map) => Self::json_object_to_document(map)?,
+                            _ => {
+                                return Err(String::from(tr(
+                                    "The distinct filter must be a JSON object.",
+                                )));
+                            }
+                        }
                     }
                     None => Document::new(),
                 };
@@ -946,10 +944,7 @@ impl<'a> QueryParser<'a> {
                     let doc = item
                         .as_object()
                         .ok_or_else(|| String::from(tr("Pipeline elements must be objects.")))?;
-                    pipeline.push(
-                        bson::to_document(doc)
-                            .map_err(|error| format!("BSON conversion error: {error}"))?,
-                    );
+                    pipeline.push(Self::json_object_to_document(doc)?);
                 }
 
                 let options = match parts.get(1) {
@@ -1019,8 +1014,7 @@ impl<'a> QueryParser<'a> {
                             tr("in insertMany must be a JSON object."),
                         )
                     })?;
-                    let doc = bson::to_document(object)
-                        .map_err(|error| format!("BSON conversion error: {error}"))?;
+                    let doc = Self::json_object_to_document(object)?;
                     documents.push(doc);
                 }
 
@@ -1418,8 +1412,7 @@ impl<'a> QueryParser<'a> {
                     let hint = match value {
                         Value::String(name) => Hint::Name(name.clone()),
                         Value::Object(map) => {
-                            let doc = bson::to_document(map)
-                                .map_err(|error| format!("BSON conversion error: {error}"))?;
+                            let doc = Self::json_object_to_document(map)?;
                             Hint::Keys(doc)
                         }
                         _ => {
@@ -1472,8 +1465,7 @@ impl<'a> QueryParser<'a> {
                     let hint = match value {
                         Value::String(name) => Hint::Name(name.clone()),
                         Value::Object(map) => {
-                            let doc = bson::to_document(map)
-                                .map_err(|error| format!("BSON conversion error: {error}"))?;
+                            let doc = Self::json_object_to_document(map)?;
                             Hint::Keys(doc)
                         }
                         _ => {
@@ -2113,15 +2105,13 @@ impl<'a> QueryParser<'a> {
                             &[&index.to_string()],
                         )
                     })?;
-                    let document = bson::to_document(object)
-                        .map_err(|error| format!("BSON conversion error: {error}"))?;
+                    let document = Self::json_object_to_document(object)?;
                     pipeline.push(document);
                 }
                 Ok(pipeline)
             }
             Value::Object(object) => {
-                let document = bson::to_document(&object)
-                    .map_err(|error| format!("BSON conversion error: {error}"))?;
+                let document = Self::json_object_to_document(&object)?;
                 Ok(vec![document])
             }
             _ => Err(String::from(tr(
@@ -2405,10 +2395,7 @@ impl<'a> QueryParser<'a> {
                         return Err(String::from(tr("comment expects a value.")));
                     }
                     let value = Self::parse_shell_json_value(args_trimmed)?;
-                    modifiers.comment = Some(
-                        bson::to_bson(&value)
-                            .map_err(|error| format!("BSON conversion error: {error}"))?,
-                    );
+                    modifiers.comment = Some(Self::json_value_to_bson(&value)?);
                 }
                 "explain" => {
                     if !args_trimmed.is_empty() {
@@ -2729,8 +2716,7 @@ impl<'a> QueryParser<'a> {
         let value: Value = Self::parse_shell_json_value(source)?;
 
         if let Some(object) = value.as_object() {
-            let document = bson::to_document(object)
-                .map_err(|error| format!("BSON conversion error: {error}"))?;
+            let document = Self::json_object_to_document(object)?;
             Ok(UpdateModificationsSpec::Document(document))
         } else if let Some(array) = value.as_array() {
             let mut pipeline = Vec::with_capacity(array.len());
@@ -2741,8 +2727,7 @@ impl<'a> QueryParser<'a> {
                         &[&index.to_string()],
                     )
                 })?;
-                let document = bson::to_document(object)
-                    .map_err(|error| format!("BSON conversion error: {error}"))?;
+                let document = Self::json_object_to_document(object)?;
                 pipeline.push(document);
             }
             if pipeline.is_empty() {
@@ -3316,7 +3301,7 @@ impl<'a> QueryParser<'a> {
         let object = value
             .as_object()
             .ok_or_else(|| tr_format("Parameter '{}' must be a JSON object.", &[field]))?;
-        bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
+        Self::json_object_to_document(object)
     }
 
     fn parse_array_filters(value: &Value) -> Result<Vec<Document>, String> {
@@ -3335,8 +3320,7 @@ impl<'a> QueryParser<'a> {
                     &[&index.to_string()],
                 )
             })?;
-            let filter = bson::to_document(object)
-                .map_err(|error| format!("BSON conversion error: {error}"))?;
+            let filter = Self::json_object_to_document(object)?;
             filters.push(filter);
         }
 
@@ -3344,7 +3328,7 @@ impl<'a> QueryParser<'a> {
     }
 
     fn parse_bson_value(value: &Value) -> Result<Bson, String> {
-        bson::to_bson(value).map_err(|error| format!("BSON conversion error: {error}"))
+        Self::json_value_to_bson(value)
     }
 
     fn parse_find_one_and_update_options(
@@ -3762,8 +3746,7 @@ impl<'a> QueryParser<'a> {
         let object = value
             .as_object()
             .ok_or_else(|| String::from(tr("collation must be a JSON object.")))?;
-        let document =
-            bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))?;
+        let document = Self::json_object_to_document(object)?;
         bson::from_document::<Collation>(document)
             .map_err(|error| format!("Collation parse error: {error}"))
     }
@@ -3772,8 +3755,7 @@ impl<'a> QueryParser<'a> {
         match value {
             Value::String(name) => Ok(Hint::Name(name.clone())),
             Value::Object(map) => {
-                let document = bson::to_document(map)
-                    .map_err(|error| format!("BSON conversion error: {error}"))?;
+                let document = Self::json_object_to_document(map)?;
                 Ok(Hint::Keys(document))
             }
             _ => Err(String::from(tr(
@@ -3879,852 +3861,90 @@ impl<'a> QueryParser<'a> {
 
     fn parse_shell_json_value(source: &str) -> Result<Value, String> {
         let quoted = quote_unquoted_keys(source);
-        let normalized = Self::preprocess_shell_json(&quoted)?;
-        crate::mongo::shell::parse_shell_json_value(&normalized)
-    }
-
-    fn preprocess_shell_json(source: &str) -> Result<String, String> {
-        let chars: Vec<char> = source.chars().collect();
-        let len = chars.len();
-        let mut result = String::with_capacity(source.len());
-        let mut index = 0usize;
-
-        while index < len {
-            let ch = chars[index];
-
-            if ch == '\"' {
-                let end = Self::skip_double_quoted(&chars, index)?;
-                result.extend(&chars[index..end]);
-                index = end;
-                continue;
-            }
-
-            if ch == '\'' {
-                let (json_literal, next_index) = Self::collect_single_quoted_string(&chars, index)?;
-                result.push_str(&json_literal);
-                index = next_index;
-                continue;
-            }
-
-            if ch == '-' {
-                if let Some((replacement, consumed)) =
-                    Self::try_parse_negative_constant(&chars, index)?
-                {
-                    result.push_str(&replacement);
-                    index = consumed;
-                    continue;
-                }
-            }
-
-            if ch == '/' {
-                if let Some((replacement, consumed)) = Self::try_parse_regex_literal(&chars, index)?
-                {
-                    result.push_str(&replacement);
-                    index = consumed;
-                    continue;
-                }
-            }
-
-            if Self::is_identifier_start(ch) {
-                let start_index = index;
-                let (identifier, mut next_index) = Self::read_identifier(&chars, index);
-                index = next_index;
-
-                if identifier == "new" {
-                    next_index = Self::skip_whitespace(&chars, next_index);
-                    let (next_identifier, after_identifier) =
-                        Self::read_identifier(&chars, next_index);
-                    if !next_identifier.is_empty() && Self::is_special_construct(&next_identifier) {
-                        if let Some((replacement, consumed)) = Self::convert_special_construct(
-                            &chars,
-                            after_identifier,
-                            &next_identifier,
-                        )? {
-                            result.push_str(&replacement);
-                            index = consumed;
-                            continue;
-                        }
-                    }
-
-                    result.push_str("new");
-                    if !next_identifier.is_empty() {
-                        result.push(' ');
-                        result.push_str(&next_identifier);
-                        index = after_identifier;
-                    }
-                    continue;
-                }
-
-                if identifier == "function" {
-                    let (code, consumed) = Self::extract_function_literal(&chars, start_index)?;
-                    let replacement = Self::bson_to_extended_json(Bson::JavaScriptCode(code))?;
-                    result.push_str(&replacement);
-                    index = consumed;
-                    continue;
-                }
-
-                if let Some(replacement) = Self::convert_constant(&identifier)? {
-                    result.push_str(&replacement);
-                    continue;
-                }
-
-                if Self::is_special_construct(&identifier) {
-                    if let Some((replacement, consumed_until)) =
-                        Self::convert_special_construct(&chars, index, &identifier)?
-                    {
-                        result.push_str(&replacement);
-                        index = consumed_until;
-                        continue;
-                    }
-                }
-
-                result.push_str(&identifier);
-                continue;
-            }
-
-            result.push(ch);
-            index += 1;
-        }
-
-        Ok(result)
-    }
-
-    fn skip_whitespace(chars: &[char], mut index: usize) -> usize {
-        let len = chars.len();
-        while index < len && chars[index].is_whitespace() {
-            index += 1;
-        }
-        index
-    }
-
-    fn read_identifier(chars: &[char], start: usize) -> (String, usize) {
-        let len = chars.len();
-        if start >= len || !Self::is_identifier_start(chars[start]) {
-            return (String::new(), start);
-        }
-        let mut index = start + 1;
-        while index < len && Self::is_identifier_part(chars[index]) {
-            index += 1;
-        }
-        (chars[start..index].iter().collect(), index)
-    }
-
-    fn convert_constant(identifier: &str) -> Result<Option<String>, String> {
-        match identifier {
-            "Infinity" => Ok(Some(Self::bson_to_extended_json(Bson::Double(f64::INFINITY))?)),
-            "NaN" => Ok(Some(Self::bson_to_extended_json(Bson::Double(f64::NAN))?)),
-            "undefined" => Ok(Some(Self::bson_to_extended_json(Bson::Undefined)?)),
-            _ => Ok(None),
-        }
-    }
-
-    fn matches_keyword(chars: &[char], start: usize, keyword: &str) -> bool {
-        let len = chars.len();
-        let keyword_len = keyword.len();
-        if start + keyword_len > len {
-            return false;
-        }
-
-        chars[start..start + keyword_len].iter().zip(keyword.chars()).all(|(&ch, kw)| ch == kw)
-    }
-
-    fn prev_non_whitespace(chars: &[char], index: usize) -> Option<char> {
-        let mut idx = index;
-        while idx > 0 {
-            idx -= 1;
-            let ch = chars[idx];
-            if !ch.is_whitespace() {
-                return Some(ch);
-            }
-        }
-        None
-    }
-
-    fn try_parse_negative_constant(
-        chars: &[char],
-        index: usize,
-    ) -> Result<Option<(String, usize)>, String> {
-        if Self::matches_keyword(chars, index + 1, "Infinity") {
-            let consumed = index + 1 + "Infinity".len();
-            let replacement = Self::bson_to_extended_json(Bson::Double(f64::NEG_INFINITY))?;
-            return Ok(Some((replacement, consumed)));
-        }
-
-        Ok(None)
-    }
-
-    fn try_parse_regex_literal(
-        chars: &[char],
-        index: usize,
-    ) -> Result<Option<(String, usize)>, String> {
-        if chars[index] != '/' {
-            return Ok(None);
-        }
-
-        if let Some(prev) = Self::prev_non_whitespace(chars, index) {
-            if !matches!(prev, ':' | ',' | '{' | '[' | '(') {
-                return Ok(None);
-            }
-        }
-
-        let len = chars.len();
-        let mut pattern = String::new();
-        let mut escape = false;
-        let mut cursor = index + 1;
-
-        while cursor < len {
-            let ch = chars[cursor];
-            if escape {
-                pattern.push(ch);
-                escape = false;
-            } else if ch == '\\' {
-                pattern.push(ch);
-                escape = true;
-            } else if ch == '/' {
-                break;
-            } else {
-                pattern.push(ch);
-            }
-            cursor += 1;
-        }
-
-        if cursor >= len || chars[cursor] != '/' {
-            return Err(String::from(tr("Regular expression is not terminated with '/'.")));
-        }
-
-        cursor += 1;
-        let mut options = String::new();
-        while cursor < len && chars[cursor].is_ascii_alphabetic() {
-            options.push(chars[cursor]);
-            cursor += 1;
-        }
-
-        let regex = Regex { pattern, options };
-        let replacement = Self::bson_to_extended_json(Bson::RegularExpression(regex))?;
-        Ok(Some((replacement, cursor)))
-    }
-
-    fn extract_function_literal(chars: &[char], start: usize) -> Result<(String, usize), String> {
-        let len = chars.len();
-        let mut index = start;
-        let mut buffer = String::new();
-        let mut in_string = false;
-        let mut string_delim = '\'';
-        let mut escape = false;
-        let mut paren_depth = 0i32;
-        let mut brace_depth = 0i32;
-        let mut encountered_brace = false;
-
-        while index < len {
-            let ch = chars[index];
-            buffer.push(ch);
-            index += 1;
-
-            if in_string {
-                if escape {
-                    escape = false;
-                    continue;
-                }
-                if ch == '\\' {
-                    escape = true;
-                } else if ch == string_delim {
-                    in_string = false;
-                }
-                continue;
-            }
-
-            match ch {
-                '\'' | '"' => {
-                    in_string = true;
-                    string_delim = ch;
-                }
-                '(' => paren_depth += 1,
-                ')' => {
-                    if paren_depth > 0 {
-                        paren_depth -= 1;
-                    }
-                }
-                '{' => {
-                    brace_depth += 1;
-                    encountered_brace = true;
-                }
-                '}' => {
-                    if brace_depth > 0 {
-                        brace_depth -= 1;
-                        if encountered_brace && brace_depth == 0 && paren_depth == 0 {
-                            break;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        if brace_depth != 0 {
-            return Err(String::from(tr("Function is missing a closing brace.")));
-        }
-
-        Ok((buffer.trim().to_string(), index))
-    }
-
-    fn collect_single_quoted_string(
-        chars: &[char],
-        start: usize,
-    ) -> Result<(String, usize), String> {
-        let (raw, next_index) = Self::read_single_quoted(chars, start)?;
-        Ok((Value::String(raw).to_string(), next_index))
-    }
-
-    fn read_single_quoted(chars: &[char], start: usize) -> Result<(String, usize), String> {
-        let mut buffer = String::new();
-        let mut index = start + 1;
-        let len = chars.len();
-
-        while index < len {
-            match chars[index] {
-                '\\' => {
-                    index += 1;
-                    if index >= len {
-                        return Err(String::from(tr(
-                            "Single-quoted string contains an unfinished escape sequence.",
-                        )));
-                    }
-
-                    let (ch, consumed) = match chars[index] {
-                        '\\' => ('\\', 1),
-                        '\'' => ('\'', 1),
-                        '"' => ('"', 1),
-                        'n' => ('\n', 1),
-                        'r' => ('\r', 1),
-                        't' => ('\t', 1),
-                        'b' => ('\u{0008}', 1),
-                        'f' => ('\u{000C}', 1),
-                        'v' => ('\u{000B}', 1),
-                        '0' => ('\u{0000}', 1),
-                        'x' => {
-                            if index + 2 >= len {
-                                return Err(String::from(tr(
-                                    "The \\x sequence must contain two hex digits.",
-                                )));
-                            }
-                            let high = Self::hex_value(chars[index + 1])?;
-                            let low = Self::hex_value(chars[index + 2])?;
-                            let value = ((high << 4) | low) as u32;
-                            (Self::codepoint_to_char(value)?, 3)
-                        }
-                        'u' => {
-                            if index + 4 >= len {
-                                return Err(String::from(tr(
-                                    "The \\u sequence must contain four hex digits.",
-                                )));
-                            }
-                            let mut value = 0u32;
-                            for offset in 1..=4 {
-                                value = (value << 4) | Self::hex_value(chars[index + offset])?;
-                            }
-                            (Self::codepoint_to_char(value)?, 5)
-                        }
-                        other => (other, 1),
-                    };
-
-                    buffer.push(ch);
-                    index += consumed;
-                }
-                '\'' => return Ok((buffer, index + 1)),
-                other => {
-                    buffer.push(other);
-                    index += 1;
-                }
-            }
-        }
-
-        Err(String::from(tr("Single-quoted string is not closed.")))
-    }
-
-    fn skip_single_quoted(chars: &[char], start: usize) -> Result<usize, String> {
-        let (_, next) = Self::read_single_quoted(chars, start)?;
-        Ok(next)
-    }
-
-    fn skip_double_quoted(chars: &[char], start: usize) -> Result<usize, String> {
-        let mut index = start + 1;
-        let len = chars.len();
-
-        while index < len {
-            match chars[index] {
-                '\\' => {
-                    index += 2;
-                }
-                '\"' => return Ok(index + 1),
-                _ => index += 1,
-            }
-        }
-
-        Err(String::from(tr("Double-quoted string is not closed.")))
-    }
-
-    fn hex_value(ch: char) -> Result<u32, String> {
-        ch.to_digit(16).ok_or_else(|| {
-            tr_format("Invalid hex character '{}' in escape sequence.", &[&ch.to_string()])
-        })
-    }
-
-    fn codepoint_to_char(value: u32) -> Result<char, String> {
-        char::from_u32(value).ok_or_else(|| {
-            tr_format("Code point 0x{} is not a valid character.", &[&format!("{value:04X}")])
-        })
-    }
-
-    fn is_identifier_start(ch: char) -> bool {
-        ch.is_ascii_alphabetic() || ch == '_'
-    }
-
-    fn is_identifier_part(ch: char) -> bool {
-        ch.is_ascii_alphanumeric() || ch == '_' || ch == '.'
-    }
-
-    fn is_special_construct(identifier: &str) -> bool {
-        matches!(
-            identifier,
-            "ObjectId"
-                | "ObjectId.fromDate"
-                | "ISODate"
-                | "Date"
-                | "NumberDecimal"
-                | "NumberLong"
-                | "NumberInt"
-                | "NumberDouble"
-                | "Number"
-                | "String"
-                | "Boolean"
-                | "BinData"
-                | "HexData"
-                | "UUID"
-                | "Timestamp"
-                | "RegExp"
-                | "Code"
-                | "Array"
-                | "Object"
-                | "DBRef"
-                | "MinKey"
-                | "MaxKey"
-                | "Undefined"
-        )
-    }
-
-    fn convert_special_construct(
-        chars: &[char],
-        after_identifier: usize,
-        identifier: &str,
-    ) -> Result<Option<(String, usize)>, String> {
-        let mut index = after_identifier;
-        let len = chars.len();
-
-        while index < len && chars[index].is_whitespace() {
-            index += 1;
-        }
-
-        if index >= len || chars[index] != '(' {
-            return Ok(None);
-        }
-
-        index += 1;
-        let args_start = index;
-        let mut depth = 0usize;
-
-        while index < len {
-            match chars[index] {
-                '(' => {
-                    depth += 1;
-                    index += 1;
-                }
-                ')' => {
-                    if depth == 0 {
-                        let args: String = chars[args_start..index].iter().collect();
-                        let replacement = Self::build_extended_json(identifier, &args)?;
-                        return Ok(Some((replacement, index + 1)));
-                    }
-                    depth -= 1;
-                    index += 1;
-                }
-                '\'' => {
-                    index = Self::skip_single_quoted(chars, index)?;
-                }
-                '\"' => {
-                    index = Self::skip_double_quoted(chars, index)?;
-                }
-                _ => index += 1,
-            }
-        }
-
-        Err(tr_format("Call parenthesis for {} is not closed.", &[identifier]))
-    }
-
-    fn build_extended_json(identifier: &str, args: &str) -> Result<String, String> {
-        let parts = Self::split_arguments(args);
-        let bson = Self::build_special_bson(identifier, &parts)?;
-        Self::bson_to_extended_json(bson)
-    }
-
-    fn build_special_bson(identifier: &str, parts: &[String]) -> Result<Bson, String> {
-        match identifier {
-            "ObjectId" => {
-                let object_id = match parts.len() {
-                    0 => ObjectId::new(),
-                    1 => {
-                        let value = Self::parse_shell_json_value(&parts[0])?;
-                        let hex = Self::value_as_string(&value)?;
-                        ObjectId::from_str(&hex).map_err(|_| {
-                            String::from(tr(
-                                "ObjectId requires a 24-character hex string or no arguments.",
-                            ))
-                        })?
-                    }
-                    _ => {
-                        return Err(String::from(tr(
-                            "ObjectId accepts either zero or one string argument.",
-                        )));
-                    }
-                };
-                Ok(Bson::ObjectId(object_id))
-            }
-            "ObjectId.fromDate" => {
-                if parts.len() != 1 {
-                    return Err(String::from(tr("ObjectId.fromDate expects a single argument.")));
-                }
-                let date = parse_date_constructor(&[parts[0].clone()])?;
-                let seconds = (date.timestamp_millis() / 1000) as u32;
-                Ok(Bson::ObjectId(ObjectId::from_parts(seconds, [0; 5], [0; 3])))
-            }
-            "ISODate" | "Date" => {
-                let datetime = parse_date_constructor(parts)?;
-                Ok(Bson::DateTime(datetime))
-            }
-            "NumberDecimal" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
-                let value = Self::parse_shell_json_value(&literal)?;
-                let text = Self::value_as_string(&value)?;
-                let decimal = Decimal128::from_str(&text).map_err(|_| {
-                    String::from(tr("NumberDecimal expects a valid decimal value."))
-                })?;
-                Ok(Bson::Decimal128(decimal))
-            }
-            "NumberLong" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
-                let value = Self::parse_shell_json_value(&literal)?;
-                let text = Self::value_as_string(&value)?;
-                let parsed = i128::from_str(&text)
-                    .map_err(|_| String::from(tr("NumberLong expects an integer.")))?;
-                let value = i64::try_from(parsed)
-                    .map_err(|_| String::from(tr("NumberLong value exceeds the i64 range.")))?;
-                Ok(Bson::Int64(value))
-            }
-            "NumberInt" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
-                let value = Self::parse_shell_json_value(&literal)?;
-                let text = Self::value_as_string(&value)?;
-                let parsed = i64::from_str(&text)
-                    .map_err(|_| String::from(tr("NumberInt expects an integer.")))?;
-                let value = i32::try_from(parsed)
-                    .map_err(|_| String::from(tr("NumberInt value is out of the Int32 range.")))?;
-                Ok(Bson::Int32(value))
-            }
-            "NumberDouble" | "Number" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("0")));
-                let value = Self::parse_shell_json_value(&literal)?;
-                let number = Self::value_as_f64(&value)?;
-                Ok(Bson::Double(number))
-            }
-            "Boolean" => {
-                let literal = parts.get(0).cloned().unwrap_or_else(|| String::from(tr("false")));
-                let value = Self::parse_shell_json_value(&literal)?;
-                let flag = Self::value_as_bool(&value)?;
-                Ok(Bson::Boolean(flag))
-            }
-            "String" => {
-                let text = if let Some(arg) = parts.get(0) {
-                    let value = Self::parse_shell_json_value(arg)?;
-                    Self::value_as_string(&value)?
-                } else {
-                    String::new()
-                };
-                Ok(Bson::String(text))
-            }
-            "UUID" => {
-                let uuid = if let Some(arg) = parts.get(0) {
-                    let value = Self::parse_shell_json_value(arg)?;
-                    let text = Self::value_as_string(&value)?;
-                    Uuid::parse_str(&text)
-                            .map_err(|_| String::from(tr("UUID expects a string in the format xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.")))?
-                } else {
-                    Uuid::new_v4()
-                };
-                Ok(Bson::Binary(Binary {
-                    subtype: BinarySubtype::Uuid,
-                    bytes: uuid.as_bytes().to_vec(),
-                }))
-            }
-            "BinData" => {
-                if parts.len() != 2 {
-                    return Err(String::from(tr(
-                        "BinData expects two arguments: a subtype and a base64 string.",
-                    )));
-                }
-                let subtype_value = Self::parse_shell_json_value(&parts[0])?;
-                let subtype = Self::value_as_u8(&subtype_value)?;
-                let data_value = Self::parse_shell_json_value(&parts[1])?;
-                let encoded = data_value.as_str().ok_or_else(|| {
-                    String::from(tr("BinData expects a base64 string as the second argument."))
-                })?;
-                let bytes = BASE64_STANDARD
-                    .decode(encoded)
-                    .map_err(|_| String::from(tr("Unable to decode the BinData base64 string.")))?;
-                Ok(Bson::Binary(Binary { subtype: BinarySubtype::from(subtype), bytes }))
-            }
-            "HexData" => {
-                if parts.len() != 2 {
-                    return Err(String::from(tr(
-                        "HexData expects two arguments: a subtype and a hex string.",
-                    )));
-                }
-                let subtype_value = Self::parse_shell_json_value(&parts[0])?;
-                let subtype = Self::value_as_u8(&subtype_value)?;
-                let hex_value = Self::parse_shell_json_value(&parts[1])?;
-                let hex_string = hex_value.as_str().ok_or_else(|| {
-                    String::from(tr("HexData expects a string as the second argument."))
-                })?;
-                let bytes = Self::decode_hex(hex_string)?;
-                Ok(Bson::Binary(Binary { subtype: BinarySubtype::from(subtype), bytes }))
-            }
-            "Array" => {
-                let mut items = Vec::new();
-                for part in parts {
-                    let value = Self::parse_shell_bson_value(part)?;
-                    items.push(value);
-                }
-                Ok(Bson::Array(items))
-            }
-            "Object" => {
-                if parts.is_empty() {
-                    return Ok(Bson::Document(Document::new()));
-                }
-                let value = Self::parse_shell_bson_value(&parts[0])?;
-                match value {
-                    Bson::Document(doc) => Ok(Bson::Document(doc)),
-                    other => Err(tr_format(
-                        "Object expects a JSON object, but received a value of type {}.",
-                        &[&format!("{other:?}")],
-                    )),
-                }
-            }
-            "Timestamp" => {
-                if parts.len() != 2 {
-                    return Err(String::from(tr(
-                        "Timestamp expects two arguments: time and increment.",
-                    )));
-                }
-                let time = Self::parse_timestamp_seconds(&parts[0])?;
-                let increment = Self::parse_u32_argument(&parts[1], "Timestamp", "i")?;
-                Ok(Bson::Timestamp(BsonTimestamp { time, increment }))
-            }
-            "RegExp" => {
-                if parts.is_empty() || parts.len() > 2 {
-                    return Err(String::from(tr("RegExp expects a pattern and optional options.")));
-                }
-                let pattern_value = Self::parse_shell_json_value(&parts[0])?;
-                let pattern = pattern_value
-                    .as_str()
-                    .ok_or_else(|| String::from(tr("RegExp expects a string pattern.")))?
-                    .to_string();
-                let options = if let Some(arg) = parts.get(1) {
-                    let options_value = Self::parse_shell_json_value(arg)?;
-                    options_value
-                        .as_str()
-                        .ok_or_else(|| String::from(tr("RegExp options must be a string.")))?
-                        .to_string()
-                } else {
-                    String::new()
-                };
-                Ok(Bson::RegularExpression(Regex { pattern, options }))
-            }
-            "Code" => {
-                let code_text = parts.get(0).cloned().unwrap_or_else(String::new);
-                let code_value = Self::parse_shell_json_value(&code_text)?;
-                let code = Self::value_as_string(&code_value)?;
-                if let Some(scope_part) = parts.get(1) {
-                    let scope_bson = Self::parse_shell_bson_value(scope_part)?;
-                    let scope = match scope_bson {
-                        Bson::Document(doc) => doc,
-                        _ => {
-                            return Err(String::from(tr(
-                                "The second argument to Code must be an object.",
-                            )));
-                        }
-                    };
-                    Ok(Bson::JavaScriptCodeWithScope(JavaScriptCodeWithScope { code, scope }))
-                } else {
-                    Ok(Bson::JavaScriptCode(code))
-                }
-            }
-            "DBRef" => {
-                if parts.len() < 2 || parts.len() > 3 {
-                    return Err(String::from(tr(
-                        "DBRef expects two or three arguments: collection, _id, and an optional database name.",
-                    )));
-                }
-                let collection_value = Self::parse_shell_json_value(&parts[0])?;
-                let collection = Self::value_as_string(&collection_value)?;
-                let id_bson = Self::parse_shell_bson_value(&parts[1])?;
-                let id = match id_bson {
-                    Bson::ObjectId(oid) => oid,
-                    _ => {
-                        return Err(String::from(tr(
-                            "DBRef expects an ObjectId as the second argument.",
-                        )));
-                    }
-                };
-                let db_name = if let Some(db_part) = parts.get(2) {
-                    let value = Self::parse_shell_json_value(db_part)?;
-                    Some(Self::value_as_string(&value)?)
-                } else {
-                    None
-                };
-                let mut doc = Document::new();
-                doc.insert("$ref", Bson::String(collection));
-                doc.insert("$id", Bson::ObjectId(id));
-                if let Some(db) = db_name {
-                    doc.insert("$db", Bson::String(db));
-                }
-                Ok(Bson::Document(doc))
-            }
-            "MinKey" => Ok(Bson::MinKey),
-            "MaxKey" => Ok(Bson::MaxKey),
-            "Undefined" => Ok(Bson::Undefined),
-            _ => Err(tr_format("Constructor '{}' is not supported.", &[identifier])),
-        }
-    }
-
-    fn bson_to_extended_json(value: Bson) -> Result<String, String> {
-        serde_json::to_string(&value).map_err(|error| format!("JSON serialization error: {error}"))
+        crate::mongo::shell::parse_shell_json_value(&quoted)
     }
 
     fn parse_shell_bson_value(source: &str) -> Result<Bson, String> {
         let quoted = quote_unquoted_keys(source);
-        let normalized = Self::preprocess_shell_json(&quoted)?;
-        crate::mongo::shell::parse_shell_bson_value(&normalized)
-    }
-
-    fn value_as_bool(value: &Value) -> Result<bool, String> {
-        crate::mongo::shell::value_as_bool(value)
-    }
-
-    fn value_as_f64(value: &Value) -> Result<f64, String> {
-        crate::mongo::shell::value_as_f64(value)
-    }
-
-    fn parse_timestamp_seconds(value: &str) -> Result<u32, String> {
-        let trimmed = value.trim();
-        if let Some(prefix) = trimmed.strip_suffix(".getTime()/1000") {
-            let date = parse_date_constructor(&[prefix.trim().to_string()])?;
-            return Ok((date.timestamp_millis() / 1000) as u32);
-        }
-
-        if let Some(prefix) = trimmed.strip_suffix(".getTime()") {
-            let date = parse_date_constructor(&[prefix.trim().to_string()])?;
-            return Ok(date.timestamp_millis() as u32);
-        }
-
-        let bson = Self::parse_shell_bson_value(trimmed)?;
-        match bson {
-            Bson::DateTime(dt) => Ok((dt.timestamp_millis() / 1000) as u32),
-            Bson::Int32(value) => Ok(value as u32),
-            Bson::Int64(value) => u32::try_from(value)
-                .map_err(|_| String::from(tr("Timestamp time value must fit into u32."))),
-            Bson::Double(value) => Ok(value as u32),
-            Bson::String(text) => {
-                if let Ok(dt) = DateTime::parse_rfc3339_str(&text) {
-                    Ok((dt.timestamp_millis() / 1000) as u32)
-                } else {
-                    let number = text.parse::<f64>().map_err(|_| {
-                        String::from(tr(
-                            "String value in Timestamp must be a number or an ISO date.",
-                        ))
-                    })?;
-                    Ok(number as u32)
-                }
-            }
-            other => Err(tr_format(
-                "The first argument to Timestamp must be a number or a date; received {}.",
-                &[&format!("{other:?}")],
-            )),
-        }
-    }
-
-    fn parse_u32_argument(value: &str, context: &str, field: &str) -> Result<u32, String> {
-        let bson = Self::parse_shell_bson_value(value)?;
-        match bson {
-            Bson::Int32(v) => Ok(v as u32),
-            Bson::Int64(v) => u32::try_from(v)
-                .map_err(|_| tr_format("{}::{} must fit into u32.", &[context, field])),
-            Bson::Double(v) => Ok(v as u32),
-            Bson::String(text) => text
-                .parse::<u32>()
-                .map_err(|_| tr_format("{}::{} must be a positive integer.", &[context, field])),
-            other => Err(tr_format(
-                "{}::{} must be a number, received {}.",
-                &[context, field, &format!("{other:?}")],
-            )),
-        }
-    }
-
-    fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
-        let cleaned: String = value.chars().filter(|ch| !ch.is_whitespace()).collect();
-        if cleaned.len() % 2 != 0 {
-            return Err(String::from(tr("Hex string must contain an even number of characters.")));
-        }
-        let mut bytes = Vec::with_capacity(cleaned.len() / 2);
-        let chars: Vec<char> = cleaned.chars().collect();
-        for chunk in chars.chunks(2) {
-            let high = Self::hex_value(chunk[0])?;
-            let low = Self::hex_value(chunk[1])?;
-            bytes.push(((high << 4) | low) as u8);
-        }
-        Ok(bytes)
-    }
-
-    fn value_as_string(value: &Value) -> Result<String, String> {
-        if let Some(s) = value.as_str() {
-            Ok(s.to_string())
-        } else if value.is_number() {
-            Ok(value.to_string())
-        } else {
-            Err(String::from(tr("Argument must be a string or a number.")))
-        }
-    }
-
-    fn value_as_u8(value: &Value) -> Result<u8, String> {
-        if let Some(number) = value.as_u64() {
-            u8::try_from(number)
-                .map_err(|_| String::from(tr("BinData subtype must be a number from 0 to 255.")))
-        } else if let Some(number) = value.as_i64() {
-            if (0..=255).contains(&number) {
-                Ok(number as u8)
-            } else {
-                Err(String::from(tr("BinData subtype must be a number from 0 to 255.")))
-            }
-        } else if let Some(text) = value.as_str() {
-            u8::from_str_radix(text, 16)
-                .map_err(|_| String::from(tr("BinData subtype must be a number or a hex string.")))
-        } else {
-            Err(String::from(tr("BinData subtype must be a number.")))
-        }
+        crate::mongo::shell::parse_shell_bson_value(&quoted)
     }
 
     fn parse_json_object(source: &str) -> Result<Document, String> {
         let value = Self::parse_shell_json_value(source)?;
         let object =
             value.as_object().ok_or_else(|| String::from(tr("Argument must be a JSON object.")))?;
-        bson::to_document(object).map_err(|error| format!("BSON conversion error: {error}"))
+        Self::json_object_to_document(object)
+    }
+
+    fn json_object_to_document(object: &Map<String, Value>) -> Result<Document, String> {
+        let mut document = Document::new();
+        for (key, value) in object {
+            document.insert(key.clone(), Self::json_value_to_bson(value)?);
+        }
+        Ok(document)
+    }
+
+    fn json_value_to_bson(value: &Value) -> Result<Bson, String> {
+        let bson =
+            bson::to_bson(value).map_err(|error| format!("BSON conversion error: {error}"))?;
+        Self::normalize_numeric_bson(value, bson)
+    }
+
+    fn json_number_to_bson(number: &Number) -> Result<Bson, String> {
+        if let Some(value) = number.as_i64() {
+            return Ok(i32::try_from(value).map_or_else(|_| Bson::Int64(value), Bson::Int32));
+        }
+
+        if let Some(value) = number.as_u64() {
+            if let Ok(int32_value) = i32::try_from(value) {
+                return Ok(Bson::Int32(int32_value));
+            }
+
+            if let Ok(int64_value) = i64::try_from(value) {
+                return Ok(Bson::Int64(int64_value));
+            }
+
+            return Err(String::from("BSON conversion error: integer value exceeds Int64 range."));
+        }
+
+        if let Some(value) = number.as_f64() {
+            return Ok(Bson::Double(value));
+        }
+
+        Err(String::from("BSON conversion error: unsupported JSON number representation."))
+    }
+
+    fn normalize_numeric_bson(source: &Value, bson: Bson) -> Result<Bson, String> {
+        match source {
+            Value::Number(number) => Self::json_number_to_bson(number),
+            Value::Array(values) => match bson {
+                Bson::Array(items) => {
+                    let mut normalized = Vec::with_capacity(items.len());
+                    for (index, item) in items.into_iter().enumerate() {
+                        if let Some(source_item) = values.get(index) {
+                            normalized.push(Self::normalize_numeric_bson(source_item, item)?);
+                        } else {
+                            normalized.push(item);
+                        }
+                    }
+                    Ok(Bson::Array(normalized))
+                }
+                other => Ok(other),
+            },
+            Value::Object(map) => match bson {
+                Bson::Document(mut document) => {
+                    for (key, source_value) in map {
+                        if let Some(value) = document.remove(key) {
+                            let normalized = Self::normalize_numeric_bson(source_value, value)?;
+                            document.insert(key.clone(), normalized);
+                        }
+                    }
+                    Ok(Bson::Document(document))
+                }
+                other => Ok(other),
+            },
+            _ => Ok(bson),
+        }
     }
 
     fn default_index_name(keys: &Document) -> String {
@@ -6018,7 +5238,9 @@ pub fn run_collection_query(
 mod tests {
     use super::*;
     use mongodb::bson::doc;
+    use mongodb::bson::oid::ObjectId;
     use serde_json::json;
+    use std::str::FromStr;
 
     fn parse(query: &str) -> QueryOperation {
         parse_collection_query_with_collection("testdb", "users", query)
@@ -6085,7 +5307,7 @@ mod tests {
             QueryOperation::Find { filter, options } => {
                 assert_eq!(filter, doc! { "active": true });
                 let parsed = options.expect("modifiers expected");
-                assert_eq!(parsed.sort, Some(doc! { "score": -1i64 }));
+                assert_eq!(parsed.sort, Some(doc! { "score": -1i32 }));
                 match parsed.hint {
                     Some(Hint::Name(name)) => assert_eq!(name, "score_1"),
                     other => panic!("unexpected hint: {:?}", other),
@@ -6121,7 +5343,7 @@ mod tests {
                 let parsed = options.expect("options expected");
                 assert_eq!(parsed.limit, Some(5));
                 match parsed.hint {
-                    Some(Hint::Keys(doc)) => assert_eq!(doc, doc! { "status": 1i64 }),
+                    Some(Hint::Keys(doc)) => assert_eq!(doc, doc! { "status": 1i32 }),
                     other => panic!("unexpected hint: {:?}", other),
                 }
             }
@@ -6177,7 +5399,79 @@ mod tests {
                 };
                 assert_eq!(
                     pipeline,
-                    vec![doc! { "$set": { "age": 42i64 } }, doc! { "$unset": "temp" }]
+                    vec![doc! { "$set": { "age": 42i32 } }, doc! { "$unset": "temp" }]
+                );
+                assert!(options.is_none());
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_insert_one_with_int32_literals() {
+        let operation = parse("db.getCollection('a').insertOne({\"age\": 18, \"name\": \"Nik\"})");
+
+        match operation {
+            QueryOperation::InsertOne { document, options } => {
+                assert_eq!(document, doc! { "age": 18i32, "name": "Nik" });
+                assert!(options.is_none());
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_update_many_inc_with_int32_literal() {
+        let operation = parse("db.a.updateMany({}, {\"$inc\": {\"age\": 1}})");
+
+        match operation {
+            QueryOperation::UpdateMany { update, options, .. } => {
+                match update {
+                    UpdateModificationsSpec::Document(document) => {
+                        assert_eq!(document, doc! { "$inc": { "age": 1i32 } });
+                    }
+                    other => panic!("expected update document, got {:?}", other),
+                }
+                assert!(options.is_none());
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_update_one_with_number_long_preserves_int64() {
+        let operation = parse(
+            "db.getCollection('b').updateOne({_id: ObjectId(\"69baaa2db784569caf254487\")}, {$set: {value: NumberLong(11)}})",
+        );
+
+        match operation {
+            QueryOperation::UpdateOne { filter, update, options } => {
+                assert_eq!(
+                    filter,
+                    doc! { "_id": Bson::ObjectId(ObjectId::parse_str("69baaa2db784569caf254487").unwrap()) }
+                );
+                match update {
+                    UpdateModificationsSpec::Document(document) => {
+                        assert_eq!(document, doc! { "$set": { "value": 11i64 } });
+                    }
+                    other => panic!("expected update document, got {:?}", other),
+                }
+                assert!(options.is_none());
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_find_with_object_id_filter() {
+        let operation =
+            parse("db.getCollection('b').find({_id: ObjectId(\"69baaa2db784569caf254487\")})");
+
+        match operation {
+            QueryOperation::Find { filter, options } => {
+                assert_eq!(
+                    filter,
+                    doc! { "_id": Bson::ObjectId(ObjectId::from_str("69baaa2db784569caf254487").unwrap()) }
                 );
                 assert!(options.is_none());
             }
@@ -6253,14 +5547,14 @@ mod tests {
         let write_concern = options.write_concern.expect("write concern");
         assert!(matches!(write_concern.w, Some(Acknowledgment::Majority)));
         assert_eq!(options.upsert, Some(true));
-        assert_eq!(options.array_filters, Some(vec![doc! { "score": { "$gt": 5i64 } }]));
+        assert_eq!(options.array_filters, Some(vec![doc! { "score": { "$gt": 5i32 } }]));
         let collation = options.collation.expect("collation expected");
         assert_eq!(collation.locale, "en");
-        assert_eq!(options.hint, Some(Hint::Keys(doc! { "score": -1i64 })));
+        assert_eq!(options.hint, Some(Hint::Keys(doc! { "score": -1i32 })));
         assert_eq!(options.bypass_document_validation, Some(false));
-        assert_eq!(options.let_vars, Some(doc! { "threshold": 10i64 }));
+        assert_eq!(options.let_vars, Some(doc! { "threshold": 10i32 }));
         assert_eq!(options.comment, Some(Bson::String("touch".to_string())));
-        assert_eq!(options.sort, Some(doc! { "score": -1i64 }));
+        assert_eq!(options.sort, Some(doc! { "score": -1i32 }));
     }
 
     #[test]
@@ -6295,13 +5589,13 @@ mod tests {
         assert_eq!(options.array_filters, Some(vec![doc! { "elem.status": { "$ne": "done" } }]));
         assert_eq!(options.bypass_document_validation, Some(true));
         assert_eq!(options.max_time, Some(Duration::from_millis(1500)));
-        assert_eq!(options.projection, Some(doc! { "name": 1i64 }));
+        assert_eq!(options.projection, Some(doc! { "name": 1i32 }));
         assert!(matches!(options.return_document, Some(ReturnDocument::After)));
-        assert_eq!(options.sort, Some(doc! { "age": -1i64 }));
+        assert_eq!(options.sort, Some(doc! { "age": -1i32 }));
         let collation = options.collation.unwrap();
         assert_eq!(collation.locale, "fr");
         assert_eq!(options.hint, Some(Hint::Name("age_1".to_string())));
-        assert_eq!(options.let_vars, Some(doc! { "var": 1i64 }));
+        assert_eq!(options.let_vars, Some(doc! { "var": 1i32 }));
         assert_eq!(options.comment, Some(Bson::Document(doc! { "note": "keep" })));
     }
 
