@@ -1027,7 +1027,7 @@ fn build_special_bson(identifier: &str, parts: &[String]) -> Result<Bson, String
 }
 
 fn bson_to_extended_json(value: Bson) -> Result<String, String> {
-    let extended = value.into_relaxed_extjson();
+    let extended = value.into_canonical_extjson();
     serde_json::to_string(&extended).map_err(|error| format!("JSON serialization error: {error}"))
 }
 
@@ -1585,6 +1585,7 @@ mod tests {
             Bson::Int64(long_val)
         );
         assert_eq!(parse_shell_bson_value("NumberInt(\"123\")").unwrap(), Bson::Int32(123));
+        assert_eq!(parse_shell_bson_value("NumberLong(\"10\")").unwrap(), Bson::Int64(10));
 
         let uuid_str = "d3f4b7a0-2b7e-4b7e-8b7e-d3f4b7a02b7e";
         let uuid = Uuid::parse_str(uuid_str).unwrap();
