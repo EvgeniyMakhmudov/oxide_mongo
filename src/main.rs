@@ -19,7 +19,7 @@ use iced::futures::stream;
 use iced::keyboard::{self, key};
 use iced::theme::{Base, Mode};
 use iced::widget::image::Handle;
-use iced::widget::operation::{focus, focus_next};
+use iced::widget::operation::{focus, focus_next, snap_to};
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::scrollable;
 use iced::widget::text::Wrapping;
@@ -222,6 +222,14 @@ pub(crate) enum Message {
     },
     CollectionTextCopyJson {
         tab_id: TabId,
+    },
+    CollectionTableScrolled {
+        tab_id: TabId,
+        offset_y: f32,
+    },
+    CollectionTextScrolled {
+        tab_id: TabId,
+        offset_y: f32,
     },
     DocumentEditRequested {
         tab_id: TabId,
@@ -823,6 +831,8 @@ struct CollectionTab {
     bson_tree: BsonTree,
     response_view_mode: ResponseViewMode,
     text_result: Option<TextResultView>,
+    table_scroll_offset: f32,
+    text_scroll_offset: f32,
     skip_input: String,
     limit_input: String,
     query_in_progress: bool,
@@ -985,6 +995,8 @@ impl CollectionTab {
             bson_tree,
             response_view_mode: ResponseViewMode::Table,
             text_result,
+            table_scroll_offset: 0.0,
+            text_scroll_offset: 0.0,
             skip_input: DEFAULT_RESULT_SKIP.to_string(),
             limit_input: DEFAULT_RESULT_LIMIT.to_string(),
             query_in_progress: false,
@@ -1277,7 +1289,14 @@ impl CollectionTab {
                     }),
             );
 
-            let scroll = Scrollable::new(column).width(Length::Fill).height(Length::Fill);
+            let scroll = Scrollable::new(column)
+                .id(App::text_body_scroll_id(tab_id))
+                .on_scroll(move |viewport| Message::CollectionTextScrolled {
+                    tab_id,
+                    offset_y: viewport.relative_offset().y,
+                })
+                .width(Length::Fill)
+                .height(Length::Fill);
             let menu_palette = self.palette.clone();
             let menu_palette_border = self.palette.clone();
             let menu = move || {
@@ -1394,6 +1413,8 @@ impl CollectionTab {
 
     fn set_query_result(&mut self, result: QueryResult, settings: &AppSettings) {
         self.palette = settings.active_palette().clone();
+        self.table_scroll_offset = 0.0;
+        self.text_scroll_offset = 0.0;
 
         let cached = result.clone();
         self.last_result = Some(cached);
@@ -1422,6 +1443,8 @@ impl CollectionTab {
 
     fn set_tree_error(&mut self, error: String) {
         log::error!("{error}");
+        self.table_scroll_offset = 0.0;
+        self.text_scroll_offset = 0.0;
         self.bson_tree = BsonTree::from_error(error);
         self.bson_tree.set_table_colors(self.palette.table.clone());
         self.bson_tree.set_menu_colors(self.palette.menu.clone());
@@ -1464,6 +1487,59 @@ impl Default for App {
 }
 
 impl App {
+    fn table_body_scroll_id(tab_id: TabId) -> String {
+        format!("bson-tree-body-{tab_id}")
+    }
+
+    fn text_body_scroll_id(tab_id: TabId) -> String {
+        format!("collection-text-body-{tab_id}")
+    }
+
+    fn restore_table_scroll_for_tab(&self, tab_id: TabId) -> Task<Message> {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return Task::none();
+        };
+
+        let offset = scrollable::RelativeOffset {
+            x: 0.0,
+            y: tab.collection.table_scroll_offset.clamp(0.0, 1.0),
+        };
+
+        snap_to(Self::table_body_scroll_id(tab_id), offset)
+    }
+
+    fn restore_text_scroll_for_tab(&self, tab_id: TabId) -> Task<Message> {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return Task::none();
+        };
+
+        let offset = scrollable::RelativeOffset {
+            x: 0.0,
+            y: tab.collection.text_scroll_offset.clamp(0.0, 1.0),
+        };
+
+        snap_to(Self::text_body_scroll_id(tab_id), offset)
+    }
+
+    fn restore_response_scroll_for_tab(&self, tab_id: TabId) -> Task<Message> {
+        let Some(tab) = self.tabs.iter().find(|tab| tab.id == tab_id) else {
+            return Task::none();
+        };
+
+        match tab.collection.response_view_mode {
+            ResponseViewMode::Table => self.restore_table_scroll_for_tab(tab_id),
+            ResponseViewMode::Text => self.restore_text_scroll_for_tab(tab_id),
+        }
+    }
+
+    fn restore_active_response_scroll(&self) -> Task<Message> {
+        if let Some(tab_id) = self.active_tab {
+            return self.restore_response_scroll_for_tab(tab_id);
+        }
+
+        Task::none()
+    }
+
     fn handle_hotkey(key: keyboard::Key, modifiers: keyboard::Modifiers) -> Option<Message> {
         match key.as_ref() {
             keyboard::Key::Named(key::Named::F2) => Some(Message::MenuItemSelected(
@@ -1563,6 +1639,7 @@ impl App {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::MenuItemSelected(menu, entry) => {
+                let mut restore_scroll_for_tab = None;
                 match entry {
                     MenuEntry::Action(label) => {
                         if menu == TopMenu::File && label == "Connections" {
@@ -1588,26 +1665,33 @@ impl App {
                                         tab.collection.build_text_result(&result);
                                     }
                                 }
+                                restore_scroll_for_tab = Some(active_id);
                             }
                         }
                     }
                 }
-                Task::none()
+                if let Some(tab_id) = restore_scroll_for_tab {
+                    self.restore_response_scroll_for_tab(tab_id)
+                } else {
+                    Task::none()
+                }
             }
             Message::TabSelected(id) => {
                 if self.tabs.iter().any(|tab| tab.id == id) {
                     self.active_tab = Some(id);
                     log::debug!("Tab selected id={}", id);
+                    return self.restore_response_scroll_for_tab(id);
                 }
                 Task::none()
             }
             Message::TabClosed(id) => {
                 if let Some(position) = self.tabs.iter().position(|tab| tab.id == id) {
+                    let was_active = self.active_tab == Some(id);
                     self.tabs.remove(position);
                     if self.tab_color_picker == Some(id) {
                         self.tab_color_picker = None;
                     }
-                    if self.active_tab == Some(id) {
+                    if was_active {
                         self.active_tab = self
                             .tabs
                             .get(position.saturating_sub(1))
@@ -1615,6 +1699,9 @@ impl App {
                             .map(|tab| tab.id);
                     }
                     log::debug!("Tab closed id={}", id);
+                    if was_active {
+                        return self.restore_active_response_scroll();
+                    }
                 }
                 Task::none()
             }
@@ -1631,6 +1718,7 @@ impl App {
                             .or_else(|| self.tabs.get(position))
                             .map(|tab| tab.id);
                         log::debug!("Tab closed id={}", active_id);
+                        return self.restore_active_response_scroll();
                     }
                 }
                 Task::none()
@@ -2929,6 +3017,18 @@ impl App {
             Message::CollectionPaneResized { tab_id, split, ratio } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.resize_split(split, ratio);
+                }
+                Task::none()
+            }
+            Message::CollectionTableScrolled { tab_id, offset_y } => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.collection.table_scroll_offset = offset_y.clamp(0.0, 1.0);
+                }
+                Task::none()
+            }
+            Message::CollectionTextScrolled { tab_id, offset_y } => {
+                if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.collection.text_scroll_offset = offset_y.clamp(0.0, 1.0);
                 }
                 Task::none()
             }

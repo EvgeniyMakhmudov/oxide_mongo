@@ -933,7 +933,14 @@ impl BsonTree {
             body = body.push(row_with_menu);
         }
 
-        let body_scroll = Scrollable::new(body).width(Length::Fill).height(Length::Fill);
+        let body_scroll = Scrollable::new(body)
+            .id(format!("bson-tree-body-{tab_id}"))
+            .on_scroll(move |viewport| Message::CollectionTableScrolled {
+                tab_id,
+                offset_y: viewport.relative_offset().y,
+            })
+            .width(Length::Fill)
+            .height(Length::Fill);
 
         let content = Column::new()
             .spacing(0)
