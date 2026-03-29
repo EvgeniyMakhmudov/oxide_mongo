@@ -19,7 +19,7 @@ use iced::futures::stream;
 use iced::keyboard::{self, key};
 use iced::theme::{Base, Mode};
 use iced::widget::image::Handle;
-use iced::widget::operation::{focus, focus_next, snap_to};
+use iced::widget::operation::{focus, snap_to};
 use iced::widget::pane_grid::ResizeEvent;
 use iced::widget::scrollable;
 use iced::widget::text::Wrapping;
@@ -37,7 +37,7 @@ use iced::{
 };
 use iced_aw::{ColorPicker, ContextMenu};
 use mongo::bson_edit::ValueEditKind;
-use mongo::bson_tree::{BsonTree, BsonTreeOptions};
+use mongo::bson_tree::{BsonTree, BsonTreeOptions, BsonTreeStats};
 use mongo::connection::{
     ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections, filter_databases,
 };
@@ -100,6 +100,17 @@ pub(crate) static ICON_NETWORK_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_APP_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_DATABASE_HANDLE: OnceLock<Handle> = OnceLock::new();
 static ICON_COLLECTION_HANDLE: OnceLock<Handle> = OnceLock::new();
+static PERF_DIAGNOSTICS_ENABLED: OnceLock<bool> = OnceLock::new();
+
+pub(crate) fn perf_diagnostics_enabled() -> bool {
+    *PERF_DIAGNOSTICS_ENABLED.get_or_init(|| {
+        std::env::var("OXIDE_MONGO_PERF_DIAGNOSTICS")
+            .map(|value| {
+                matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
+            })
+            .unwrap_or(false)
+    })
+}
 
 fn main() -> iced::Result {
     let icon = window::icon::from_file_data(WINDOW_ICON_BYTES, None)
@@ -216,6 +227,7 @@ pub(crate) enum Message {
         action: TextEditorAction,
     },
     CollectionSend(TabId),
+    FocusCollectionEditor(TabId),
     CollectionTreeToggle {
         tab_id: TabId,
         node_id: usize,
@@ -824,7 +836,7 @@ struct CollectionTab {
     collection: String,
     pending_collection: Option<String>,
     editor: TextEditorContent,
-    focus_anchor: Id,
+    editor_id: Id,
     panes: pane_grid::State<CollectionPane>,
     request_split: pane_grid::Split,
     request_ratio: f32,
@@ -988,7 +1000,7 @@ impl CollectionTab {
             collection,
             pending_collection: None,
             editor,
-            focus_anchor: Id::unique(),
+            editor_id: Id::unique(),
             panes,
             request_split: split,
             request_ratio: initial_ratio,
@@ -1185,17 +1197,9 @@ impl CollectionTab {
 
     fn request_view(&self, tab_id: TabId) -> Element<'_, Message> {
         let send_tab_id = tab_id;
-        let focus_anchor = Container::new(
-            text_input("", "")
-                .id(self.focus_anchor.clone())
-                .size(1)
-                .padding(0)
-                .width(Length::Fixed(0.0)),
-        )
-        .width(Length::Fixed(0.0))
-        .height(Length::Fixed(0.0));
         let editor_fonts = fonts::active_fonts();
         let editor = text_editor::TextEditor::new(&self.editor)
+            .id(self.editor_id.clone())
             .font(editor_fonts.editor_font)
             .size(editor_fonts.editor_size)
             .key_binding(move |key_press| {
@@ -1231,7 +1235,6 @@ impl CollectionTab {
             .align_y(Vertical::Center)
             .width(Length::Fill)
             .height(Length::Fill)
-            .push(focus_anchor)
             .push(Container::new(editor).width(Length::FillPortion(9)).height(Length::Fill).style(
                 move |_| container::Style {
                     border: border::rounded(4.0).width(1),
@@ -1271,7 +1274,19 @@ impl CollectionTab {
 
     fn response_view(&self, tab_id: TabId) -> Element<'_, Message> {
         match self.response_view_mode {
-            ResponseViewMode::Table => self.bson_tree.view(tab_id),
+            ResponseViewMode::Table => {
+                let started = Instant::now();
+                let view = self.bson_tree.view(tab_id);
+                let elapsed = started.elapsed();
+                if perf_diagnostics_enabled() && elapsed >= Duration::from_millis(16) {
+                    log::debug!(
+                        "Perf response_view(table) tab_id={} view_build_ms={:.3}",
+                        tab_id,
+                        elapsed.as_secs_f64() * 1000.0
+                    );
+                }
+                view
+            }
             ResponseViewMode::Text => self.text_result_view(tab_id),
         }
     }
@@ -1412,6 +1427,7 @@ impl CollectionTab {
     }
 
     fn set_query_result(&mut self, result: QueryResult, settings: &AppSettings) {
+        let total_started = Instant::now();
         self.palette = settings.active_palette().clone();
         self.table_scroll_offset = 0.0;
         self.text_scroll_offset = 0.0;
@@ -1419,12 +1435,15 @@ impl CollectionTab {
         let cached = result.clone();
         self.last_result = Some(cached);
 
-        if self.response_view_mode == ResponseViewMode::Text {
-            let _ = self.build_text_result(&result);
+        let text_format_ms = if self.response_view_mode == ResponseViewMode::Text {
+            let duration = self.build_text_result(&result);
+            duration.as_secs_f64() * 1000.0
         } else {
             self.text_result = None;
+            0.0
         };
 
+        let tree_build_started = Instant::now();
         let options = BsonTreeOptions::from(settings);
 
         let tree = match result {
@@ -1436,9 +1455,45 @@ impl CollectionTab {
             }
             QueryResult::Count { value } => BsonTree::from_count(value, options),
         };
+        let tree_build_ms = tree_build_started.elapsed().as_secs_f64() * 1000.0;
 
         self.bson_tree = tree;
+        let apply_started = Instant::now();
         self.apply_behavior_settings(settings);
+        let apply_ms = apply_started.elapsed().as_secs_f64() * 1000.0;
+
+        if perf_diagnostics_enabled() {
+            let total_ms = total_started.elapsed().as_secs_f64() * 1000.0;
+            let stats = self.bson_tree.diagnostics_stats();
+            self.log_result_diagnostics(total_ms, text_format_ms, tree_build_ms, apply_ms, stats);
+        }
+    }
+
+    fn log_result_diagnostics(
+        &self,
+        total_ms: f64,
+        text_format_ms: f64,
+        tree_build_ms: f64,
+        behavior_apply_ms: f64,
+        stats: BsonTreeStats,
+    ) {
+        log::debug!(
+            "Perf set_query_result db={} collection={} mode={:?} total_ms={:.3} text_format_ms={:.3} tree_build_ms={:.3} apply_behavior_ms={:.3} roots={} total_nodes={} container_nodes={} leaf_nodes={} max_depth={} expanded_nodes={} visible_rows={}",
+            self.db_name,
+            self.collection,
+            self.response_view_mode,
+            total_ms,
+            text_format_ms,
+            tree_build_ms,
+            behavior_apply_ms,
+            stats.root_count,
+            stats.total_nodes,
+            stats.container_nodes,
+            stats.leaf_nodes,
+            stats.max_depth,
+            stats.expanded_nodes,
+            stats.visible_rows
+        );
     }
 
     fn set_tree_error(&mut self, error: String) {
@@ -1918,13 +1973,14 @@ impl App {
                 if is_double {
                     self.last_collection_click = None;
                     let tab_id = self.open_collection_tab(client_id, db_name, collection);
-                    self.focus_collection_editor(tab_id)
+                    self.schedule_collection_editor_focus(tab_id)
                 } else {
                     self.last_collection_click =
                         Some(CollectionClick { client_id, db_name, collection, at: now });
                     Task::none()
                 }
             }
+            Message::FocusCollectionEditor(tab_id) => self.focus_collection_editor(tab_id),
             Message::CollectionEditorAction { tab_id, action } => {
                 if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
                     tab.collection.editor.perform(action);
@@ -1941,8 +1997,8 @@ impl App {
             }
             Message::DatabaseContextMenu { client_id, db_name, action } => match action {
                 DatabaseContextAction::OpenEmptyTab => {
-                    let _ = self.open_database_empty_tab(client_id, db_name);
-                    Task::none()
+                    let tab_id = self.open_database_empty_tab(client_id, db_name);
+                    self.schedule_collection_editor_focus(tab_id)
                 }
                 DatabaseContextAction::CreateCollection => {
                     self.collection_modal =
@@ -1964,8 +2020,8 @@ impl App {
             Message::CollectionContextMenu { client_id, db_name, collection, action } => {
                 match action {
                     CollectionContextAction::OpenEmptyTab => {
-                        let _ = self.open_collection_tab(client_id, db_name, collection);
-                        Task::none()
+                        let tab_id = self.open_collection_tab(client_id, db_name, collection);
+                        self.schedule_collection_editor_focus(tab_id)
                     }
                     CollectionContextAction::ViewDocuments => {
                         let tab_id = self.open_collection_tab(
@@ -1973,7 +2029,9 @@ impl App {
                             db_name.clone(),
                             collection.clone(),
                         );
-                        self.collection_query_task(tab_id)
+                        let query_task = self.collection_query_task(tab_id);
+                        let focus_task = self.schedule_collection_editor_focus(tab_id);
+                        Task::batch([query_task, focus_task])
                     }
                     CollectionContextAction::ChangeStream => {
                         let tab_id = self.open_collection_tab(
@@ -3263,7 +3321,7 @@ impl App {
                             }
                             let (kind, count) = Self::query_result_metrics(&query_result);
                             log::debug!(
-                                "Query completed tab_id={} db={} collection={} result={} count={} duration_ms={:.3}",
+                                "Query completed tab_id={} db={} collection={} result={} count={} query_exec_ms={:.3}",
                                 tab_id,
                                 collection.db_name,
                                 collection.collection,
@@ -5245,7 +5303,11 @@ impl App {
             return Task::none();
         };
 
-        focus::<Message>(tab.collection.focus_anchor.clone()).chain(focus_next())
+        focus::<Message>(tab.collection.editor_id.clone())
+    }
+
+    fn schedule_collection_editor_focus(&self, tab_id: TabId) -> Task<Message> {
+        Task::perform(async {}, move |_| Message::FocusCollectionEditor(tab_id))
     }
 
     fn duplicate_collection_tab(&mut self, tab_id: TabId) {

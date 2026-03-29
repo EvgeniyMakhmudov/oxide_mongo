@@ -20,10 +20,31 @@ pub struct BsonTree {
     roots: Vec<BsonNode>,
     expanded: HashSet<usize>,
     context: BsonTreeContext,
+    next_node_id: usize,
+    sort_fields_alphabetically: bool,
     table_colors: TableColors,
     menu_colors: MenuColors,
     text_color: RgbaColor,
     button_colors: ButtonColors,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BsonTreeStats {
+    pub root_count: usize,
+    pub total_nodes: usize,
+    pub container_nodes: usize,
+    pub leaf_nodes: usize,
+    pub max_depth: usize,
+    pub expanded_nodes: usize,
+    pub visible_rows: usize,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct BsonTreeStatsAccumulator {
+    total_nodes: usize,
+    container_nodes: usize,
+    leaf_nodes: usize,
+    max_depth: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,8 +179,8 @@ struct BsonNode {
 
 #[derive(Debug, Clone)]
 enum BsonKind {
-    Document(Vec<BsonNode>),
-    Array(Vec<BsonNode>),
+    Document { children: Option<Vec<BsonNode>> },
+    Array { children: Option<Vec<BsonNode>> },
     Value { display: String, ty: String },
 }
 
@@ -177,57 +198,28 @@ impl IdGenerator {
 }
 
 impl BsonNode {
-    fn from_bson(
+    fn from_bson_lazy(
         display_key: Option<String>,
         path_key: Option<String>,
         value: &Bson,
         id: &mut IdGenerator,
-        options: &BsonTreeOptions,
     ) -> Self {
         let id_value = id.next();
         match value {
-            Bson::Document(map) => {
-                let mut entries: Vec<_> = map.iter().collect();
-                if options.sort_fields_alphabetically {
-                    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
-                }
-                let children = entries
-                    .into_iter()
-                    .map(|(k, v)| {
-                        BsonNode::from_bson(Some(k.clone()), Some(k.clone()), v, id, options)
-                    })
-                    .collect();
-                Self {
-                    id: id_value,
-                    display_key,
-                    path_key,
-                    kind: BsonKind::Document(children),
-                    bson: value.clone(),
-                }
-            }
-            Bson::Array(items) => {
-                let children = items
-                    .iter()
-                    .enumerate()
-                    .map(|(index, item)| {
-                        let display = format!("[{index}]");
-                        BsonNode::from_bson(
-                            Some(display),
-                            Some(index.to_string()),
-                            item,
-                            id,
-                            options,
-                        )
-                    })
-                    .collect();
-                Self {
-                    id: id_value,
-                    display_key,
-                    path_key,
-                    kind: BsonKind::Array(children),
-                    bson: value.clone(),
-                }
-            }
+            Bson::Document(_) => Self {
+                id: id_value,
+                display_key,
+                path_key,
+                kind: BsonKind::Document { children: None },
+                bson: value.clone(),
+            },
+            Bson::Array(_) => Self {
+                id: id_value,
+                display_key,
+                path_key,
+                kind: BsonKind::Array { children: None },
+                bson: value.clone(),
+            },
             other => {
                 let (display, ty) = shell::format_bson_scalar(other);
                 Self {
@@ -242,14 +234,86 @@ impl BsonNode {
     }
 
     fn is_container(&self) -> bool {
-        matches!(self.kind, BsonKind::Document(_) | BsonKind::Array(_))
+        matches!(self.kind, BsonKind::Document { .. } | BsonKind::Array { .. })
+    }
+
+    fn has_children(&self) -> bool {
+        match &self.bson {
+            Bson::Document(doc) => !doc.is_empty(),
+            Bson::Array(items) => !items.is_empty(),
+            _ => false,
+        }
     }
 
     fn children(&self) -> Option<&[BsonNode]> {
         match &self.kind {
-            BsonKind::Document(children) | BsonKind::Array(children) => Some(children),
+            BsonKind::Document { children } | BsonKind::Array { children } => children.as_deref(),
             _ => None,
         }
+    }
+
+    fn children_mut(&mut self) -> Option<&mut [BsonNode]> {
+        match &mut self.kind {
+            BsonKind::Document { children } | BsonKind::Array { children } => {
+                children.as_deref_mut()
+            }
+            _ => None,
+        }
+    }
+
+    fn materialize_children(&mut self, next_node_id: &mut usize, sort_fields_alphabetically: bool) {
+        let mut id_gen = IdGenerator { next_id: *next_node_id };
+        match &mut self.kind {
+            BsonKind::Document { children } => {
+                if children.is_some() {
+                    return;
+                }
+
+                let Bson::Document(doc) = &self.bson else {
+                    *children = Some(Vec::new());
+                    return;
+                };
+
+                let mut entries: Vec<_> = doc.iter().collect();
+                if sort_fields_alphabetically {
+                    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                }
+
+                let loaded_children = entries
+                    .into_iter()
+                    .map(|(k, v)| {
+                        BsonNode::from_bson_lazy(Some(k.clone()), Some(k.clone()), v, &mut id_gen)
+                    })
+                    .collect();
+                *children = Some(loaded_children);
+            }
+            BsonKind::Array { children } => {
+                if children.is_some() {
+                    return;
+                }
+
+                let Bson::Array(items) = &self.bson else {
+                    *children = Some(Vec::new());
+                    return;
+                };
+
+                let loaded_children = items
+                    .iter()
+                    .enumerate()
+                    .map(|(index, item)| {
+                        BsonNode::from_bson_lazy(
+                            Some(format!("[{index}]")),
+                            Some(index.to_string()),
+                            item,
+                            &mut id_gen,
+                        )
+                    })
+                    .collect();
+                *children = Some(loaded_children);
+            }
+            BsonKind::Value { .. } => {}
+        }
+        *next_node_id = id_gen.next_id;
     }
 
     fn display_key(&self) -> String {
@@ -258,16 +322,28 @@ impl BsonNode {
 
     fn value_display(&self) -> Option<String> {
         match &self.kind {
-            BsonKind::Document(children) => Some(format!("Document ({} fields)", children.len())),
-            BsonKind::Array(children) => Some(format!("Array ({} items)", children.len())),
+            BsonKind::Document { .. } => {
+                let count = match &self.bson {
+                    Bson::Document(doc) => doc.len(),
+                    _ => 0,
+                };
+                Some(format!("Document ({} fields)", count))
+            }
+            BsonKind::Array { .. } => {
+                let count = match &self.bson {
+                    Bson::Array(items) => items.len(),
+                    _ => 0,
+                };
+                Some(format!("Array ({} items)", count))
+            }
             BsonKind::Value { display, .. } => Some(display.clone()),
         }
     }
 
     fn type_label(&self) -> String {
         match &self.kind {
-            BsonKind::Document(_) => String::from(tr("Document")),
-            BsonKind::Array(_) => String::from(tr("Array")),
+            BsonKind::Document { .. } => String::from(tr("Document")),
+            BsonKind::Array { .. } => String::from(tr("Array")),
             BsonKind::Value { ty, .. } => ty.clone(),
         }
     }
@@ -284,12 +360,11 @@ impl BsonTree {
 
         if values.is_empty() {
             let info_value = Bson::String(String::from(tr("No documents found")));
-            let placeholder = BsonNode::from_bson(
+            let placeholder = BsonNode::from_bson_lazy(
                 Some(String::from(tr("info"))),
                 None,
                 &info_value,
                 &mut id_gen,
-                &options,
             );
             roots.push(placeholder);
         } else {
@@ -303,7 +378,7 @@ impl BsonTree {
                         .unwrap_or_else(|| base_label.clone()),
                     _ => base_label.clone(),
                 };
-                roots.push(BsonNode::from_bson(Some(key), None, value, &mut id_gen, &options));
+                roots.push(BsonNode::from_bson_lazy(Some(key), None, value, &mut id_gen));
             }
         }
 
@@ -313,6 +388,8 @@ impl BsonTree {
             roots,
             expanded,
             context: BsonTreeContext::Default,
+            next_node_id: id_gen.next_id,
+            sort_fields_alphabetically: options.sort_fields_alphabetically,
             table_colors: options.table_colors.clone(),
             menu_colors: options.menu_colors.clone(),
             text_color: options.text_color,
@@ -329,15 +406,20 @@ impl BsonTree {
         let mut id_gen = IdGenerator::default();
         let array_bson = Bson::Array(values);
         let path_key = field.clone();
-        let node =
-            BsonNode::from_bson(Some(field), Some(path_key), &array_bson, &mut id_gen, &options);
+        let mut node =
+            BsonNode::from_bson_lazy(Some(field), Some(path_key), &array_bson, &mut id_gen);
         let mut expanded = HashSet::new();
-        expanded.insert(node.id);
+        if node.has_children() {
+            node.materialize_children(&mut id_gen.next_id, options.sort_fields_alphabetically);
+            expanded.insert(node.id);
+        }
 
         Self {
             roots: vec![node],
             expanded,
             context: BsonTreeContext::Default,
+            next_node_id: id_gen.next_id,
+            sort_fields_alphabetically: options.sort_fields_alphabetically,
             table_colors: options.table_colors.clone(),
             menu_colors: options.menu_colors.clone(),
             text_color: options.text_color,
@@ -347,19 +429,18 @@ impl BsonTree {
 
     pub fn from_count(value: Bson, options: BsonTreeOptions) -> Self {
         let mut id_gen = IdGenerator::default();
-        let node = BsonNode::from_bson(
+        let node = BsonNode::from_bson_lazy(
             Some(String::from(tr("count"))),
             Some(String::from(tr("count"))),
             &value,
             &mut id_gen,
-            &options,
         );
-        let mut expanded = HashSet::new();
-        expanded.insert(node.id);
         Self {
             roots: vec![node],
-            expanded,
+            expanded: HashSet::new(),
             context: BsonTreeContext::Default,
+            next_node_id: id_gen.next_id,
+            sort_fields_alphabetically: options.sort_fields_alphabetically,
             table_colors: options.table_colors.clone(),
             menu_colors: options.menu_colors.clone(),
             text_color: options.text_color,
@@ -381,14 +462,19 @@ impl BsonTree {
             _ => String::from(tr("document")),
         };
 
-        let node = BsonNode::from_bson(Some(key), None, &value, &mut id_gen, &options);
-        expanded.insert(node.id);
+        let mut node = BsonNode::from_bson_lazy(Some(key), None, &value, &mut id_gen);
+        if node.has_children() {
+            node.materialize_children(&mut id_gen.next_id, options.sort_fields_alphabetically);
+            expanded.insert(node.id);
+        }
         roots.push(node);
 
         Self {
             roots,
             expanded,
             context: BsonTreeContext::Default,
+            next_node_id: id_gen.next_id,
+            sort_fields_alphabetically: options.sort_fields_alphabetically,
             table_colors: options.table_colors.clone(),
             menu_colors: options.menu_colors.clone(),
             text_color: options.text_color,
@@ -424,21 +510,14 @@ impl BsonTree {
                         Some(name) if !name.is_empty() => format!("{base_label} {name}"),
                         _ => base_label.clone(),
                     };
-                    roots.push(BsonNode::from_bson(
-                        Some(display),
-                        None,
-                        value,
-                        &mut id_gen,
-                        &options,
-                    ));
+                    roots.push(BsonNode::from_bson_lazy(Some(display), None, value, &mut id_gen));
                 }
                 other => {
-                    roots.push(BsonNode::from_bson(
+                    roots.push(BsonNode::from_bson_lazy(
                         Some(base_label.clone()),
                         None,
                         other,
                         &mut id_gen,
-                        &options,
                     ));
                 }
             }
@@ -450,6 +529,8 @@ impl BsonTree {
             roots,
             expanded,
             context: BsonTreeContext::Indexes,
+            next_node_id: id_gen.next_id,
+            sort_fields_alphabetically: options.sort_fields_alphabetically,
             table_colors: options.table_colors.clone(),
             menu_colors: options.menu_colors.clone(),
             text_color: options.text_color,
@@ -559,8 +640,7 @@ impl BsonTree {
 
             if node.is_container() {
                 let indicator = if expanded { "▼" } else { "▶" };
-                let has_children =
-                    node.children().map(|children| !children.is_empty()).unwrap_or(false);
+                let has_children = node.has_children();
 
                 if has_children {
                     let button_colors = self.button_colors.clone();
@@ -638,7 +718,7 @@ impl BsonTree {
             let menu_node_id = node.id;
             let menu_tab_id = tab_id;
             let path_enabled = self.node_path(menu_node_id).is_some();
-            let is_root_document = depth == 0 && matches!(node.kind, BsonKind::Document(_));
+            let is_root_document = depth == 0 && matches!(node.kind, BsonKind::Document { .. });
             let value_edit_enabled = self.can_edit_value(menu_node_id);
             let index_context = if self.is_indexes_view() && is_root_document {
                 let maybe_name = self.node_index_name(menu_node_id);
@@ -954,15 +1034,17 @@ impl BsonTree {
     pub fn toggle(&mut self, node_id: usize) {
         if self.expanded.contains(&node_id) {
             self.expanded.remove(&node_id);
-        } else if self.is_container(node_id) {
+        } else if self.is_container(node_id) && self.node_has_children(node_id) {
+            self.ensure_children_loaded(node_id);
             self.expanded.insert(node_id);
         }
     }
 
     pub fn expand_recursive(&mut self, node_id: usize) {
-        if !self.is_container(node_id) {
+        if !self.is_container(node_id) || !self.node_has_children(node_id) {
             return;
         }
+        self.ensure_children_loaded(node_id);
         self.expanded.insert(node_id);
         if let Some(child_ids) = Self::find_node(&self.roots, node_id)
             .and_then(BsonNode::children)
@@ -1033,7 +1115,8 @@ impl BsonTree {
     }
 
     pub fn expand_node(&mut self, node_id: usize) {
-        if self.is_container(node_id) {
+        if self.is_container(node_id) && self.node_has_children(node_id) {
+            self.ensure_children_loaded(node_id);
             self.expanded.insert(node_id);
         }
     }
@@ -1063,31 +1146,53 @@ impl BsonTree {
     }
 
     #[cfg(test)]
-    pub(crate) fn find_node_id_by_path(&self, path: &str) -> Option<usize> {
+    pub(crate) fn find_node_id_by_path(&mut self, path: &str) -> Option<usize> {
         let components: Vec<&str> =
             path.split('.').filter(|component| !component.is_empty()).collect();
         if components.is_empty() {
             return None;
         }
 
-        self.roots.iter().find_map(|root| Self::find_node_by_components(root, &components))
+        let sort_fields_alphabetically = self.sort_fields_alphabetically;
+        for root in &mut self.roots {
+            if let Some(found) = Self::find_node_by_components_mut(
+                root,
+                &components,
+                &mut self.next_node_id,
+                sort_fields_alphabetically,
+            ) {
+                return Some(found);
+            }
+        }
+
+        None
     }
 
     #[cfg(test)]
-    fn find_node_by_components(node: &BsonNode, components: &[&str]) -> Option<usize> {
+    fn find_node_by_components_mut(
+        node: &mut BsonNode,
+        components: &[&str],
+        next_node_id: &mut usize,
+        sort_fields_alphabetically: bool,
+    ) -> Option<usize> {
         if components.is_empty() {
             return Some(node.id);
         }
 
+        if node.is_container() {
+            node.materialize_children(next_node_id, sort_fields_alphabetically);
+        }
+
         let (head, tail) = components.split_first().expect("components is not empty");
-        let child = match &node.kind {
-            BsonKind::Document(children) | BsonKind::Array(children) => {
-                children.iter().find(|candidate| candidate.path_key.as_deref() == Some(*head))
+        let child = match &mut node.kind {
+            BsonKind::Document { children } | BsonKind::Array { children } => {
+                let children = children.as_mut()?;
+                children.iter_mut().find(|candidate| candidate.path_key.as_deref() == Some(*head))
             }
             _ => None,
         }?;
 
-        Self::find_node_by_components(child, tail)
+        Self::find_node_by_components_mut(child, tail, next_node_id, sort_fields_alphabetically)
     }
 
     pub fn value_edit_context(&self, node_id: usize) -> Option<ValueEditContext> {
@@ -1155,6 +1260,51 @@ impl BsonTree {
         }
     }
 
+    pub fn diagnostics_stats(&self) -> BsonTreeStats {
+        let mut acc = BsonTreeStatsAccumulator::default();
+        for root in &self.roots {
+            Self::collect_bson_stats(&root.bson, 0, &mut acc);
+        }
+
+        let mut visible_rows = Vec::new();
+        self.collect_rows(&mut visible_rows, &self.roots, 0);
+
+        BsonTreeStats {
+            root_count: self.roots.len(),
+            total_nodes: acc.total_nodes,
+            container_nodes: acc.container_nodes,
+            leaf_nodes: acc.leaf_nodes,
+            max_depth: acc.max_depth,
+            expanded_nodes: self.expanded.len(),
+            visible_rows: visible_rows.len(),
+        }
+    }
+
+    fn collect_bson_stats(bson: &Bson, depth: usize, acc: &mut BsonTreeStatsAccumulator) {
+        acc.total_nodes += 1;
+        if depth > acc.max_depth {
+            acc.max_depth = depth;
+        }
+
+        match bson {
+            Bson::Document(doc) => {
+                acc.container_nodes += 1;
+                for value in doc.values() {
+                    Self::collect_bson_stats(value, depth + 1, acc);
+                }
+            }
+            Bson::Array(items) => {
+                acc.container_nodes += 1;
+                for value in items {
+                    Self::collect_bson_stats(value, depth + 1, acc);
+                }
+            }
+            _ => {
+                acc.leaf_nodes += 1;
+            }
+        }
+    }
+
     fn summarize_id(value: &Bson) -> String {
         match value {
             Bson::Document(_) | Bson::Array(_) => format!("{value:?}"),
@@ -1166,6 +1316,18 @@ impl BsonTree {
         Self::find_node(&self.roots, node_id).map(BsonNode::is_container).unwrap_or(false)
     }
 
+    fn node_has_children(&self, node_id: usize) -> bool {
+        Self::find_node(&self.roots, node_id).map(BsonNode::has_children).unwrap_or(false)
+    }
+
+    fn ensure_children_loaded(&mut self, node_id: usize) {
+        let sort_fields_alphabetically = self.sort_fields_alphabetically;
+        let next_node_id = &mut self.next_node_id;
+        if let Some(node) = Self::find_node_mut(&mut self.roots, node_id) {
+            node.materialize_children(next_node_id, sort_fields_alphabetically);
+        }
+    }
+
     fn find_node<'a>(nodes: &'a [BsonNode], node_id: usize) -> Option<&'a BsonNode> {
         for node in nodes {
             if node.id == node_id {
@@ -1174,6 +1336,22 @@ impl BsonTree {
 
             if let Some(children) = node.children() {
                 if let Some(found) = Self::find_node(children, node_id) {
+                    return Some(found);
+                }
+            }
+        }
+
+        None
+    }
+
+    fn find_node_mut(nodes: &mut [BsonNode], node_id: usize) -> Option<&mut BsonNode> {
+        for node in nodes {
+            if node.id == node_id {
+                return Some(node);
+            }
+
+            if let Some(children) = node.children_mut() {
+                if let Some(found) = Self::find_node_mut(children, node_id) {
                     return Some(found);
                 }
             }
@@ -1230,7 +1408,9 @@ mod tests {
 
     fn find_child<'a>(node: &'a BsonNode, key: &str) -> &'a BsonNode {
         match &node.kind {
-            BsonKind::Document(children) | BsonKind::Array(children) => children
+            BsonKind::Document { children } | BsonKind::Array { children } => children
+                .as_ref()
+                .unwrap_or_else(|| panic!("children for '{}' are not materialized", key))
                 .iter()
                 .find(|child| child.display_key.as_deref() == Some(key))
                 .unwrap_or_else(|| panic!("child '{}' not found", key)),
@@ -1261,16 +1441,48 @@ mod tests {
             ButtonColors::default(),
         );
         let tree = BsonTree::from_values(&[Bson::Document(document.clone())], options);
+        let mut tree = tree;
+        let root_id = tree.roots[0].id;
+        tree.expand_node(root_id);
         let root = &tree.roots[0];
 
         let child_keys: Vec<String> = match &root.kind {
-            BsonKind::Document(children) => {
+            BsonKind::Document { children } => {
+                let children = children.as_ref().expect("materialized root children");
                 children.iter().map(|node| node.display_key.clone().unwrap()).collect()
             }
             _ => panic!("expected document root"),
         };
 
         assert_eq!(child_keys, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn lazy_container_reports_children_before_materialization() {
+        let id = ObjectId::new();
+        let document = doc! {
+            "_id": id,
+            "profile": { "age": 30 },
+            "empty_doc": {},
+            "tags": ["a"],
+            "empty_arr": []
+        };
+        let mut tree = single_document_tree(document);
+        let root_id = tree.roots[0].id;
+
+        assert!(tree.roots[0].has_children());
+        tree.expand_node(root_id);
+
+        let root = &tree.roots[0];
+        let profile = find_child(root, "profile");
+        let empty_doc = find_child(root, "empty_doc");
+        let tags = find_child(root, "tags");
+        let empty_arr = find_child(root, "empty_arr");
+
+        assert!(profile.has_children());
+        assert!(!empty_doc.has_children());
+        assert!(tags.has_children());
+        assert!(!empty_arr.has_children());
     }
 
     #[test]
@@ -1284,7 +1496,29 @@ mod tests {
         assert_eq!(tree.roots.len(), 1);
         let root_id = tree.roots[0].id;
         assert!(tree.expanded.contains(&root_id));
+        match &tree.roots[0].kind {
+            BsonKind::Array { children } => {
+                let children = children.as_ref().expect("distinct children should be loaded");
+                assert_eq!(children.len(), 1);
+            }
+            _ => panic!("expected array root"),
+        }
         assert!(!tree.is_indexes_view());
+    }
+
+    #[test]
+    fn distinct_tree_with_empty_array_is_not_expanded() {
+        let tree = BsonTree::from_distinct(String::from("tags"), Vec::new(), default_options());
+
+        assert_eq!(tree.roots.len(), 1);
+        let root_id = tree.roots[0].id;
+        assert!(!tree.expanded.contains(&root_id));
+        match &tree.roots[0].kind {
+            BsonKind::Array { children } => {
+                assert!(children.is_none());
+            }
+            _ => panic!("expected array root"),
+        }
     }
 
     #[test]
@@ -1300,10 +1534,27 @@ mod tests {
     }
 
     #[test]
+    fn empty_document_is_not_expanded() {
+        let tree = BsonTree::from_document(doc! {}, default_options());
+
+        assert_eq!(tree.roots.len(), 1);
+        let root_id = tree.roots[0].id;
+        assert!(!tree.expanded.contains(&root_id));
+        match &tree.roots[0].kind {
+            BsonKind::Document { children } => {
+                assert!(children.is_none());
+            }
+            _ => panic!("expected document root"),
+        }
+    }
+
+    #[test]
     fn toggle_expands_and_collapses_node() {
         let id = ObjectId::new();
         let tree_doc = doc! { "_id": id, "profile": { "age": 30 } };
         let mut tree = single_document_tree(tree_doc);
+        let root_id = tree.roots[0].id;
+        tree.expand_node(root_id);
 
         let root = &tree.roots[0];
         let profile_node = find_child(root, "profile");
@@ -1317,15 +1568,34 @@ mod tests {
     }
 
     #[test]
+    fn expand_node_does_not_expand_empty_container() {
+        let id = ObjectId::new();
+        let tree_doc = doc! { "_id": id, "empty": {} };
+        let mut tree = single_document_tree(tree_doc);
+        let root_id = tree.roots[0].id;
+        tree.expand_node(root_id);
+        let empty_id = {
+            let root = &tree.roots[0];
+            find_child(root, "empty").id
+        };
+
+        tree.expand_node(empty_id);
+        assert!(!tree.expanded.contains(&empty_id));
+    }
+
+    #[test]
     fn collapse_recursive_removes_descendants() {
         let id = ObjectId::new();
         let tree_doc = doc! { "_id": id, "profile": { "address": { "city": "Paris" } } };
         let mut tree = single_document_tree(tree_doc);
+        let root_id = tree.roots[0].id;
+        tree.expand_node(root_id);
 
         let profile_id = {
             let root = &tree.roots[0];
             find_child(root, "profile").id
         };
+        tree.expand_node(profile_id);
         let address_id = {
             let root = &tree.roots[0];
             let profile_node = find_child(root, "profile");
@@ -1348,11 +1618,16 @@ mod tests {
             "_id": id,
             "items": [ { "name": "first" } ]
         };
-        let tree = single_document_tree(tree_doc);
+        let mut tree = single_document_tree(tree_doc);
+        let root_id = tree.roots[0].id;
+        tree.expand_recursive(root_id);
         let root = &tree.roots[0];
         let items_node = find_child(root, "items");
         let first_entry = match &items_node.kind {
-            BsonKind::Array(children) => &children[0],
+            BsonKind::Array { children } => {
+                let children = children.as_ref().expect("materialized array children");
+                &children[0]
+            }
             _ => panic!("expected array"),
         };
         let name_node = find_child(first_entry, "name");
@@ -1363,7 +1638,9 @@ mod tests {
     #[test]
     fn value_edit_context_requires_root_id() {
         let doc_without_id = doc! { "profile": { "age": 30 } };
-        let tree = single_document_tree(doc_without_id);
+        let mut tree = single_document_tree(doc_without_id);
+        let root_id = tree.roots[0].id;
+        tree.expand_recursive(root_id);
         let root = &tree.roots[0];
         let profile_node = find_child(root, "profile");
         let age_node = find_child(profile_node, "age");
@@ -1389,11 +1666,16 @@ mod tests {
             "profile": { "age": 30, "name": "Alice" },
             "active": true
         };
-        let tree = BsonTree::from_values(&[Bson::Document(document.clone())], default_options());
+        let mut tree =
+            BsonTree::from_values(&[Bson::Document(document.clone())], default_options());
+        let root_id = tree.roots[0].id;
+        tree.expand_recursive(root_id);
         let root = &tree.roots[0];
 
         let profile_node = match &root.kind {
-            BsonKind::Document(children) => children
+            BsonKind::Document { children } => children
+                .as_ref()
+                .expect("materialized root children")
                 .iter()
                 .find(|node| node.display_key.as_deref() == Some("profile"))
                 .expect("profile field"),
@@ -1401,7 +1683,9 @@ mod tests {
         };
 
         let age_node = match &profile_node.kind {
-            BsonKind::Document(children) => children
+            BsonKind::Document { children } => children
+                .as_ref()
+                .expect("materialized profile children")
                 .iter()
                 .find(|node| node.display_key.as_deref() == Some("age"))
                 .expect("age field"),
