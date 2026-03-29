@@ -225,9 +225,9 @@ impl App {
         }
     }
 
-    pub(crate) fn test_find_node_id_by_path(&self, tab_id: TabId, path: &str) -> Option<usize> {
+    pub(crate) fn test_find_node_id_by_path(&mut self, tab_id: TabId, path: &str) -> Option<usize> {
         self.tabs
-            .iter()
+            .iter_mut()
             .find(|tab| tab.id == tab_id)
             .and_then(|tab| tab.collection.bson_tree.find_node_id_by_path(path))
     }
