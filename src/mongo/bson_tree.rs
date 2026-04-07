@@ -166,6 +166,9 @@ struct BsonRowEntry<'a> {
     depth: usize,
     node: &'a BsonNode,
     expanded: bool,
+    path_enabled: bool,
+    value_edit_enabled: bool,
+    is_root_document: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -574,7 +577,7 @@ impl BsonTree {
 
     pub fn view(&self, tab_id: TabId) -> Element<'_, Message> {
         let mut rows = Vec::new();
-        self.collect_rows(&mut rows, &self.roots, 0);
+        self.collect_rows(&mut rows);
 
         let row_color_a = self.table_colors.row_even.to_color();
         let row_color_b = self.table_colors.row_odd.to_color();
@@ -632,7 +635,18 @@ impl BsonTree {
 
         let mut body = Column::new().spacing(1).width(Length::Fill).height(Length::Shrink);
 
-        for (index, BsonRowEntry { depth, node, expanded }) in rows.into_iter().enumerate() {
+        for (
+            index,
+            BsonRowEntry {
+                depth,
+                node,
+                expanded,
+                path_enabled,
+                value_edit_enabled,
+                is_root_document,
+            },
+        ) in rows.into_iter().enumerate()
+        {
             let background = if index % 2 == 0 { row_color_a } else { row_color_b };
 
             let mut key_row = Row::new().spacing(6).align_y(Vertical::Center);
@@ -717,26 +731,19 @@ impl BsonTree {
 
             let menu_node_id = node.id;
             let menu_tab_id = tab_id;
-            let path_enabled = self.node_path(menu_node_id).is_some();
-            let is_root_document = depth == 0 && matches!(node.kind, BsonKind::Document { .. });
-            let value_edit_enabled = self.can_edit_value(menu_node_id);
             let index_context = if self.is_indexes_view() && is_root_document {
-                let maybe_name = self.node_index_name(menu_node_id);
-                let maybe_hidden =
-                    maybe_name.as_ref().and_then(|_| self.node_index_hidden(menu_node_id));
-                let ttl_enabled = self
-                    .node_bson(menu_node_id)
-                    .and_then(|bson| match bson {
-                        Bson::Document(doc) => {
-                            if doc.contains_key("expireAfterSeconds") {
-                                Some(true)
-                            } else {
-                                None
-                            }
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or(false);
+                let (maybe_name, maybe_hidden, ttl_enabled) = match &node.bson {
+                    Bson::Document(doc) => {
+                        let maybe_name =
+                            doc.get("name").and_then(|name| name.as_str()).map(str::to_string);
+                        let maybe_hidden = maybe_name
+                            .as_ref()
+                            .and_then(|_| doc.get("hidden").and_then(|value| value.as_bool()));
+                        let ttl_enabled = doc.contains_key("expireAfterSeconds");
+                        (maybe_name, maybe_hidden, ttl_enabled)
+                    }
+                    _ => (None, None, false),
+                };
                 maybe_name.map(|name| (name, maybe_hidden, ttl_enabled))
             } else {
                 None
@@ -1207,10 +1214,6 @@ impl BsonTree {
         })
     }
 
-    fn can_edit_value(&self, node_id: usize) -> bool {
-        self.edit_requirements(node_id).is_some()
-    }
-
     fn edit_requirements(&self, node_id: usize) -> Option<(Vec<String>, &Document, &BsonNode)> {
         let nodes = Self::find_node_path(&self.roots, node_id, &mut Vec::new())?;
         let target = nodes.last()?;
@@ -1243,18 +1246,53 @@ impl BsonTree {
         Some((components, root_document, target))
     }
 
-    fn collect_rows<'a>(
+    fn collect_rows<'a>(&'a self, rows: &mut Vec<BsonRowEntry<'a>>) {
+        for root in &self.roots {
+            let root_has_id = matches!(&root.bson, Bson::Document(doc) if doc.contains_key("_id"));
+            let root_has_path = root.path_key.is_some();
+            self.collect_rows_from_node(rows, root, 0, root_has_id, root_has_path, 0, true);
+        }
+    }
+
+    fn collect_rows_from_node<'a>(
         &'a self,
         rows: &mut Vec<BsonRowEntry<'a>>,
-        nodes: &'a [BsonNode],
+        node: &'a BsonNode,
         depth: usize,
+        root_has_id: bool,
+        has_path: bool,
+        path_len_from_root: usize,
+        is_root: bool,
     ) {
-        for node in nodes {
-            let expanded = self.expanded.contains(&node.id);
-            rows.push(BsonRowEntry { depth, node, expanded });
-            if expanded {
-                if let Some(children) = node.children() {
-                    self.collect_rows(rows, children, depth + 1);
+        let expanded = self.expanded.contains(&node.id);
+        let value_edit_enabled =
+            root_has_id && path_len_from_root > 0 && is_editable_value(&node.bson);
+        let is_root_document = is_root && matches!(node.kind, BsonKind::Document { .. });
+
+        rows.push(BsonRowEntry {
+            depth,
+            node,
+            expanded,
+            path_enabled: has_path,
+            value_edit_enabled,
+            is_root_document,
+        });
+
+        if expanded {
+            if let Some(children) = node.children() {
+                for child in children {
+                    let child_has_path = has_path || child.path_key.is_some();
+                    let child_path_len_from_root =
+                        path_len_from_root + usize::from(child.path_key.is_some());
+                    self.collect_rows_from_node(
+                        rows,
+                        child,
+                        depth + 1,
+                        root_has_id,
+                        child_has_path,
+                        child_path_len_from_root,
+                        false,
+                    );
                 }
             }
         }
@@ -1267,7 +1305,7 @@ impl BsonTree {
         }
 
         let mut visible_rows = Vec::new();
-        self.collect_rows(&mut visible_rows, &self.roots, 0);
+        self.collect_rows(&mut visible_rows);
 
         BsonTreeStats {
             root_count: self.roots.len(),
