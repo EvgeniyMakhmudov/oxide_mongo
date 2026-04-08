@@ -1606,6 +1606,7 @@ impl App {
                 MenuEntry::ViewMode(ResponseViewMode::Text),
             )),
             keyboard::Key::Character("w") if modifiers.command() => Some(Message::CloseActiveTab),
+            keyboard::Key::Named(key::Named::F5) => None,
             _ => None,
         }
     }
@@ -1826,6 +1827,12 @@ impl App {
             }
             Message::KeyboardEvent(event) => {
                 if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
+                    if key == keyboard::Key::Named(key::Named::F5) {
+                        if let Some(active_id) = self.active_tab {
+                            return self.collection_query_task(active_id);
+                        }
+                        return Task::none();
+                    }
                     if let Some(message) = Self::handle_hotkey(key, modifiers) {
                         return self.update(message);
                     }
