@@ -100,6 +100,7 @@ pub struct SettingsWindowState {
     pub sort_fields_alphabetically: bool,
     pub sort_index_names_alphabetically: bool,
     pub close_tabs_on_database_close: bool,
+    pub strict_delete_confirmation: bool,
     pub logging_enabled: bool,
     pub logging_level: LogLevel,
     pub logging_path: String,
@@ -161,6 +162,7 @@ impl SettingsWindowState {
             sort_fields_alphabetically: settings.sort_fields_alphabetically,
             sort_index_names_alphabetically: settings.sort_index_names_alphabetically,
             close_tabs_on_database_close: settings.close_tabs_on_database_close,
+            strict_delete_confirmation: settings.strict_delete_confirmation,
             logging_enabled: settings.logging_enabled,
             logging_level: settings.logging_level,
             logging_path: settings.logging_path.clone(),
@@ -215,6 +217,7 @@ impl SettingsWindowState {
             sort_fields_alphabetically: self.sort_fields_alphabetically,
             sort_index_names_alphabetically: self.sort_index_names_alphabetically,
             close_tabs_on_database_close: self.close_tabs_on_database_close,
+            strict_delete_confirmation: self.strict_delete_confirmation,
             logging_enabled: self.logging_enabled,
             logging_level: self.logging_level,
             logging_path: log_path,
@@ -451,6 +454,12 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
     )
     .on_toggle(Message::SettingsToggleCloseTabsOnDbClose);
 
+    let strict_delete_confirmation = checkbox(
+        tr("Require typing names to confirm collection/database deletion"),
+        state.strict_delete_confirmation,
+    )
+    .on_toggle(Message::SettingsToggleStrictDeleteConfirmation);
+
     let logging_enabled = checkbox(tr("Enable logging"), state.logging_enabled)
         .on_toggle(Message::SettingsToggleLogging);
 
@@ -485,6 +494,7 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
         .push(sort_fields)
         .push(sort_indexes)
         .push(close_tabs_on_db_close)
+        .push(strict_delete_confirmation)
         .push(logging_enabled)
         .push(log_level_row)
         .push(log_path_row)

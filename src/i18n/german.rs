@@ -242,6 +242,10 @@ pub(crate) fn german_map() -> &'static HashMap<&'static str, &'static str> {
                 "Close related tabs when closing a database",
                 "Zugehörige Tabs beim Schließen einer Datenbank schließen",
             ),
+            (
+                "Require typing names to confirm collection/database deletion",
+                "Namenseingabe zur Bestätigung von Löschungen bei Sammlung/Datenbank verlangen",
+            ),
             ("Enable logging", "Protokollierung aktivieren"),
             ("Log level", "Protokollierungsgrad"),
             ("Log file path", "Protokolldateipfad"),

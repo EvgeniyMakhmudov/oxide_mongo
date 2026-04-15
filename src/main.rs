@@ -342,6 +342,7 @@ pub(crate) enum Message {
     SettingsToggleSortFields(bool),
     SettingsToggleSortIndexes(bool),
     SettingsToggleCloseTabsOnDbClose(bool),
+    SettingsToggleStrictDeleteConfirmation(bool),
     SettingsToggleLogging(bool),
     SettingsLogLevelChanged(LogLevel),
     SettingsLogPathChanged(String),
@@ -2149,7 +2150,9 @@ impl App {
                     }
                     CollectionModalKind::DeleteAllDocuments
                     | CollectionModalKind::DeleteCollection => {
-                        if trimmed_input != modal.collection {
+                        if self.settings.strict_delete_confirmation
+                            && trimmed_input != modal.collection
+                        {
                             let message =
                                 String::from(tr("Enter the exact collection name to confirm."));
                             log::error!("{message}");
@@ -2617,7 +2620,8 @@ impl App {
                 let client_id = modal.client_id;
                 match &modal.mode {
                     DatabaseModalMode::Drop { db_name } => {
-                        if modal.input.trim() != db_name {
+                        if self.settings.strict_delete_confirmation && modal.input.trim() != db_name
+                        {
                             let message =
                                 String::from(tr("Enter the exact database name to confirm."));
                             log::error!("{message}");
@@ -3853,6 +3857,13 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SettingsToggleStrictDeleteConfirmation(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.strict_delete_confirmation = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
             Message::SettingsToggleLogging(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.logging_enabled = value;
@@ -4273,6 +4284,7 @@ impl App {
         let muted_color = palette.text_muted.to_color();
         let error_color = error_accent_color(&palette);
         let accent_color = success_accent_color(&palette);
+        let strict_delete_confirmation = self.settings.strict_delete_confirmation;
 
         let (title, warning, prompt, placeholder, confirm_label) = match state.kind {
             CollectionModalKind::CreateCollection => (
@@ -4291,10 +4303,14 @@ impl App {
                     "All documents from collection \"{}\" in database \"{}\" will be deleted. This action cannot be undone.",
                     &[state.collection.as_str(), state.db_name.as_str()],
                 ),
-                Some(tr_format(
-                    "Confirm deletion of all documents by entering the collection name \"{}\".",
-                    &[state.collection.as_str()],
-                )),
+                if strict_delete_confirmation {
+                    Some(tr_format(
+                        "Confirm deletion of all documents by entering the collection name \"{}\".",
+                        &[state.collection.as_str()],
+                    ))
+                } else {
+                    None
+                },
                 state.collection.as_str(),
                 tr("Confirm Deletion"),
             ),
@@ -4304,10 +4320,14 @@ impl App {
                     "Collection \"{}\" in database \"{}\" will be deleted along with all documents. This action cannot be undone.",
                     &[state.collection.as_str(), state.db_name.as_str()],
                 ),
-                Some(tr_format(
-                    "Confirm deletion of the collection by entering its name \"{}\".",
-                    &[state.collection.as_str()],
-                )),
+                if strict_delete_confirmation {
+                    Some(tr_format(
+                        "Confirm deletion of the collection by entering its name \"{}\".",
+                        &[state.collection.as_str()],
+                    ))
+                } else {
+                    None
+                },
                 state.collection.as_str(),
                 tr("Confirm Deletion"),
             ),
@@ -4341,7 +4361,8 @@ impl App {
                 !state.input.trim().is_empty() && !state.processing
             }
             CollectionModalKind::DeleteAllDocuments | CollectionModalKind::DeleteCollection => {
-                state.input.trim() == state.collection && !state.processing
+                !state.processing
+                    && (!strict_delete_confirmation || state.input.trim() == state.collection)
             }
             CollectionModalKind::RenameCollection => {
                 let trimmed = state.input.trim();
@@ -4361,12 +4382,20 @@ impl App {
             column = column.push(fonts::primary_text(prompt, Some(-1.0)).color(muted_color));
         }
 
-        let input_field = text_input(placeholder, &state.input)
-            .padding([6, 10])
-            .width(Length::Fill)
-            .on_input(Message::CollectionModalInputChanged);
+        let show_confirmation_input = match state.kind {
+            CollectionModalKind::DeleteAllDocuments | CollectionModalKind::DeleteCollection => {
+                strict_delete_confirmation
+            }
+            _ => true,
+        };
 
-        column = column.push(input_field);
+        if show_confirmation_input {
+            let input_field = text_input(placeholder, &state.input)
+                .padding([6, 10])
+                .width(Length::Fill)
+                .on_input(Message::CollectionModalInputChanged);
+            column = column.push(input_field);
+        }
 
         if let Some(error) = &state.error {
             column = column.push(fonts::primary_text(error.clone(), Some(-1.0)).color(error_color));
@@ -4422,25 +4451,34 @@ impl App {
                     "Database \"{}\" will be deleted along with all collections and documents. This action cannot be undone.",
                     &[db_name.as_str()],
                 );
-                let prompt = tr_format(
-                    "Confirm deletion of all data by entering the database name \"{}\".",
-                    &[db_name.as_str()],
-                );
+                let prompt = if self.settings.strict_delete_confirmation {
+                    Some(tr_format(
+                        "Confirm deletion of all data by entering the database name \"{}\".",
+                        &[db_name.as_str()],
+                    ))
+                } else {
+                    None
+                };
 
-                let confirm_ready = !state.processing && state.input.trim() == db_name;
+                let confirm_ready = !state.processing
+                    && (!self.settings.strict_delete_confirmation || state.input.trim() == db_name);
 
                 let mut column = Column::new()
                     .spacing(16)
                     .push(fonts::primary_text(tr("Delete Database"), Some(6.0)).color(text_primary))
-                    .push(fonts::primary_text(warning, None).color(muted_color))
-                    .push(fonts::primary_text(prompt, Some(-1.0)).color(muted_color));
+                    .push(fonts::primary_text(warning, None).color(muted_color));
 
-                let input_field = text_input(tr("Database name"), &state.input)
-                    .padding([6, 10])
-                    .width(Length::Fill)
-                    .on_input(Message::DatabaseModalInputChanged);
+                if let Some(prompt) = prompt {
+                    column =
+                        column.push(fonts::primary_text(prompt, Some(-1.0)).color(muted_color));
 
-                column = column.push(input_field);
+                    let input_field = text_input(tr("Database name"), &state.input)
+                        .padding([6, 10])
+                        .width(Length::Fill)
+                        .on_input(Message::DatabaseModalInputChanged);
+
+                    column = column.push(input_field);
+                }
 
                 if let Some(error) = &state.error {
                     column = column

@@ -215,6 +215,7 @@ pub(crate) fn chinese_traditional_map() -> &'static HashMap<&'static str, &'stat
             ("Sort fields alphabetically", "欄位依字母排序"),
             ("Sort index names alphabetically", "索引名稱依字母排序"),
             ("Close related tabs when closing a database", "關閉資料庫時關閉相關分頁"),
+            ("Require typing names to confirm collection/database deletion", "刪除集合/資料庫時需輸入名稱確認"),
             ("Enable logging", "啟用日誌"),
             ("Log level", "日誌等級"),
             ("Log file path", "日誌檔路徑"),

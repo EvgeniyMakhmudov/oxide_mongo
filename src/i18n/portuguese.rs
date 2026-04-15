@@ -266,6 +266,10 @@ pub(crate) fn portuguese_map() -> &'static HashMap<&'static str, &'static str> {
                 "Close related tabs when closing a database",
                 "Fechar abas relacionadas ao fechar um banco de dados",
             ),
+            (
+                "Require typing names to confirm collection/database deletion",
+                "Exigir digitar nomes para confirmar exclusão de coleção/banco de dados",
+            ),
             ("Enable logging", "Ativar log"),
             ("Log level", "Nível de log"),
             ("Log file path", "Caminho do arquivo de log"),

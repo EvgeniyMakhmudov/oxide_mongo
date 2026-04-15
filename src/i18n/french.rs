@@ -242,6 +242,10 @@ pub(crate) fn french_map() -> &'static HashMap<&'static str, &'static str> {
                 "Close related tabs when closing a database",
                 "Fermer les onglets liés lors de la fermeture d'une base",
             ),
+            (
+                "Require typing names to confirm collection/database deletion",
+                "Exiger la saisie du nom pour confirmer la suppression d'une collection/base",
+            ),
             ("Enable logging", "Activer la journalisation"),
             ("Log level", "Niveau de journalisation"),
             ("Log file path", "Chemin du fichier journal"),
