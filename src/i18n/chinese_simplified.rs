@@ -21,6 +21,7 @@ pub(crate) fn chinese_simplified_map() -> &'static HashMap<&'static str, &'stati
             ("Copy Value", "复制值"),
             ("Copy Path", "复制路径"),
             ("Edit Value Only...", "仅编辑值..."),
+            ("Go to Related Document", "转到关联文档"),
             ("Delete Index", "删除索引"),
             ("Hide Index", "隐藏索引"),
             ("Unhide Index", "显示索引"),

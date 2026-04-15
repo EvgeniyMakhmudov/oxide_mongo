@@ -21,6 +21,7 @@ pub(crate) fn chinese_traditional_map() -> &'static HashMap<&'static str, &'stat
             ("Copy Value", "複製值"),
             ("Copy Path", "複製路徑"),
             ("Edit Value Only...", "僅編輯值..."),
+            ("Go to Related Document", "前往關聯文件"),
             ("Delete Index", "刪除索引"),
             ("Hide Index", "隱藏索引"),
             ("Unhide Index", "顯示索引"),

@@ -24,6 +24,7 @@ pub(crate) fn spanish_map() -> &'static HashMap<&'static str, &'static str> {
             ("Copy Value", "Copiar valor"),
             ("Copy Path", "Copiar ruta"),
             ("Edit Value Only...", "Editar solo el valor..."),
+            ("Go to Related Document", "Ir al documento relacionado"),
             ("Delete Index", "Eliminar índice"),
             ("Hide Index", "Ocultar índice"),
             ("Unhide Index", "Mostrar índice"),

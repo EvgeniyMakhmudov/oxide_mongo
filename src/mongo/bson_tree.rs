@@ -169,6 +169,7 @@ struct BsonRowEntry<'a> {
     path_enabled: bool,
     value_edit_enabled: bool,
     is_root_document: bool,
+    relation_hint: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -354,6 +355,167 @@ impl BsonNode {
 
 fn is_editable_value(_value: &Bson) -> bool {
     true
+}
+
+fn is_array_index_component(component: &str) -> bool {
+    !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn split_identifier_words(value: &str) -> Vec<String> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut previous_was_lower = false;
+
+    for ch in value.chars() {
+        if matches!(ch, '_' | '-' | ' ' | '.') {
+            if !current.is_empty() {
+                words.push(std::mem::take(&mut current));
+            }
+            previous_was_lower = false;
+            continue;
+        }
+
+        if ch.is_ascii_uppercase() && previous_was_lower && !current.is_empty() {
+            words.push(std::mem::take(&mut current));
+        }
+
+        previous_was_lower = ch.is_ascii_lowercase();
+        current.push(ch);
+    }
+
+    if !current.is_empty() {
+        words.push(current);
+    }
+
+    words
+}
+
+fn to_snake_case_lower(value: &str) -> Option<String> {
+    let words = split_identifier_words(value);
+    if words.is_empty() {
+        return None;
+    }
+    let normalized =
+        words.into_iter().map(|word| word.to_ascii_lowercase()).collect::<Vec<_>>().join("_");
+    if normalized.is_empty() { None } else { Some(normalized) }
+}
+
+fn strip_suffix_case_insensitive<'a>(value: &'a str, suffix: &str) -> Option<&'a str> {
+    let lowered = value.to_ascii_lowercase();
+    if lowered.ends_with(suffix) {
+        let stripped = &value[..value.len().saturating_sub(suffix.len())];
+        Some(stripped.trim_end_matches(['_', '-']))
+    } else {
+        None
+    }
+}
+
+fn singularize(name: &str) -> String {
+    if name.ends_with("ies") && name.len() > 3 {
+        return format!("{}y", &name[..name.len() - 3]);
+    }
+
+    if name.ends_with("ses")
+        || name.ends_with("xes")
+        || name.ends_with("zes")
+        || name.ends_with("ches")
+        || name.ends_with("shes")
+    {
+        return name[..name.len() - 2].to_string();
+    }
+
+    if name.ends_with('s') && !name.ends_with("ss") && name.len() > 1 {
+        return name[..name.len() - 1].to_string();
+    }
+
+    name.to_string()
+}
+
+fn pluralize(name: &str) -> String {
+    if name.ends_with('y') && name.len() > 1 {
+        let previous = name.as_bytes()[name.len() - 2] as char;
+        if !matches!(previous, 'a' | 'e' | 'i' | 'o' | 'u') {
+            return format!("{}ies", &name[..name.len() - 1]);
+        }
+    }
+
+    if name.ends_with('s')
+        || name.ends_with('x')
+        || name.ends_with('z')
+        || name.ends_with("ch")
+        || name.ends_with("sh")
+    {
+        return format!("{name}es");
+    }
+
+    format!("{name}s")
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if value.is_empty() {
+        return;
+    }
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
+}
+
+pub(crate) fn related_collection_name_candidates(field_hint: &str) -> Vec<String> {
+    let trimmed = field_hint.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let mut stems = Vec::new();
+    stems.push(trimmed.to_string());
+
+    for suffix in [
+        "_ids",
+        "ids",
+        "_id",
+        "id",
+        "_references",
+        "references",
+        "_reference",
+        "reference",
+        "_refs",
+        "refs",
+        "_ref",
+        "ref",
+    ] {
+        if let Some(stripped) = strip_suffix_case_insensitive(trimmed, suffix) {
+            if !stripped.is_empty() {
+                push_unique(&mut stems, stripped.to_string());
+            }
+        }
+    }
+
+    let mut normalized = Vec::new();
+    for stem in stems {
+        if let Some(snake) = to_snake_case_lower(&stem) {
+            push_unique(&mut normalized, snake.clone());
+            push_unique(&mut normalized, singularize(&snake));
+            push_unique(&mut normalized, pluralize(&snake));
+        }
+
+        push_unique(&mut normalized, stem.to_ascii_lowercase());
+    }
+
+    normalized
+}
+
+fn has_related_collection(
+    field_hint: &str,
+    related_collections_lowercase: &HashSet<String>,
+) -> bool {
+    related_collection_name_candidates(field_hint)
+        .into_iter()
+        .map(|candidate| candidate.to_ascii_lowercase())
+        .any(|candidate| related_collections_lowercase.contains(&candidate))
+}
+
+pub(crate) fn is_supported_reference_id_type(value: &Bson) -> bool {
+    !matches!(value, Bson::Array(_) | Bson::RegularExpression(_) | Bson::Undefined | Bson::Null)
 }
 
 impl BsonTree {
@@ -575,9 +737,11 @@ impl BsonTree {
         }
     }
 
-    pub fn view(&self, tab_id: TabId) -> Element<'_, Message> {
+    pub fn view(&self, tab_id: TabId, related_collections: &[String]) -> Element<'_, Message> {
         let mut rows = Vec::new();
         self.collect_rows(&mut rows);
+        let related_collections_lowercase: HashSet<String> =
+            related_collections.iter().map(|name| name.to_ascii_lowercase()).collect();
 
         let row_color_a = self.table_colors.row_even.to_color();
         let row_color_b = self.table_colors.row_odd.to_color();
@@ -644,6 +808,7 @@ impl BsonTree {
                 path_enabled,
                 value_edit_enabled,
                 is_root_document,
+                relation_hint,
             },
         ) in rows.into_iter().enumerate()
         {
@@ -748,6 +913,10 @@ impl BsonTree {
             } else {
                 None
             };
+            let can_open_related_document = is_supported_reference_id_type(&node.bson)
+                && relation_hint
+                    .map(|hint| has_related_collection(hint, &related_collections_lowercase))
+                    .unwrap_or(false);
 
             let row_container = Container::new(row_content).width(Length::Fill).style(move |_| {
                 widget::container::Style {
@@ -909,6 +1078,26 @@ impl BsonTree {
                     );
                     menu = menu.push(menu_item_container(
                         edit_value.into(),
+                        &menu_colors,
+                        menu_border,
+                    ));
+                }
+
+                if can_open_related_document {
+                    let goto_related = style_menu_button(
+                        Button::new(fonts::primary_text(tr("Go to Related Document"), None))
+                            .padding([4, 12])
+                            .width(Length::Shrink)
+                            .on_press(Message::TableContextMenu {
+                                tab_id: menu_tab_id,
+                                node_id: menu_node_id,
+                                action: TableContextAction::GoToRelatedDocument,
+                            }),
+                        &menu_colors,
+                        menu_border,
+                    );
+                    menu = menu.push(menu_item_container(
+                        goto_related.into(),
                         &menu_colors,
                         menu_border,
                     ));
@@ -1152,6 +1341,21 @@ impl BsonTree {
         if components.is_empty() { None } else { Some(components.join(".")) }
     }
 
+    pub fn node_relation_hint(&self, node_id: usize) -> Option<String> {
+        let nodes = Self::find_node_path(&self.roots, node_id, &mut Vec::new())?;
+        let mut hint = None;
+        for node in nodes {
+            let Some(component) = node.path_key.as_deref() else {
+                continue;
+            };
+            if is_array_index_component(component) {
+                continue;
+            }
+            hint = Some(component.to_string());
+        }
+        hint
+    }
+
     #[cfg(test)]
     pub(crate) fn find_node_id_by_path(&mut self, path: &str) -> Option<usize> {
         let components: Vec<&str> =
@@ -1250,7 +1454,7 @@ impl BsonTree {
         for root in &self.roots {
             let root_has_id = matches!(&root.bson, Bson::Document(doc) if doc.contains_key("_id"));
             let root_has_path = root.path_key.is_some();
-            self.collect_rows_from_node(rows, root, 0, root_has_id, root_has_path, 0, true);
+            self.collect_rows_from_node(rows, root, 0, root_has_id, root_has_path, 0, true, None);
         }
     }
 
@@ -1263,11 +1467,17 @@ impl BsonTree {
         has_path: bool,
         path_len_from_root: usize,
         is_root: bool,
+        relation_hint: Option<&'a str>,
     ) {
         let expanded = self.expanded.contains(&node.id);
         let value_edit_enabled =
             root_has_id && path_len_from_root > 0 && is_editable_value(&node.bson);
         let is_root_document = is_root && matches!(node.kind, BsonKind::Document { .. });
+        let current_relation_hint = node
+            .path_key
+            .as_deref()
+            .filter(|component| !is_array_index_component(component))
+            .or(relation_hint);
 
         rows.push(BsonRowEntry {
             depth,
@@ -1276,6 +1486,7 @@ impl BsonTree {
             path_enabled: has_path,
             value_edit_enabled,
             is_root_document,
+            relation_hint: current_relation_hint,
         });
 
         if expanded {
@@ -1292,6 +1503,7 @@ impl BsonTree {
                         child_has_path,
                         child_path_len_from_root,
                         false,
+                        current_relation_hint,
                     );
                 }
             }
@@ -1735,5 +1947,56 @@ mod tests {
         assert_eq!(context.filter, doc! { "_id": Bson::ObjectId(id) });
         assert_eq!(context.current_value, Bson::Int32(30));
         assert_eq!(tree.node_path(age_node.id).as_deref(), Some("profile.age"));
+    }
+
+    #[test]
+    fn related_collection_candidates_cover_common_reference_forms() {
+        let user_id_candidates = related_collection_name_candidates("userId");
+        assert!(user_id_candidates.contains(&String::from("user")));
+        assert!(user_id_candidates.contains(&String::from("users")));
+
+        let user_ids_candidates = related_collection_name_candidates("user_ids");
+        assert!(user_ids_candidates.contains(&String::from("user")));
+        assert!(user_ids_candidates.contains(&String::from("users")));
+
+        let user_ref_candidates = related_collection_name_candidates("user_ref");
+        assert!(user_ref_candidates.contains(&String::from("user")));
+        assert!(user_ref_candidates.contains(&String::from("users")));
+    }
+
+    #[test]
+    fn node_relation_hint_uses_last_non_index_component() {
+        let id = ObjectId::new();
+        let related = ObjectId::new();
+        let document = doc! {
+            "_id": id,
+            "user_ids": [related],
+            "meta": { "authorId": related }
+        };
+        let mut tree = single_document_tree(document);
+        let root_id = tree.roots[0].id;
+        tree.expand_recursive(root_id);
+
+        let user_array_item = tree.find_node_id_by_path("user_ids.0").expect("array item");
+        let author_id = tree.find_node_id_by_path("meta.authorId").expect("author id");
+
+        assert_eq!(tree.node_relation_hint(user_array_item).as_deref(), Some("user_ids"));
+        assert_eq!(tree.node_relation_hint(author_id).as_deref(), Some("authorId"));
+    }
+
+    #[test]
+    fn supported_reference_id_types_match_mongodb_rules_and_app_policy() {
+        assert!(is_supported_reference_id_type(&Bson::Int32(42)));
+        assert!(is_supported_reference_id_type(&Bson::String(String::from("42"))));
+        assert!(is_supported_reference_id_type(&Bson::ObjectId(ObjectId::new())));
+        assert!(is_supported_reference_id_type(&Bson::Document(doc! { "tenant": 1, "code": "A" })));
+
+        assert!(!is_supported_reference_id_type(&Bson::Null));
+        assert!(!is_supported_reference_id_type(&Bson::Array(vec![Bson::Int32(1)])));
+        assert!(!is_supported_reference_id_type(&Bson::Undefined));
+        assert!(!is_supported_reference_id_type(&Bson::RegularExpression(mongodb::bson::Regex {
+            pattern: String::from("^abc"),
+            options: String::new(),
+        },)));
     }
 }

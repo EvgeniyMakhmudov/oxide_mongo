@@ -37,7 +37,10 @@ use iced::{
 };
 use iced_aw::{ColorPicker, ContextMenu};
 use mongo::bson_edit::ValueEditKind;
-use mongo::bson_tree::{BsonTree, BsonTreeOptions, BsonTreeStats};
+use mongo::bson_tree::{
+    BsonTree, BsonTreeOptions, BsonTreeStats, is_supported_reference_id_type,
+    related_collection_name_candidates,
+};
 use mongo::connection::{
     ConnectionBootstrap, OMDBConnection, connect_and_discover, fetch_collections, filter_databases,
 };
@@ -53,7 +56,7 @@ use mongodb::options::ReturnDocument;
 use mongodb::sync::Client;
 use rfd::FileDialog;
 use settings::{AppSettings, LogLevel, ThemeChoice, ThemePalette};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -453,6 +456,7 @@ enum TableContextAction {
     CopyValue,
     CopyPath,
     EditValue,
+    GoToRelatedDocument,
     DeleteIndex,
     HideIndex,
     UnhideIndex,
@@ -834,6 +838,7 @@ struct CollectionTab {
     client_name: String,
     db_name: String,
     collection: String,
+    known_collections: Vec<String>,
     pending_collection: Option<String>,
     editor: TextEditorContent,
     editor_id: Id,
@@ -972,6 +977,7 @@ impl CollectionTab {
         client_name: String,
         db_name: String,
         collection: String,
+        known_collections: Vec<String>,
         values: Vec<Bson>,
         settings: &AppSettings,
     ) -> Self {
@@ -998,6 +1004,7 @@ impl CollectionTab {
             client_name,
             db_name,
             collection,
+            known_collections,
             pending_collection: None,
             editor,
             editor_id: Id::unique(),
@@ -1181,6 +1188,7 @@ impl CollectionTab {
             TableContextAction::CopyValue => self.bson_tree.node_value_display(node_id),
             TableContextAction::CopyPath => self.bson_tree.node_path(node_id),
             TableContextAction::EditValue => None,
+            TableContextAction::GoToRelatedDocument => None,
             TableContextAction::DeleteIndex
             | TableContextAction::HideIndex
             | TableContextAction::UnhideIndex
@@ -1276,7 +1284,7 @@ impl CollectionTab {
         match self.response_view_mode {
             ResponseViewMode::Table => {
                 let started = Instant::now();
-                let view = self.bson_tree.view(tab_id);
+                let view = self.bson_tree.view(tab_id, &self.known_collections);
                 let elapsed = started.elapsed();
                 if perf_diagnostics_enabled() && elapsed >= Duration::from_millis(16) {
                     log::debug!(
@@ -1931,6 +1939,7 @@ impl App {
                         }
                     }
                 }
+                self.sync_known_collections_for_tabs(client_id, &db_name);
                 Task::none()
             }
             Message::ConnectionContextMenu { client_id, action } => match action {
@@ -3104,6 +3113,15 @@ impl App {
                         self.mode = AppMode::ValueEditModal;
                     }
 
+                    Task::none()
+                }
+                TableContextAction::GoToRelatedDocument => {
+                    if let Some((client_id, db_name, collection, id_value)) =
+                        self.resolve_related_document_target(tab_id, node_id)
+                    {
+                        return self
+                            .open_related_document_tab(client_id, db_name, collection, id_value);
+                    }
                     Task::none()
                 }
                 TableContextAction::DeleteIndex => {
@@ -5261,6 +5279,99 @@ impl App {
         }
     }
 
+    fn collection_names_for_db(&self, client_id: ClientId, db_name: &str) -> Vec<String> {
+        self.clients
+            .iter()
+            .find(|client| client.id == client_id)
+            .and_then(|client| client.databases.iter().find(|db| db.name == db_name))
+            .map(|database| database.collections.iter().map(|node| node.name.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    fn sync_known_collections_for_tabs(&mut self, client_id: ClientId, db_name: &str) {
+        let names = self.collection_names_for_db(client_id, db_name);
+        for tab in self.tabs.iter_mut().filter(|tab| {
+            tab.collection.client_id == client_id && tab.collection.db_name == db_name
+        }) {
+            tab.collection.known_collections = names.clone();
+        }
+    }
+
+    fn resolve_related_collection_name(collections: &[String], field_hint: &str) -> Option<String> {
+        if collections.is_empty() {
+            return None;
+        }
+
+        let mut by_lowercase = HashMap::new();
+        for collection in collections {
+            by_lowercase
+                .entry(collection.to_ascii_lowercase())
+                .or_insert_with(|| collection.clone());
+        }
+
+        related_collection_name_candidates(field_hint)
+            .into_iter()
+            .find_map(|candidate| by_lowercase.get(&candidate.to_ascii_lowercase()).cloned())
+    }
+
+    fn escape_collection_name_for_shell(collection: &str) -> String {
+        collection.replace('\\', "\\\\").replace('\'', "\\'")
+    }
+
+    fn resolve_related_document_target(
+        &self,
+        tab_id: TabId,
+        node_id: usize,
+    ) -> Option<(ClientId, String, String, Bson)> {
+        let (client_id, db_name, tab_known_collections, field_hint, id_value) = {
+            let tab = self.tabs.iter().find(|tab| tab.id == tab_id)?;
+            let id_value = tab.collection.bson_tree.node_bson(node_id)?;
+            if !is_supported_reference_id_type(&id_value) {
+                return None;
+            }
+            let field_hint = tab.collection.bson_tree.node_relation_hint(node_id)?;
+            (
+                tab.collection.client_id,
+                tab.collection.db_name.clone(),
+                tab.collection.known_collections.clone(),
+                field_hint,
+                id_value,
+            )
+        };
+
+        let collections = if tab_known_collections.is_empty() {
+            self.collection_names_for_db(client_id, &db_name)
+        } else {
+            tab_known_collections
+        };
+        let collection = Self::resolve_related_collection_name(&collections, &field_hint)?;
+        Some((client_id, db_name, collection, id_value))
+    }
+
+    fn open_related_document_tab(
+        &mut self,
+        client_id: ClientId,
+        db_name: String,
+        collection: String,
+        id_value: Bson,
+    ) -> Task<Message> {
+        let tab_id = self.open_collection_tab(client_id, db_name, collection.clone());
+        if let Some(tab) = self.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            let escaped_collection = Self::escape_collection_name_for_shell(&collection);
+            let id_literal = shell::format_bson_shell(&id_value);
+            let query = format!(
+                "db.getCollection('{collection_name}').find({{ _id: {id_literal} }})",
+                collection_name = escaped_collection,
+                id_literal = id_literal
+            );
+            tab.collection.editor = TextEditorContent::with_text(&query);
+        }
+
+        let query_task = self.collection_query_task(tab_id);
+        let focus_task = self.schedule_collection_editor_focus(tab_id);
+        Task::batch([query_task, focus_task])
+    }
+
     fn open_collection_tab(
         &mut self,
         client_id: ClientId,
@@ -5268,6 +5379,7 @@ impl App {
         collection: String,
     ) -> TabId {
         let mut client_name = String::from(tr("Unknown client"));
+        let known_collections = self.collection_names_for_db(client_id, &db_name);
         let mut values = vec![Bson::String(String::from(tr(
             "Query not yet executed. Compose a query and press Send.",
         )))];
@@ -5291,6 +5403,7 @@ impl App {
             client_name,
             db_name,
             collection,
+            known_collections,
             values,
             &self.settings,
         ));
@@ -5427,6 +5540,7 @@ impl App {
 
         let db_name = String::from(tr("admin"));
         let collection_label = String::from(tr("serverStatus"));
+        let known_collections = self.collection_names_for_db(client_id, &db_name);
         let placeholder = vec![Bson::String(String::from(tr("Loading serverStatus...")))];
 
         let id = self.next_tab_id;
@@ -5438,6 +5552,7 @@ impl App {
             client_name.clone(),
             db_name,
             collection_label,
+            known_collections,
             placeholder,
             &self.settings,
         );
@@ -5526,6 +5641,7 @@ impl App {
                 database.collections.sort_by(|a, b| a.name.cmp(&b.name));
             }
         }
+        self.sync_known_collections_for_tabs(client_id, db_name);
     }
 
     fn remove_collection_from_tree(
@@ -5539,6 +5655,7 @@ impl App {
                 database.collections.retain(|node| node.name != collection);
             }
         }
+        self.sync_known_collections_for_tabs(client_id, db_name);
 
         if let Some(click) = &self.last_collection_click {
             if click.client_id == client_id
@@ -6136,6 +6253,7 @@ impl TabData {
         client_name: String,
         db_name: String,
         collection: String,
+        known_collections: Vec<String>,
         values: Vec<Bson>,
         settings: &AppSettings,
     ) -> Self {
@@ -6148,6 +6266,7 @@ impl TabData {
                 client_name,
                 db_name,
                 collection,
+                known_collections,
                 values,
                 settings,
             ),

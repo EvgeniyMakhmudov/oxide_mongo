@@ -24,6 +24,7 @@ pub(crate) fn french_map() -> &'static HashMap<&'static str, &'static str> {
             ("Copy Value", "Copier la valeur"),
             ("Copy Path", "Copier le chemin"),
             ("Edit Value Only...", "Modifier uniquement la valeur..."),
+            ("Go to Related Document", "Aller au document lié"),
             ("Delete Index", "Supprimer l'index"),
             ("Hide Index", "Masquer l'index"),
             ("Unhide Index", "Afficher l'index"),

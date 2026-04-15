@@ -21,6 +21,7 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Copy Value", "Копировать значение"),
             ("Copy Path", "Копировать путь"),
             ("Edit Value Only...", "Изменить только значение..."),
+            ("Go to Related Document", "Перейти к связанному документу"),
             ("Delete Index", "Удалить индекс"),
             ("Hide Index", "Спрятать индекс"),
             ("Unhide Index", "Не прятать индекс"),
