@@ -24,6 +24,7 @@ pub(crate) fn spanish_map() -> &'static HashMap<&'static str, &'static str> {
             ("Copy Value", "Copiar valor"),
             ("Copy Path", "Copiar ruta"),
             ("Edit Value Only...", "Editar solo el valor..."),
+            ("Go to Related Document", "Ir al documento relacionado"),
             ("Delete Index", "Eliminar índice"),
             ("Hide Index", "Ocultar índice"),
             ("Unhide Index", "Mostrar índice"),
@@ -359,6 +360,10 @@ pub(crate) fn spanish_map() -> &'static HashMap<&'static str, &'static str> {
             (
                 "Close related tabs when closing a database",
                 "Cerrar pestañas relacionadas al cerrar una base de datos",
+            ),
+            (
+                "Require typing names to confirm database/collection/index deletion",
+                "Exigir escribir nombres para confirmar la eliminación de base de datos/colección/índice",
             ),
             ("Enable logging", "Habilitar registro"),
             ("Log level", "Nivel de registro"),

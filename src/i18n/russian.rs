@@ -21,6 +21,7 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Copy Value", "Копировать значение"),
             ("Copy Path", "Копировать путь"),
             ("Edit Value Only...", "Изменить только значение..."),
+            ("Go to Related Document", "Перейти к связанному документу"),
             ("Delete Index", "Удалить индекс"),
             ("Hide Index", "Спрятать индекс"),
             ("Unhide Index", "Не прятать индекс"),
@@ -241,6 +242,10 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
             (
                 "Close related tabs when closing a database",
                 "При закрытии БД закрывать связанные вкладки",
+            ),
+            (
+                "Require typing names to confirm database/collection/index deletion",
+                "Требовать ввод имени для подтверждения удаления БД/коллекции/индекса",
             ),
             ("Enable logging", "Включить логирование"),
             ("Log level", "Уровень логирования"),

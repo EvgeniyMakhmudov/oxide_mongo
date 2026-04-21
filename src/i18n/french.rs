@@ -24,6 +24,7 @@ pub(crate) fn french_map() -> &'static HashMap<&'static str, &'static str> {
             ("Copy Value", "Copier la valeur"),
             ("Copy Path", "Copier le chemin"),
             ("Edit Value Only...", "Modifier uniquement la valeur..."),
+            ("Go to Related Document", "Aller au document lié"),
             ("Delete Index", "Supprimer l'index"),
             ("Hide Index", "Masquer l'index"),
             ("Unhide Index", "Afficher l'index"),
@@ -240,6 +241,10 @@ pub(crate) fn french_map() -> &'static HashMap<&'static str, &'static str> {
             (
                 "Close related tabs when closing a database",
                 "Fermer les onglets liés lors de la fermeture d'une base",
+            ),
+            (
+                "Require typing names to confirm database/collection/index deletion",
+                "Exiger la saisie du nom pour confirmer la suppression d'une base/collection/index",
             ),
             ("Enable logging", "Activer la journalisation"),
             ("Log level", "Niveau de journalisation"),
