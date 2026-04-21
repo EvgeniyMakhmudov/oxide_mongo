@@ -455,7 +455,7 @@ fn behavior_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, M
     .on_toggle(Message::SettingsToggleCloseTabsOnDbClose);
 
     let strict_delete_confirmation = checkbox(
-        tr("Require typing names to confirm collection/database deletion"),
+        tr("Require typing names to confirm database/collection/index deletion"),
         state.strict_delete_confirmation,
     )
     .on_toggle(Message::SettingsToggleStrictDeleteConfirmation);

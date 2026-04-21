@@ -243,8 +243,8 @@ pub(crate) fn french_map() -> &'static HashMap<&'static str, &'static str> {
                 "Fermer les onglets liés lors de la fermeture d'une base",
             ),
             (
-                "Require typing names to confirm collection/database deletion",
-                "Exiger la saisie du nom pour confirmer la suppression d'une collection/base",
+                "Require typing names to confirm database/collection/index deletion",
+                "Exiger la saisie du nom pour confirmer la suppression d'une base/collection/index",
             ),
             ("Enable logging", "Activer la journalisation"),
             ("Log level", "Niveau de journalisation"),

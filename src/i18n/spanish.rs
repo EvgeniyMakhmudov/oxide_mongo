@@ -362,8 +362,8 @@ pub(crate) fn spanish_map() -> &'static HashMap<&'static str, &'static str> {
                 "Cerrar pestañas relacionadas al cerrar una base de datos",
             ),
             (
-                "Require typing names to confirm collection/database deletion",
-                "Exigir escribir nombres para confirmar la eliminación de colección/base de datos",
+                "Require typing names to confirm database/collection/index deletion",
+                "Exigir escribir nombres para confirmar la eliminación de base de datos/colección/índice",
             ),
             ("Enable logging", "Habilitar registro"),
             ("Log level", "Nivel de registro"),

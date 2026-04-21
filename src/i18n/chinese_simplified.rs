@@ -215,7 +215,7 @@ pub(crate) fn chinese_simplified_map() -> &'static HashMap<&'static str, &'stati
             ("Sort fields alphabetically", "按字母顺序排序字段"),
             ("Sort index names alphabetically", "按字母顺序排序索引名"),
             ("Close related tabs when closing a database", "关闭数据库时关闭相关标签页"),
-            ("Require typing names to confirm collection/database deletion", "删除集合/数据库时要求输入名称确认"),
+            ("Require typing names to confirm database/collection/index deletion", "删除数据库/集合/索引时要求输入名称确认"),
             ("Enable logging", "启用日志"),
             ("Log level", "日志级别"),
             ("Log file path", "日志文件路径"),

@@ -244,8 +244,8 @@ pub(crate) fn russian_map() -> &'static HashMap<&'static str, &'static str> {
                 "При закрытии БД закрывать связанные вкладки",
             ),
             (
-                "Require typing names to confirm collection/database deletion",
-                "Требовать ввод имени для подтверждения удаления коллекции/БД",
+                "Require typing names to confirm database/collection/index deletion",
+                "Требовать ввод имени для подтверждения удаления БД/коллекции/индекса",
             ),
             ("Enable logging", "Включить логирование"),
             ("Log level", "Уровень логирования"),

@@ -224,7 +224,7 @@ pub(crate) fn italian_map() -> &'static HashMap<&'static str, &'static str> {
             ("Sort fields alphabetically", "Ordina campi alfabeticamente"),
             ("Sort index names alphabetically", "Ordina nomi indici alfabeticamente"),
             ("Close related tabs when closing a database", "Chiudi schede correlate quando chiudi un database"),
-            ("Require typing names to confirm collection/database deletion", "Richiedi l'inserimento del nome per confermare l'eliminazione di raccolta/database"),
+            ("Require typing names to confirm database/collection/index deletion", "Richiedi l'inserimento del nome per confermare l'eliminazione di database/raccolta/indice"),
             ("Enable logging", "Abilita logging"),
             ("Log level", "Livello log"),
             ("Log file path", "Percorso file log"),

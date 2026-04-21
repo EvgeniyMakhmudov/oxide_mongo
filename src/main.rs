@@ -2178,7 +2178,8 @@ impl App {
                         }
                     }
                     CollectionModalKind::DropIndex { ref index_name } => {
-                        if trimmed_input != *index_name {
+                        if self.settings.strict_delete_confirmation && trimmed_input != *index_name
+                        {
                             let message =
                                 String::from(tr("Enter the exact index name to confirm."));
                             log::error!("{message}");
@@ -4347,10 +4348,14 @@ impl App {
                     "Index \"{}\" of collection \"{}\" in database \"{}\" will be deleted. This action cannot be undone.",
                     &[index_name.as_str(), state.collection.as_str(), state.db_name.as_str()],
                 ),
-                Some(tr_format(
-                    "Confirm index deletion by entering its name \"{}\".",
-                    &[index_name.as_str()],
-                )),
+                if strict_delete_confirmation {
+                    Some(tr_format(
+                        "Confirm index deletion by entering its name \"{}\".",
+                        &[index_name.as_str()],
+                    ))
+                } else {
+                    None
+                },
                 index_name.as_str(),
                 tr("Delete Index"),
             ),
@@ -4369,7 +4374,8 @@ impl App {
                 !trimmed.is_empty() && trimmed != state.collection && !state.processing
             }
             CollectionModalKind::DropIndex { ref index_name } => {
-                state.input.trim() == index_name && !state.processing
+                !state.processing
+                    && (!strict_delete_confirmation || state.input.trim() == index_name)
             }
         };
 
@@ -4386,6 +4392,7 @@ impl App {
             CollectionModalKind::DeleteAllDocuments | CollectionModalKind::DeleteCollection => {
                 strict_delete_confirmation
             }
+            CollectionModalKind::DropIndex { .. } => strict_delete_confirmation,
             _ => true,
         };
 
