@@ -148,6 +148,7 @@ Le flux s'arrête automatiquement lorsque le nombre d'éléments reçus atteint 
 
 - F2 — basculer les résultats en vue Tableau
 - F4 — basculer les résultats en vue Texte
+- F5 — exécuter la requête de l'onglet actif
 - Ctrl+Enter — exécuter la requête actuelle
 - Ctrl+W — fermer l'onglet actif
 "#,

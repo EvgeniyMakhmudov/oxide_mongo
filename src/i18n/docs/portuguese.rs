@@ -148,6 +148,7 @@ O fluxo é encerrado automaticamente quando o número de elementos recebidos ati
 
 - F2 — alternar resultados para a visão de Tabela
 - F4 — alternar resultados para a visão de Texto
+- F5 — executar a consulta da aba ativa
 - Ctrl+Enter — executar a consulta atual
 - Ctrl+W — fechar a aba ativa
 "#,
