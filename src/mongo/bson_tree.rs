@@ -1784,6 +1784,46 @@ mod tests {
     }
 
     #[test]
+    fn indexes_tree_sorts_roots_by_index_name_when_enabled() {
+        let options = BsonTreeOptions::new(
+            false,
+            true,
+            TableColors::default(),
+            MenuColors::default(),
+            RgbaColor::default(),
+            ButtonColors::default(),
+        );
+        let values = vec![
+            Bson::Document(doc! { "name": "zeta_1" }),
+            Bson::Document(doc! { "name": "alpha_1" }),
+            Bson::Document(doc! { "name": "middle_1" }),
+        ];
+
+        let tree = BsonTree::from_indexes(&values, options);
+        let labels: Vec<String> = tree.roots.iter().map(BsonNode::display_key).collect();
+
+        assert_eq!(labels, vec!["[1] alpha_1", "[2] middle_1", "[3] zeta_1"]);
+    }
+
+    #[test]
+    fn index_helpers_ignore_non_root_nodes() {
+        let index_doc = doc! { "name": "email_1", "key": { "email": 1 }, "hidden": false };
+        let mut tree = BsonTree::from_indexes(&[Bson::Document(index_doc)], default_options());
+        let root_id = tree.roots[0].id;
+        tree.expand_node(root_id);
+
+        let child_id = {
+            let root = &tree.roots[0];
+            find_child(root, "name").id
+        };
+
+        assert_eq!(tree.node_index_name(root_id).as_deref(), Some("email_1"));
+        assert_eq!(tree.node_index_hidden(root_id), Some(false));
+        assert!(tree.node_index_name(child_id).is_none());
+        assert!(tree.node_index_hidden(child_id).is_none());
+    }
+
+    #[test]
     fn empty_document_is_not_expanded() {
         let tree = BsonTree::from_document(doc! {}, default_options());
 
@@ -1998,5 +2038,32 @@ mod tests {
             pattern: String::from("^abc"),
             options: String::new(),
         },)));
+    }
+
+    #[test]
+    fn diagnostics_stats_count_total_bson_tree_independent_of_visible_rows() {
+        let document = doc! {
+            "_id": ObjectId::new(),
+            "profile": { "name": "Ada", "age": 37 },
+            "tags": ["rust", "mongo"]
+        };
+        let mut tree = single_document_tree(document);
+
+        let collapsed = tree.diagnostics_stats();
+        assert_eq!(collapsed.root_count, 1);
+        assert_eq!(collapsed.visible_rows, 1);
+        assert_eq!(collapsed.expanded_nodes, 0);
+        assert!(collapsed.total_nodes > collapsed.visible_rows);
+
+        let root_id = tree.roots[0].id;
+        tree.expand_recursive(root_id);
+        let expanded = tree.diagnostics_stats();
+
+        assert_eq!(expanded.root_count, 1);
+        assert!(expanded.visible_rows > collapsed.visible_rows);
+        assert_eq!(expanded.total_nodes, collapsed.total_nodes);
+        assert_eq!(expanded.container_nodes, collapsed.container_nodes);
+        assert_eq!(expanded.leaf_nodes, collapsed.leaf_nodes);
+        assert!(expanded.expanded_nodes > collapsed.expanded_nodes);
     }
 }
