@@ -116,6 +116,7 @@ pub struct SettingsWindowState {
     pub query_editor_font_open: bool,
     pub query_editor_font_id: String,
     pub query_editor_font_size: String,
+    pub open_window_maximized: bool,
     pub theme_choice: ThemeChoice,
     pub theme_light: ThemePalette,
     pub theme_dark: ThemePalette,
@@ -178,6 +179,7 @@ impl SettingsWindowState {
             query_editor_font_open: false,
             query_editor_font_id,
             query_editor_font_size: settings.query_editor_font_size.to_string(),
+            open_window_maximized: settings.open_window_maximized,
             theme_choice: settings.theme_choice,
             theme_light: settings.theme_colors.light.clone(),
             theme_dark: settings.theme_colors.dark.clone(),
@@ -228,6 +230,7 @@ impl SettingsWindowState {
             result_font_size: result_size,
             query_editor_font: self.query_editor_font_id.clone(),
             query_editor_font_size: query_editor_size,
+            open_window_maximized: self.open_window_maximized,
             theme_choice: self.theme_choice,
             theme_colors: ThemeColors {
                 light: self.theme_light.clone(),
@@ -534,6 +537,15 @@ fn font_picker_row<'a>(
 }
 
 fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_, Message> {
+    let fonts_state = fonts::active_fonts();
+    let checkbox_font = fonts_state.primary_font;
+    let checkbox_size = fonts_state.primary_size;
+    let open_maximized = Checkbox::new(state.open_window_maximized)
+        .label(tr("Open window maximized on startup").to_owned())
+        .font(checkbox_font)
+        .text_size(checkbox_size)
+        .on_toggle(Message::SettingsToggleOpenWindowMaximized);
+
     let language_row = Row::new()
         .spacing(12)
         .align_y(Vertical::Center)
@@ -587,6 +599,7 @@ fn appearance_tab(state: &SettingsWindowState, text_color: Color) -> Element<'_,
 
     Column::new()
         .spacing(16)
+        .push(open_maximized)
         .push(language_row)
         .push(primary_row)
         .push(result_row)

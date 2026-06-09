@@ -149,6 +149,7 @@ Der Stream stoppt automatisch, wenn die Anzahl der empfangenen Elemente den Wert
 - F2 — Ergebnisse in die Tabellenansicht wechseln
 - F4 — Ergebnisse in die Textansicht wechseln
 - F5 — Abfrage des aktiven Tabs ausführen
+- Alt+Links/Alt+Rechts — aktiven Tab nach links oder rechts verschieben
 - Strg+Enter — aktuelle Abfrage ausführen
 - Strg+W — aktiven Tab schließen
 "#,

@@ -123,6 +123,7 @@ pub struct AppSettings {
     pub result_font_size: u16,
     pub query_editor_font: String,
     pub query_editor_font_size: u16,
+    pub open_window_maximized: bool,
     pub theme_choice: ThemeChoice,
     pub theme_colors: ThemeColors,
 }
@@ -146,6 +147,7 @@ impl Default for AppSettings {
             result_font_size: 14,
             query_editor_font: fonts::default_query_editor_font_id().to_string(),
             query_editor_font_size: 14,
+            open_window_maximized: false,
             theme_choice: ThemeChoice::System,
             theme_colors: ThemeColors::default(),
         }
@@ -936,6 +938,7 @@ mod tests {
         let settings = AppSettings::default();
 
         assert!(settings.strict_delete_confirmation);
+        assert!(!settings.open_window_maximized);
         assert_eq!(settings.logging_path, DEFAULT_LOG_FILE_NAME);
         assert_eq!(settings.primary_font, fonts::default_font_id());
         assert_eq!(settings.query_editor_font, fonts::default_query_editor_font_id());
