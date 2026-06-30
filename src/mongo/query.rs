@@ -3866,7 +3866,9 @@ impl<'a> QueryParser<'a> {
 
     fn parse_shell_bson_value(source: &str) -> Result<Bson, String> {
         let quoted = quote_unquoted_keys(source);
-        crate::mongo::shell::parse_shell_bson_value(&quoted)
+        let source_value = crate::mongo::shell::parse_shell_json_value(&quoted)?;
+        let bson = crate::mongo::shell::parse_shell_bson_value(&quoted)?;
+        Self::normalize_numeric_bson(&source_value, bson)
     }
 
     fn parse_json_object(source: &str) -> Result<Document, String> {
@@ -5496,11 +5498,13 @@ mod tests {
 
         let number_long =
             QueryParser::parse_shell_bson_value("NumberLong(42)").expect("valid NumberLong");
-        match number_long {
-            Bson::Int64(value) => assert_eq!(value, 42),
-            Bson::Int32(value) => assert_eq!(value, 42),
-            other => panic!("expected integer, got {:?}", other),
-        }
+        assert_eq!(number_long, Bson::Int64(42));
+
+        let numeric_document = QueryParser::parse_shell_bson_value(
+            r#"{ "sort": -1, "explicitLong": NumberLong("10") }"#,
+        )
+        .expect("numeric document should parse");
+        assert_eq!(numeric_document, Bson::Document(doc! { "sort": -1i32, "explicitLong": 10i64 }));
     }
 
     #[test]
@@ -5620,6 +5624,370 @@ mod tests {
                     Some(Bson::Int64(value)) => assert_eq!(*value, 2048),
                     Some(Bson::Double(value)) => assert_eq!(*value, 2048.0),
                     other => panic!("unexpected scale representation: {:?}", other),
+                }
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_delete_many_with_supported_options() {
+        let operation = parse(
+            r#"db.users.deleteMany(
+                { "status": "stale" },
+                {
+                    "writeConcern": { "w": "majority" },
+                    "collation": { "locale": "en", "strength": 2 },
+                    "hint": { "status": 1 }
+                }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::DeleteMany { filter, options } => {
+                assert_eq!(filter, doc! { "status": "stale" });
+                let options = options.expect("delete options expected");
+                assert!(matches!(
+                    options.write_concern.expect("write concern").w,
+                    Some(Acknowledgment::Majority)
+                ));
+                let collation = options.collation.expect("collation expected");
+                assert_eq!(collation.locale, "en");
+                assert!(matches!(
+                    collation.strength,
+                    Some(mongodb::options::CollationStrength::Secondary)
+                ));
+                assert_eq!(options.hint, Some(Hint::Keys(doc! { "status": 1i32 })));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_find_one_and_replace_with_full_options() {
+        let operation = parse(
+            r#"db.users.findOneAndReplace(
+                { "name": "Alice" },
+                { "name": "Alice", "active": false },
+                {
+                    "writeConcern": { "w": 2 },
+                    "upsert": true,
+                    "bypassDocumentValidation": true,
+                    "maxTimeMS": 750,
+                    "projection": { "name": 1 },
+                    "returnDocument": "before",
+                    "sort": { "createdAt": -1 },
+                    "collation": { "locale": "fr" },
+                    "hint": "createdAt_-1",
+                    "let": { "tenant": "a" },
+                    "comment": "replace-one"
+                }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::FindOneAndReplace { filter, replacement, options } => {
+                assert_eq!(filter, doc! { "name": "Alice" });
+                assert_eq!(replacement, doc! { "name": "Alice", "active": false });
+                let options = options.expect("findOneAndReplace options expected");
+                assert!(matches!(
+                    options.write_concern.expect("write concern").w,
+                    Some(Acknowledgment::Nodes(2))
+                ));
+                assert_eq!(options.upsert, Some(true));
+                assert_eq!(options.bypass_document_validation, Some(true));
+                assert_eq!(options.max_time, Some(Duration::from_millis(750)));
+                assert_eq!(options.projection, Some(doc! { "name": 1i32 }));
+                assert!(matches!(options.return_document, Some(ReturnDocument::Before)));
+                assert_eq!(options.sort, Some(doc! { "createdAt": -1i32 }));
+                assert_eq!(options.collation.expect("collation").locale, "fr");
+                assert_eq!(options.hint, Some(Hint::Name("createdAt_-1".to_string())));
+                assert_eq!(options.let_vars, Some(doc! { "tenant": "a" }));
+                assert_eq!(options.comment, Some(Bson::String("replace-one".to_string())));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_find_one_and_delete_with_full_options() {
+        let operation = parse(
+            r#"db.users.findOneAndDelete(
+                { "archived": true },
+                {
+                    "writeConcern": { "w": 1 },
+                    "maxTimeMS": 250,
+                    "projection": { "_id": 1 },
+                    "sort": { "updatedAt": 1 },
+                    "collation": { "locale": "simple" },
+                    "hint": { "archived": 1 },
+                    "let": { "cutoff": 10 },
+                    "comment": { "reason": "cleanup" }
+                }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::FindOneAndDelete { filter, options } => {
+                assert_eq!(filter, doc! { "archived": true });
+                let options = options.expect("findOneAndDelete options expected");
+                assert!(matches!(
+                    options.write_concern.expect("write concern").w,
+                    Some(Acknowledgment::Nodes(1))
+                ));
+                assert_eq!(options.max_time, Some(Duration::from_millis(250)));
+                assert_eq!(options.projection, Some(doc! { "_id": 1i32 }));
+                assert_eq!(options.sort, Some(doc! { "updatedAt": 1i32 }));
+                assert_eq!(options.collation.expect("collation").locale, "simple");
+                assert_eq!(options.hint, Some(Hint::Keys(doc! { "archived": 1i32 })));
+                assert_eq!(options.let_vars, Some(doc! { "cutoff": 10i32 }));
+                assert_eq!(options.comment, Some(Bson::Document(doc! { "reason": "cleanup" })));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_insert_many_with_numeric_helpers_and_options() {
+        let operation = parse(
+            r#"db.users.insertMany(
+                [
+                    { "name": "Ada", "age": NumberInt("37") },
+                    { "name": "Grace", "visits": NumberLong("9223372036854775807") }
+                ],
+                {
+                    "ordered": false,
+                    "writeConcern": { "w": "majority", "j": true }
+                }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::InsertMany { documents, options } => {
+                assert_eq!(
+                    documents,
+                    vec![
+                        doc! { "name": "Ada", "age": 37i32 },
+                        doc! { "name": "Grace", "visits": 9223372036854775807i64 }
+                    ]
+                );
+                let options = options.expect("insertMany options expected");
+                assert_eq!(options.ordered, Some(false));
+                let write_concern = options.write_concern.expect("write concern expected");
+                assert!(matches!(write_concern.w, Some(Acknowledgment::Majority)));
+                assert_eq!(write_concern.journal, Some(true));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_distinct_with_filter_and_supported_options() {
+        let operation = parse(
+            r#"db.users.distinct(
+                "status",
+                { "age": { "$gte": NumberInt(18) } },
+                { "maxTimeMS": 1200, "collation": { "locale": "en", "caseLevel": true } }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::Distinct { field, filter, options } => {
+                assert_eq!(field, "status");
+                assert_eq!(filter, doc! { "age": { "$gte": 18i32 } });
+                let options = options.expect("distinct options expected");
+                assert_eq!(options.max_time, Some(Duration::from_millis(1200)));
+                let collation = options.collation.expect("collation expected");
+                assert_eq!(collation.locale, "en");
+                assert_eq!(collation.case_level, Some(true));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_aggregate_pipeline_and_supported_options() {
+        let operation = parse(
+            r#"db.users.aggregate(
+                [
+                    { "$match": { "status": "open" } },
+                    { "$group": { "_id": "$category", "total": { "$sum": NumberLong("1") } } }
+                ],
+                {
+                    "allowDiskUse": true,
+                    "cursor": { "batchSize": 64 },
+                    "bypassDocumentValidation": false,
+                    "collation": { "locale": "simple" },
+                    "comment": { "source": "unit-test" },
+                    "hint": { "status": 1 },
+                    "maxTimeMS": 2500,
+                    "let": { "tenant": "acme" }
+                }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::Aggregate { pipeline, options } => {
+                assert_eq!(
+                    pipeline,
+                    vec![
+                        doc! { "$match": { "status": "open" } },
+                        doc! { "$group": { "_id": "$category", "total": { "$sum": 1i64 } } }
+                    ]
+                );
+                let options = options.expect("aggregate options expected");
+                assert_eq!(options.allow_disk_use, Some(true));
+                assert_eq!(options.batch_size, Some(64));
+                assert_eq!(options.bypass_document_validation, Some(false));
+                assert_eq!(options.collation.expect("collation").locale, "simple");
+                assert_eq!(options.comment, Some(Bson::Document(doc! { "source": "unit-test" })));
+                assert_eq!(options.hint, Some(Hint::Keys(doc! { "status": 1i32 })));
+                assert_eq!(options.max_time, Some(Duration::from_millis(2500)));
+                assert_eq!(options.let_vars, Some(doc! { "tenant": "acme" }));
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_collection_watch_with_pipeline_and_options() {
+        let operation = parse(
+            r#"db.users.watch(
+                [{ "$match": { "operationType": "insert" } }],
+                {
+                    "fullDocument": "updateLookup",
+                    "fullDocumentBeforeChange": "whenAvailable",
+                    "maxAwaitTimeMS": 500,
+                    "batchSize": 25,
+                    "collation": { "locale": "en" },
+                    "showExpandedEvents": true,
+                    "comment": "watch-users",
+                    "startAtOperationTime": Timestamp(12345, 7)
+                }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::Watch { pipeline, target, options } => {
+                assert_eq!(target, WatchTarget::Collection);
+                assert_eq!(pipeline, vec![doc! { "$match": { "operationType": "insert" } }]);
+                let options = options.expect("watch options expected");
+                assert!(matches!(options.full_document, Some(FullDocumentType::UpdateLookup)));
+                assert!(matches!(
+                    options.full_document_before_change,
+                    Some(FullDocumentBeforeChangeType::WhenAvailable)
+                ));
+                assert_eq!(options.max_await_time, Some(Duration::from_millis(500)));
+                assert_eq!(options.batch_size, Some(25));
+                assert_eq!(options.collation.expect("collation").locale, "en");
+                assert_eq!(options.show_expanded_events, Some(true));
+                assert_eq!(options.comment, Some(Bson::String("watch-users".to_string())));
+                assert_eq!(
+                    options.start_at_operation_time,
+                    Some(BsonTimestamp { time: 12345, increment: 7 })
+                );
+            }
+            other => panic!("unexpected operation: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn parses_bulk_write_models_and_global_options() {
+        let operation = parse(
+            r#"db.users.bulkWrite(
+                [
+                    {
+                        "insertOne": {
+                            "document": { "name": "Ada", "age": NumberInt(37) }
+                        }
+                    },
+                    {
+                        "updateOne": {
+                            "filter": { "_id": 1 },
+                            "update": [
+                                { "$set": { "status": "active" } },
+                                { "$unset": "stale" }
+                            ],
+                            "upsert": true,
+                            "arrayFilters": [{ "elem.score": { "$gte": 10 } }],
+                            "collation": { "locale": "en" },
+                            "hint": "_id_",
+                            "sort": { "createdAt": -1 }
+                        }
+                    },
+                    {
+                        "deleteMany": {
+                            "filter": { "inactive": true },
+                            "hint": { "inactive": 1 }
+                        }
+                    }
+                ],
+                {
+                    "ordered": false,
+                    "bypassDocumentValidation": true,
+                    "comment": "bulk-users",
+                    "let": { "tenant": "acme" },
+                    "writeConcern": { "w": "majority" }
+                }
+            )"#,
+        );
+
+        match operation {
+            QueryOperation::BulkWrite { models, options } => {
+                let options = options.expect("bulkWrite options expected");
+                assert_eq!(options.ordered, Some(false));
+                assert_eq!(options.bypass_document_validation, Some(true));
+                assert_eq!(options.comment, Some(Bson::String("bulk-users".to_string())));
+                assert_eq!(options.let_vars, Some(doc! { "tenant": "acme" }));
+                assert!(matches!(
+                    options.write_concern.expect("write concern").w,
+                    Some(Acknowledgment::Majority)
+                ));
+
+                assert_eq!(models.len(), 3);
+
+                match &models[0] {
+                    WriteModel::InsertOne(model) => {
+                        assert_eq!(model.namespace.db, "testdb");
+                        assert_eq!(model.namespace.coll, "users");
+                        assert_eq!(model.document, doc! { "name": "Ada", "age": 37i32 });
+                    }
+                    other => panic!("unexpected first bulk model: {:?}", other),
+                }
+
+                match &models[1] {
+                    WriteModel::UpdateOne(model) => {
+                        assert_eq!(model.filter, doc! { "_id": 1i32 });
+                        match &model.update {
+                            UpdateModifications::Pipeline(pipeline) => {
+                                assert_eq!(
+                                    pipeline,
+                                    &vec![
+                                        doc! { "$set": { "status": "active" } },
+                                        doc! { "$unset": "stale" }
+                                    ]
+                                );
+                            }
+                            other => panic!("unexpected update mods: {:?}", other),
+                        }
+                        assert_eq!(model.upsert, Some(true));
+                        assert_eq!(
+                            model.array_filters,
+                            Some(vec![Bson::Document(doc! { "elem.score": { "$gte": 10i32 } })])
+                        );
+                        assert_eq!(model.collation, Some(doc! { "locale": "en" }));
+                        assert_eq!(model.hint, Some(Bson::String("_id_".to_string())));
+                        assert_eq!(model.sort, Some(doc! { "createdAt": -1i32 }));
+                    }
+                    other => panic!("unexpected second bulk model: {:?}", other),
+                }
+
+                match &models[2] {
+                    WriteModel::DeleteMany(model) => {
+                        assert_eq!(model.filter, doc! { "inactive": true });
+                        assert_eq!(model.hint, Some(Bson::Document(doc! { "inactive": 1i32 })));
+                    }
+                    other => panic!("unexpected third bulk model: {:?}", other),
                 }
             }
             other => panic!("unexpected operation: {:?}", other),

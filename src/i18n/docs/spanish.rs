@@ -148,6 +148,8 @@ El flujo se detiene automáticamente cuando la cantidad de elementos recibidos a
 
 - F2 — cambiar resultados a vista Tabla
 - F4 — cambiar resultados a vista Texto
+- F5 — ejecutar la consulta de la pestaña activa
+- Alt+Izquierda/Alt+Derecha — mover la pestaña activa a la izquierda o a la derecha
 - Ctrl+Enter — ejecutar la consulta actual
 - Ctrl+W — cerrar la pestaña activa
 "#,

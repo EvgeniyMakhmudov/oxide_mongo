@@ -123,6 +123,7 @@ pub struct AppSettings {
     pub result_font_size: u16,
     pub query_editor_font: String,
     pub query_editor_font_size: u16,
+    pub open_window_maximized: bool,
     pub theme_choice: ThemeChoice,
     pub theme_colors: ThemeColors,
 }
@@ -146,6 +147,7 @@ impl Default for AppSettings {
             result_font_size: 14,
             query_editor_font: fonts::default_query_editor_font_id().to_string(),
             query_editor_font_size: 14,
+            open_window_maximized: false,
             theme_choice: ThemeChoice::System,
             theme_colors: ThemeColors::default(),
         }
@@ -925,4 +927,63 @@ fn normalize_query_editor_font_id(value: &str) -> String {
     }
 
     fonts::default_query_editor_font_id().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_keep_strict_delete_confirmation_enabled() {
+        let settings = AppSettings::default();
+
+        assert!(settings.strict_delete_confirmation);
+        assert!(!settings.open_window_maximized);
+        assert_eq!(settings.logging_path, DEFAULT_LOG_FILE_NAME);
+        assert_eq!(settings.primary_font, fonts::default_font_id());
+        assert_eq!(settings.query_editor_font, fonts::default_query_editor_font_id());
+    }
+
+    #[test]
+    fn normalize_logging_restores_default_path_when_blank() {
+        let mut settings =
+            AppSettings { logging_path: String::from("   "), ..AppSettings::default() };
+
+        settings.normalize_logging();
+
+        assert_eq!(settings.logging_path, DEFAULT_LOG_FILE_NAME);
+    }
+
+    #[test]
+    fn normalize_fonts_replaces_unknown_ids_with_defaults() {
+        let mut settings = AppSettings {
+            primary_font: String::from("unknown-primary"),
+            result_font: String::from("unknown-result"),
+            query_editor_font: String::from("unknown-editor"),
+            ..AppSettings::default()
+        };
+
+        settings.normalize_fonts();
+
+        assert_eq!(settings.primary_font, fonts::default_font_id());
+        assert_eq!(settings.result_font, fonts::default_font_id());
+        assert_eq!(settings.query_editor_font, fonts::default_query_editor_font_id());
+    }
+
+    #[test]
+    fn theme_colors_route_each_choice_to_expected_palette() {
+        let colors = ThemeColors::default();
+
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::System), &colors.light));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::Light), &colors.light));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::Dark), &colors.dark));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::SolarizedLight), &colors.solarized_light));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::SolarizedDark), &colors.solarized_dark));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::NordLight), &colors.nord_light));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::NordDark), &colors.nord_dark));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::GruvboxLight), &colors.gruvbox_light));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::GruvboxDark), &colors.gruvbox_dark));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::OneLight), &colors.one_light));
+        assert!(std::ptr::eq(colors.palette(ThemeChoice::OneDark), &colors.one_dark));
+    }
 }

@@ -148,6 +148,8 @@ Lo stream si interrompe automaticamente quando il numero di elementi ricevuti ra
 
 - F2 — passa i risultati alla vista Tabella
 - F4 — passa i risultati alla vista Testo
+- F5 — esegui la query della scheda attiva
+- Alt+Sinistra/Alt+Destra — sposta la scheda attiva a sinistra o a destra
 - Ctrl+Enter — esegui la query corrente
 - Ctrl+W — chiudi la scheda attiva
 "#,

@@ -148,6 +148,8 @@ The stream stops automatically when the number of received elements reaches the 
 
 - F2 — switch results to Table view
 - F4 — switch results to Text view
+- F5 — run the active tab query
+- Alt+Left/Alt+Right — move the active tab left or right
 - Ctrl+Enter — run the current query
 - Ctrl+W — close the active tab
 "#,

@@ -115,25 +115,44 @@ pub(crate) fn perf_diagnostics_enabled() -> bool {
     })
 }
 
+fn tab_move_target_position(len: usize, position: usize, move_left: bool) -> Option<usize> {
+    if position >= len {
+        return None;
+    }
+
+    if move_left {
+        position.checked_sub(1)
+    } else {
+        let target = position.checked_add(1)?;
+        (target < len).then_some(target)
+    }
+}
+
 fn main() -> iced::Result {
+    let (settings, load_error) = App::load_startup_settings();
     let icon = window::icon::from_file_data(WINDOW_ICON_BYTES, None)
         .map_err(|error| iced::Error::WindowCreationFailed(Box::new(error)))?;
 
     let mut window_settings = window::Settings::default();
     window_settings.icon = Some(icon);
     window_settings.size.width += 280.0;
+    window_settings.maximized = settings.open_window_maximized;
 
-    application(App::init, App::update, App::view)
-        .title("Oxide Mongo")
-        .subscription(App::subscription)
-        .theme(App::theme)
-        .font(MONO_FONT_BYTES)
-        .font(HACK_FONT_BYTES)
-        .font(JETBRAINS_FONT_BYTES)
-        .font(FIRACODE_FONT_BYTES)
-        .font(FIRACODE_MEDIUM_FONT_BYTES)
-        .window(window_settings)
-        .run()
+    application(
+        move || App::init_with_settings(settings.clone(), load_error.clone()),
+        App::update,
+        App::view,
+    )
+    .title("Oxide Mongo")
+    .subscription(App::subscription)
+    .theme(App::theme)
+    .font(MONO_FONT_BYTES)
+    .font(HACK_FONT_BYTES)
+    .font(JETBRAINS_FONT_BYTES)
+    .font(FIRACODE_FONT_BYTES)
+    .font(FIRACODE_MEDIUM_FONT_BYTES)
+    .window(window_settings)
+    .run()
 }
 
 pub(crate) struct App {
@@ -192,6 +211,8 @@ pub(crate) enum Message {
     TabClosed(TabId),
     CloseActiveTab,
     DuplicateTab(TabId),
+    MoveTabLeft(TabId),
+    MoveTabRight(TabId),
     TabColorPickerOpened(TabId),
     TabColorPickerCanceled,
     TabColorChanged {
@@ -199,7 +220,7 @@ pub(crate) enum Message {
         color: Color,
     },
     TabColorReset(TabId),
-    WindowEvent(window::Event),
+    WindowEvent(window::Id, window::Event),
     KeyboardEvent(keyboard::Event),
     PaneResized(ResizeEvent),
     ConnectionCompleted {
@@ -341,6 +362,7 @@ pub(crate) enum Message {
     SettingsQueryTimeoutChanged(String),
     SettingsToggleSortFields(bool),
     SettingsToggleSortIndexes(bool),
+    SettingsToggleOpenWindowMaximized(bool),
     SettingsToggleCloseTabsOnDbClose(bool),
     SettingsToggleStrictDeleteConfirmation(bool),
     SettingsToggleLogging(bool),
@@ -484,6 +506,10 @@ enum ConnectionStatus {
     Connecting,
     Ready,
     Failed(String),
+}
+
+fn connection_can_refresh(status: &ConnectionStatus) -> bool {
+    !matches!(status, ConnectionStatus::Connecting)
 }
 
 #[derive(Debug, Clone)]
@@ -1664,14 +1690,23 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn init() -> (Self, Task<Message>) {
-        let settings_result = settings::load_from_disk();
+        let (settings, load_error) = Self::load_startup_settings();
+        Self::init_with_settings(settings, load_error)
+    }
 
-        let (settings, load_error) = match settings_result {
+    fn load_startup_settings() -> (AppSettings, Option<String>) {
+        match settings::load_from_disk() {
             Ok(settings) => (settings, None),
-            Err(error) => (AppSettings::default(), Some(error)),
-        };
+            Err(error) => (AppSettings::default(), Some(error.to_string())),
+        }
+    }
 
+    fn init_with_settings(
+        settings: AppSettings,
+        load_error: Option<String>,
+    ) -> (Self, Task<Message>) {
         fonts::set_active_fonts(
             &settings.primary_font,
             settings.primary_font_size as f32,
@@ -1792,6 +1827,18 @@ impl App {
                 self.duplicate_collection_tab(tab_id);
                 Task::none()
             }
+            Message::MoveTabLeft(tab_id) => {
+                if self.move_tab_left(tab_id) {
+                    log::debug!("Tab moved left id={}", tab_id);
+                }
+                Task::none()
+            }
+            Message::MoveTabRight(tab_id) => {
+                if self.move_tab_right(tab_id) {
+                    log::debug!("Tab moved right id={}", tab_id);
+                }
+                Task::none()
+            }
             Message::TabColorPickerOpened(tab_id) => {
                 self.tab_color_picker = Some(tab_id);
                 Task::none()
@@ -1814,9 +1861,25 @@ impl App {
                 self.tab_color_picker = None;
                 Task::none()
             }
-            Message::WindowEvent(event) => {
+            Message::WindowEvent(window_id, event) => {
                 match event {
-                    window::Event::Opened { size, .. } | window::Event::Resized(size) => {
+                    window::Event::Opened { size, .. } => {
+                        if let Some(prev) = self.window_size {
+                            let prev_height = prev.height;
+                            let new_height = size.height;
+                            if prev_height.is_finite() && new_height.is_finite() {
+                                for tab in &mut self.tabs {
+                                    tab.collection
+                                        .scale_split_for_window_resize(prev_height, new_height);
+                                }
+                            }
+                        }
+                        self.window_size = Some(size);
+                        if self.settings.open_window_maximized {
+                            return window::maximize(window_id, true);
+                        }
+                    }
+                    window::Event::Resized(size) => {
                         if let Some(prev) = self.window_size {
                             let prev_height = prev.height;
                             let new_height = size.height;
@@ -1835,6 +1898,25 @@ impl App {
             }
             Message::KeyboardEvent(event) => {
                 if let keyboard::Event::KeyPressed { key, modifiers, .. } = event {
+                    if self.mode == AppMode::Main && modifiers.alt() {
+                        if let Some(active_id) = self.active_tab {
+                            match key.as_ref() {
+                                keyboard::Key::Named(key::Named::ArrowLeft) => {
+                                    return self.update(Message::MoveTabLeft(active_id));
+                                }
+                                keyboard::Key::Named(key::Named::ArrowRight) => {
+                                    return self.update(Message::MoveTabRight(active_id));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    if self.mode == AppMode::Main && key == keyboard::Key::Named(key::Named::F5) {
+                        if let Some(active_id) = self.active_tab {
+                            return self.collection_query_task(active_id);
+                        }
+                        return Task::none();
+                    }
                     if let Some(message) = Self::handle_hotkey(key, modifiers) {
                         return self.update(message);
                     }
@@ -3851,6 +3933,13 @@ impl App {
                 }
                 Task::none()
             }
+            Message::SettingsToggleOpenWindowMaximized(value) => {
+                if let Some(state) = self.settings_window.as_mut() {
+                    state.open_window_maximized = value;
+                    state.validation_error = None;
+                }
+                Task::none()
+            }
             Message::SettingsToggleCloseTabsOnDbClose(value) => {
                 if let Some(state) = self.settings_window.as_mut() {
                     state.close_tabs_on_database_close = value;
@@ -4146,7 +4235,7 @@ impl App {
 
     fn subscription(&self) -> Subscription<Message> {
         Subscription::batch([
-            window::events().map(|(_id, event)| Message::WindowEvent(event)),
+            window::events().map(|(id, event)| Message::WindowEvent(id, event)),
             keyboard::listen().map(Message::KeyboardEvent),
         ])
     }
@@ -4906,12 +4995,14 @@ impl App {
 
         let context_client_id = client.id;
         let is_ready = matches!(client.status, ConnectionStatus::Ready);
+        let can_refresh = connection_can_refresh(&client.status);
 
         let menu = menues::connection_context_menu(
             base_button,
             palette.clone(),
             context_client_id,
             is_ready,
+            can_refresh,
         );
 
         let mut column = Column::new().spacing(4).push(menu);
@@ -5151,6 +5242,28 @@ impl App {
         self.estimate_tabs_row_width() > threshold
     }
 
+    fn move_tab_left(&mut self, tab_id: TabId) -> bool {
+        let Some(position) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+            return false;
+        };
+        let Some(target) = tab_move_target_position(self.tabs.len(), position, true) else {
+            return false;
+        };
+        self.tabs.swap(position, target);
+        true
+    }
+
+    fn move_tab_right(&mut self, tab_id: TabId) -> bool {
+        let Some(position) = self.tabs.iter().position(|tab| tab.id == tab_id) else {
+            return false;
+        };
+        let Some(target) = tab_move_target_position(self.tabs.len(), position, false) else {
+            return false;
+        };
+        self.tabs.swap(position, target);
+        true
+    }
+
     fn main_panel(&self) -> Element<'_, Message> {
         let palette = self.active_palette();
         let pane_bg = palette.widget_background_color();
@@ -5179,7 +5292,7 @@ impl App {
             let inactive_bg = palette.subtle_buttons.active.to_color();
             let border_color = palette.subtle_buttons.border.to_color();
 
-            for tab in &self.tabs {
+            for (index, tab) in self.tabs.iter().enumerate() {
                 let is_active = active_id == Some(tab.id);
                 let tab_background =
                     tab.color.unwrap_or_else(|| if is_active { active_bg } else { inactive_bg });
@@ -5218,9 +5331,33 @@ impl App {
                 let menu_palette = palette.clone();
                 let menu_border = palette.clone();
                 let menu_tab_id = tab.id;
+                let can_move_left = index > 0;
+                let can_move_right = index + 1 < self.tabs.len();
                 let menu = move || {
                     let item_palette = menu_palette.clone();
                     let border_palette = menu_border.clone();
+                    let move_left_palette = menu_palette.clone();
+                    let mut move_left_button =
+                        Button::new(fonts::primary_text(tr("Move Tab Left"), None))
+                            .padding([4, 8])
+                            .style(move |_, status| {
+                                move_left_palette.menu_button_style(6.0, status)
+                            });
+                    if can_move_left {
+                        move_left_button =
+                            move_left_button.on_press(Message::MoveTabLeft(menu_tab_id));
+                    }
+                    let move_right_palette = menu_palette.clone();
+                    let mut move_right_button =
+                        Button::new(fonts::primary_text(tr("Move Tab Right"), None))
+                            .padding([4, 8])
+                            .style(move |_, status| {
+                                move_right_palette.menu_button_style(6.0, status)
+                            });
+                    if can_move_right {
+                        move_right_button =
+                            move_right_button.on_press(Message::MoveTabRight(menu_tab_id));
+                    }
                     let duplicate_button =
                         Button::new(fonts::primary_text(tr("Duplicate Tab"), None))
                             .padding([4, 8])
@@ -5239,6 +5376,8 @@ impl App {
                             .style(move |_, status| reset_palette.menu_button_style(6.0, status));
                     let content = Column::new()
                         .spacing(6)
+                        .push(move_left_button)
+                        .push(move_right_button)
                         .push(color_button)
                         .push(reset_button)
                         .push(duplicate_button);
@@ -5636,27 +5775,25 @@ impl App {
             return Task::none();
         };
 
+        if !connection_can_refresh(&client.status) {
+            return Task::none();
+        }
+
         log::debug!(
             "Refresh databases client_id={} ssh_tunnel={}",
             client_id,
             client.entry.ssh_tunnel.enabled
         );
-        if client.entry.ssh_tunnel.enabled {
-            client.status = ConnectionStatus::Connecting;
-            client.handle = None;
-            client.ssh_tunnel = None;
-            for database in &mut client.databases {
-                database.state = DatabaseState::Loading;
-            }
 
-            let connection = OMDBConnection::from_entry(client.entry.clone());
-            return Task::perform(async move { connect_and_discover(connection) }, move |result| {
-                Message::ConnectionCompleted { client_id, result }
-            });
+        if client.entry.ssh_tunnel.enabled
+            || client.handle.is_none()
+            || matches!(client.status, ConnectionStatus::Failed(_))
+        {
+            return Self::reconnect_client(client, client_id);
         }
 
         let Some(handle) = client.handle.clone() else {
-            return Task::none();
+            return Self::reconnect_client(client, client_id);
         };
 
         for database in &mut client.databases {
@@ -5674,6 +5811,26 @@ impl App {
             },
             move |result| Message::DatabasesRefreshed { client_id, result },
         )
+    }
+
+    fn reconnect_client(client: &mut OMDBClient, client_id: ClientId) -> Task<Message> {
+        log::debug!(
+            "Reconnect client client_id={} ssh_tunnel={}",
+            client_id,
+            client.entry.ssh_tunnel.enabled
+        );
+
+        client.status = ConnectionStatus::Connecting;
+        client.handle = None;
+        client.ssh_tunnel = None;
+        for database in &mut client.databases {
+            database.state = DatabaseState::Loading;
+        }
+
+        let connection = OMDBConnection::from_entry(client.entry.clone());
+        Task::perform(async move { connect_and_discover(connection) }, move |result| {
+            Message::ConnectionCompleted { client_id, result }
+        })
     }
 
     fn add_collection_to_tree(&mut self, client_id: ClientId, db_name: &str, collection: &str) {
@@ -6353,4 +6510,32 @@ impl CollectionNode {
 
 pub(crate) fn shared_icon_handle(lock: &OnceLock<Handle>, bytes: &'static [u8]) -> Handle {
     lock.get_or_init(|| Handle::from_bytes(bytes.to_vec())).clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_can_refresh_ready_or_failed_connections() {
+        assert!(connection_can_refresh(&ConnectionStatus::Ready));
+        assert!(connection_can_refresh(&ConnectionStatus::Failed(String::from(
+            "connection refused"
+        ))));
+        assert!(!connection_can_refresh(&ConnectionStatus::Connecting));
+    }
+
+    #[test]
+    fn tab_move_target_position_moves_inside_bounds() {
+        assert_eq!(tab_move_target_position(3, 1, true), Some(0));
+        assert_eq!(tab_move_target_position(3, 1, false), Some(2));
+    }
+
+    #[test]
+    fn tab_move_target_position_rejects_edges_and_invalid_position() {
+        assert_eq!(tab_move_target_position(3, 0, true), None);
+        assert_eq!(tab_move_target_position(3, 2, false), None);
+        assert_eq!(tab_move_target_position(3, 3, true), None);
+        assert_eq!(tab_move_target_position(0, 0, false), None);
+    }
 }

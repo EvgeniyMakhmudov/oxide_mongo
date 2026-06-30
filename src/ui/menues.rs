@@ -152,6 +152,7 @@ pub(crate) fn connection_context_menu<'a>(
     palette: ThemePalette,
     client_id: ClientId,
     is_ready: bool,
+    can_refresh: bool,
 ) -> Element<'a, Message> {
     ContextMenu::new(base_button, move || {
         let mut menu = Column::new().spacing(4).padding([4, 6]);
@@ -173,7 +174,7 @@ pub(crate) fn connection_context_menu<'a>(
             ConnectionContextAction::CreateDatabase,
             is_ready,
         ));
-        menu = menu.push(make_button(tr("Refresh"), ConnectionContextAction::Refresh, is_ready));
+        menu = menu.push(make_button(tr("Refresh"), ConnectionContextAction::Refresh, can_refresh));
         menu = menu.push(make_button(
             tr("Server Status"),
             ConnectionContextAction::ServerStatus,
