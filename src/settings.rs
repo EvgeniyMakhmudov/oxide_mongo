@@ -934,6 +934,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_toml_settings_preserve_values_and_defaults_on_round_trip() {
+        let legacy = r#"
+language = "russian"
+query_timeout_secs = 120
+logging_enabled = true
+logging_level = "debug"
+logging_path = 'C:\Журналы\mongo.log'
+primary_font_size = 18
+theme_choice = "Dark"
+"#;
+        let mut settings: AppSettings = toml::from_str(legacy).expect("read legacy settings");
+
+        assert_eq!(settings.language, Language::Russian);
+        assert_eq!(settings.query_timeout_secs, 120);
+        assert!(settings.logging_enabled);
+        assert_eq!(settings.logging_level, LogLevel::Debug);
+        assert_eq!(settings.logging_path, r"C:\Журналы\mongo.log");
+        assert_eq!(settings.primary_font_size, 18);
+        assert_eq!(settings.theme_choice, ThemeChoice::Dark);
+        assert!(settings.strict_delete_confirmation);
+        assert_eq!(settings.query_editor_font, fonts::default_query_editor_font_id());
+
+        settings.theme_colors.dark.menu.background = RgbaColor::new(12, 34, 56, 128);
+        let serialized = toml::to_string_pretty(&settings).expect("serialize settings");
+        let restored: AppSettings = toml::from_str(&serialized).expect("read saved settings");
+        assert_eq!(
+            serde_json::to_value(&restored).unwrap(),
+            serde_json::to_value(&settings).unwrap()
+        );
+    }
+
+    #[test]
     fn default_settings_keep_strict_delete_confirmation_enabled() {
         let settings = AppSettings::default();
 

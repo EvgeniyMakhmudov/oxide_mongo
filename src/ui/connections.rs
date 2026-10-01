@@ -1425,3 +1425,61 @@ pub fn connection_form_view<'a>(
 fn connections_file_path() -> PathBuf {
     PathBuf::from(CONNECTIONS_FILE)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_toml_connections_preserve_nested_tables_and_defaults_on_round_trip() {
+        let legacy = r#"
+[[connections]]
+name = "Тестовая база"
+host = "localhost"
+port = 27917
+include_filter = "app_*"
+exclude_filter = "admin,local"
+
+[connections.auth]
+use_auth = true
+username = "test-user"
+password = 'test-only-"password"\value'
+password_storage = "file"
+mechanism = "scram-sha256"
+database = "admin"
+
+[connections.ssh_tunnel]
+enabled = true
+host = "ssh.example.test"
+username = "ssh-user"
+auth_method = "private-key"
+private_key = 'C:\Ключи\id_ed25519'
+
+[[connections]]
+name = "Minimal connection"
+host = "127.0.0.1"
+port = 27017
+include_filter = ""
+exclude_filter = ""
+"#;
+        let store: ConnectionStore = toml::from_str(legacy).expect("read legacy connections");
+
+        assert_eq!(store.connections.len(), 2);
+        let first = &store.connections[0];
+        assert_eq!(first.name, "Тестовая база");
+        assert_eq!(first.auth.password.as_deref(), Some(r#"test-only-"password"\value"#));
+        assert_eq!(first.auth.mechanism, AuthMechanismChoice::ScramSha256);
+        assert_eq!(first.ssh_tunnel.port, 22);
+        assert_eq!(first.ssh_tunnel.private_key.as_deref(), Some(r"C:\Ключи\id_ed25519"));
+        let second = &store.connections[1];
+        assert_eq!(second.connection_type, ConnectionType::Direct);
+        assert!(!second.auth.use_auth);
+        assert_eq!(second.auth.database, "admin");
+        assert!(!second.ssh_tunnel.enabled);
+
+        let serialized = toml::to_string_pretty(&store).expect("serialize connections");
+        let restored: ConnectionStore =
+            toml::from_str(&serialized).expect("read saved connections");
+        assert_eq!(serde_json::to_value(&restored).unwrap(), serde_json::to_value(&store).unwrap());
+    }
+}
